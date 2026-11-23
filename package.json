@@ -1,0 +1,12 @@
+{
+  "name": "minepanel",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @minepanel/web dev",
+    "build": "pnpm --filter @minepanel/web build",
+    "lint": "pnpm --filter @minepanel/web lint",
+    "typecheck": "pnpm --filter @minepanel/web typecheck",
+    "test": "pnpm --filter @minepanel/web test",
+    "e2e": "pnpm --filter @minepanel/web e2e"
+  }
+}

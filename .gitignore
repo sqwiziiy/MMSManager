@@ -1,0 +1,13 @@
+# Local agent instructions stay local
+
+# Package manager and build output
+node_modules/
+dist/
+coverage/
+.vite/
+*.log
+*.tsbuildinfo
+.DS_Store
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/
