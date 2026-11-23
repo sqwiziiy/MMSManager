@@ -234,3 +234,31 @@ export const localServerEvents = sqliteTable('local_server_events', {
   index('local_server_events_server_idx').on(table.serverId, table.occurredAt),
   check('local_server_events_outcome_check', sql`${table.outcome} IN ('success', 'failure')`),
 ])
+
+export const serverInstallOperations = sqliteTable('server_install_operations', {
+  id: text('id').primaryKey(),
+  actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  serverId: text('server_id').references(() => localServers.id, { onDelete: 'set null' }),
+  name: text('name').notNull(),
+  directoryName: text('directory_name').notNull(),
+  software: text('software', { enum: ['vanilla', 'fabric', 'paper'] }).notNull(),
+  version: text('version').notNull(),
+  requestJson: text('request_json').notNull(),
+  status: text('status', { enum: ['pending', 'downloading', 'validating', 'completed', 'failed'] }).notNull(),
+  progress: integer('progress').notNull(),
+  phase: text('phase').notNull(),
+  artifactUrl: text('artifact_url'),
+  artifactSize: integer('artifact_size'),
+  artifactSha1: text('artifact_sha1'),
+  artifactSha256: text('artifact_sha256'),
+  errorCode: text('error_code'),
+  errorMessage: text('error_message'),
+  partialDirectory: text('partial_directory'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('server_install_operations_time_idx').on(table.createdAt),
+  index('server_install_operations_status_idx').on(table.status, table.updatedAt),
+  check('server_install_operations_status_check', sql`${table.status} IN ('pending', 'downloading', 'validating', 'completed', 'failed')`),
+  check('server_install_operations_progress_check', sql`${table.progress} >= 0 AND ${table.progress} <= 100`),
+])

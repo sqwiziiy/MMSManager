@@ -95,20 +95,105 @@ test('desktop navigation keeps server pages clearly in preview mode', async ({ p
   expect(errors).toEqual([])
 })
 
-test('server wizard stays a preview through all steps', async ({ page }) => {
+test('admin creates a server through mocked provider responses', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 })
   await signIn(page)
+  const operationId = '3fc0b937-3e7f-4938-b432-5cc98a529e7c'
+  const serverId = 'f03c1cf8-e2a1-4a4e-9de4-4536c7796091'
+  let pollCount = 0
+  let submitted: Record<string, unknown> | null = null
+  await page.route('**/api/v1/admin/java', (route) => route.fulfill({ json: { runtimes: [{ path: '/tmp/mmsmanager-e2e-java', version: '21.0.4', major: 21, vendor: 'OpenJDK', source: 'discovered' }] } }))
+  await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [], managedRoot: '/tmp/mmsmanager-stage3-e2e-servers', importRoots: ['/tmp/mmsmanager-stage3-e2e-servers'] } }))
+  await page.route('**/api/v1/admin/server-installs/catalog?*', (route) => {
+    const url = new URL(route.request().url())
+    return route.fulfill({ json: { software: 'vanilla', versions: ['1.21.4'], loaders: [], builds: [], installerVersion: null, requiredJavaMajor: url.searchParams.has('version') ? 21 : null } })
+  })
+  await page.route('**/api/v1/admin/server-installs', async (route) => {
+    if (route.request().method() === 'POST') {
+      submitted = route.request().postDataJSON() as Record<string, unknown>
+      return route.fulfill({ status: 202, json: { operation: { id: operationId, name: 'Local community server', directoryName: 'community-server', software: 'vanilla', version: '1.21.4', status: 'pending', progress: 1, phase: 'queued', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } })
+    }
+    return route.fulfill({ json: { operations: [] } })
+  })
+  await page.route(`**/api/v1/admin/server-installs/${operationId}`, (route) => {
+    pollCount += 1
+    const completed = pollCount > 1
+    return route.fulfill({ json: { operation: { id: operationId, name: 'Local community server', directoryName: 'community-server', software: 'vanilla', version: '1.21.4', status: completed ? 'completed' : 'downloading', progress: completed ? 100 : 48, phase: completed ? 'complete' : 'downloading', serverId: completed ? serverId : null, artifactUrl: completed ? 'https://piston-data.mojang.com/server.jar' : null, artifactSize: completed ? 9 : null, artifactSha256: completed ? 'a'.repeat(64) : null, error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } })
+  })
   await page.getByRole('button', { name: 'Create server', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'Create server' })).toBeVisible()
   await page.getByRole('button', { name: 'Continue' }).click()
-  await page.getByRole('button', { name: /Paper/ }).click()
+  await expect(page.getByLabel('Minecraft release')).toBeEnabled()
+  await expect(page.getByText('Mojang metadata requires Java 21 or newer')).toBeVisible()
   await page.getByRole('button', { name: 'Continue' }).click()
   await page.getByRole('button', { name: 'Continue' }).click()
-  await page.getByRole('button', { name: 'Prepare preview' }).click()
-  await expect(page.getByRole('heading', { name: 'Setup summary is ready' })).toBeVisible()
-  await expect(page.getByText('No server was created')).toBeVisible()
-  await page.getByRole('button', { name: 'Done' }).click()
+  await expect(page.getByText('New local server · stopped after install')).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-04b-install-review-desktop.png') })
+  await page.getByRole('button', { name: 'Install server' }).click()
+  await expect(page.getByText('Installation in progress')).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-04b-install-progress-desktop.png') })
+  await expect(page.getByText('Installation complete')).toBeVisible({ timeout: 5000 })
+  expect(submitted).toMatchObject({ software: 'vanilla', version: '1.21.4', eulaAccepted: false, directoryName: 'community-server' })
+  expect(page.url()).not.toContain('/servers/')
+  await page.getByRole('button', { name: 'Open server' }).click()
   await expect(page.getByRole('dialog', { name: 'Create server' })).toHaveCount(0)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Create server', exact: true }).click()
+  const mobileWizard = page.getByRole('dialog', { name: 'Create server' })
+  await expect(mobileWizard).toBeVisible()
+  await expectNoHorizontalOverflow(page, 'mobile install wizard details')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-04b-install-mobile.png'), animations: 'disabled' })
+  await mobileWizard.getByRole('button', { name: 'Continue' }).click()
+  await expect(mobileWizard.getByLabel('Minecraft release')).toBeVisible()
+  await expectNoHorizontalOverflow(page, 'mobile install wizard software')
+})
+
+test('failed installs preserve partial files and retry into a new directory', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await signIn(page)
+  const failedId = '4fc0b937-3e7f-4938-b432-5cc98a529e7c'
+  const completedId = '5fc0b937-3e7f-4938-b432-5cc98a529e7c'
+  const serverId = '6fc0b937-3e7f-4938-b432-5cc98a529e7c'
+  const sent: Record<string, unknown>[] = []
+  await page.route('**/api/v1/admin/java', (route) => route.fulfill({ json: { runtimes: [{ path: '/tmp/mmsmanager-e2e-java', version: '21.0.4', major: 21, vendor: 'OpenJDK', source: 'discovered' }] } }))
+  await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [], managedRoot: '/tmp/mmsmanager-stage3-e2e-servers', importRoots: ['/tmp/mmsmanager-stage3-e2e-servers'] } }))
+  await page.route('**/api/v1/admin/server-installs/catalog?*', (route) => {
+    const url = new URL(route.request().url())
+    return route.fulfill({ json: { software: 'vanilla', versions: ['1.21.4'], loaders: [], builds: [], installerVersion: null, requiredJavaMajor: url.searchParams.has('version') ? 21 : null } })
+  })
+  await page.route('**/api/v1/admin/server-installs', async (route) => {
+    if (route.request().method() !== 'POST') return route.fulfill({ json: { operations: [] } })
+    const input = route.request().postDataJSON() as Record<string, unknown>
+    sent.push(input)
+    const id = sent.length === 1 ? failedId : completedId
+    return route.fulfill({ status: 202, json: { operation: { id, name: 'Retry Fixture', directoryName: input['directoryName'], software: 'vanilla', version: '1.21.4', status: 'pending', progress: 1, phase: 'queued', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } })
+  })
+  await page.route(`**/api/v1/admin/server-installs/${failedId}`, (route) => route.fulfill({ json: { operation: { id: failedId, name: 'Retry Fixture', directoryName: 'retry-fixture', software: 'vanilla', version: '1.21.4', status: 'failed', progress: 50, phase: 'failed', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, error: { code: 'CHECKSUM_MISMATCH', message: 'The provider checksum did not match.' }, partialDirectory: '/tmp/mmsmanager-stage3-e2e-servers/retry-fixture', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } }))
+  await page.route(`**/api/v1/admin/server-installs/${completedId}`, (route) => route.fulfill({ json: { operation: { id: completedId, name: 'Retry Fixture', directoryName: String(sent[1]?.['directoryName'] ?? 'retry-fixture-2'), software: 'vanilla', version: '1.21.4', status: 'completed', progress: 100, phase: 'complete', serverId, artifactUrl: 'https://piston-data.mojang.com/server.jar', artifactSize: 9, artifactSha256: 'b'.repeat(64), error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } }))
+
+  await page.getByRole('button', { name: 'Create server', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Create server' })
+  await dialog.getByLabel('New directory name').fill('retry-fixture')
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await expect(dialog.getByLabel('Minecraft release')).toBeEnabled()
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await dialog.getByRole('button', { name: 'Install server' }).click()
+  await expect(dialog.getByText('Installation stopped')).toBeVisible({ timeout: 5000 })
+  await expect(dialog.getByText('Partial files were preserved for review under the managed root.')).toBeVisible()
+  await dialog.getByRole('button', { name: 'Review and retry' }).click()
+  const retryDirectory = await dialog.getByLabel('New directory name').inputValue()
+  expect(retryDirectory).toMatch(/^retry-fixture-retry-/)
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await expect(dialog.getByLabel('Minecraft release')).toBeEnabled()
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await dialog.getByRole('button', { name: 'Install server' }).click()
+  await expect(dialog.getByText('Installation complete')).toBeVisible({ timeout: 5000 })
+  expect(sent).toHaveLength(2)
+  expect(sent[0]?.['directoryName']).toBe('retry-fixture')
+  expect(sent[1]?.['directoryName']).toBe(retryDirectory)
 })
 
 test('admin imports a disposable local folder through a read-only preview', async ({ page }) => {

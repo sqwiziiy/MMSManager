@@ -39,6 +39,14 @@ The local server registry is stored in the same SQLite database. The app-managed
 
 An administrator can explicitly scan known local Java locations or check a custom executable from Machine settings. Each check calls only `java -version` with no shell, a short timeout and an output limit. A normal page read does not run Java. No Minecraft process is launched by the inventory scan.
 
+## Creating a local server
+
+Administrators can open **Create server** from the dashboard or Servers page. The creation flow installs stable Vanilla, Fabric or Paper builds into a new, dedicated directory below the configured managed root. Version lists and artifacts come from Mojang's official distribution metadata, Fabric Meta, and PaperMC's v3 Downloads Service. Paper requests include a specific MMSManager User-Agent; configure `MMSMANAGER_CONTACT_URL` to an HTTPS contact page or `mailto:` address if you want to use your own contact. Forge and NeoForge remain unavailable.
+
+The wizard checks Minecraft's declared Java major against a runtime that an administrator has explicitly scanned or probed. It checks the loopback game port, caps downloads at 256 MiB, validates the archive header/size and verifies Mojang SHA-1 or Paper SHA-256 when the provider publishes one. Fabric Meta's generated jar endpoint does not publish an artifact checksum; MMSManager records a local SHA-256 for provenance but cannot compare it with an upstream digest. Failed downloads are preserved in their new panel-created directory and are never registered as healthy. Existing directories are never overwritten or cleaned.
+
+The EULA checkbox starts unchecked. The installer writes `eula=true` only after explicit administrator acceptance; otherwise it writes `eula=false`. New `server.properties` bind to `127.0.0.1`. A readable `start.sh` is generated but is not executed; lifecycle controls invoke the chosen Java executable directly with arguments.
+
 ## Checks
 
 ```sh
@@ -51,7 +59,6 @@ pnpm build
 ## Current boundaries
 
 - Machine metrics and history are real, read-only measurements from this local Linux host when available. The app does not inspect other machines.
-- The local server registry and Java version checks are real, local-only features. Existing folder imports do not modify files and remain unmanaged. Server runtime state, players, mods, logs, backups, worlds and performance are still `DEMO` or `Preview`.
-- Server creation is still a preview wizard. Installation and lifecycle controls are not connected yet; EULA files are never written by import or preview actions.
+- The local server registry, Java version checks and new server installations are real, local-only features. Existing folder imports do not modify files and remain unmanaged. Server runtime state, players, mods, backups, worlds and performance are still `DEMO` or `Preview`.
 - User creation, roles, profile, password, avatar and workspace/personal settings are backed by the local SQLite workspace. They do not control Minecraft permissions or server access.
 - No Minecraft process control, RCON, SSH, remote host, LAN API or arbitrary shell endpoint is included. The API and Vite remain loopback-only.

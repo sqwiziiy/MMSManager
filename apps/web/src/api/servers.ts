@@ -1,12 +1,16 @@
 import {
   javaRuntimeListSchema,
   javaRuntimeSchema,
+  installCatalogSchema,
+  installOperationListSchema,
+  installOperationResultSchema,
   localServerListSchema,
   serverImportPreviewSchema,
   serverImportResultSchema,
   serverInventorySchema,
 } from '@mmsmanager/shared'
 import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory } from '@mmsmanager/shared'
+import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 
 async function request<T>(url: string, schema: { parse: (value: unknown) => T }, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
@@ -56,4 +60,25 @@ export async function scanJavaRuntimes(): Promise<JavaRuntime[]> {
 
 export function probeJavaRuntime(path: string): Promise<JavaRuntime> {
   return request('/api/v1/admin/java/probe', javaRuntimeSchema, { method: 'POST', body: JSON.stringify({ path }) })
+}
+
+export function getInstallCatalog(software: InstallSoftware, version?: string, signal?: AbortSignal): Promise<InstallCatalog> {
+  const query = new URLSearchParams({ software })
+  if (version) query.set('version', version)
+  return request(`/api/v1/admin/server-installs/catalog?${query}`, installCatalogSchema, { signal })
+}
+
+export async function listInstallOperations(signal?: AbortSignal): Promise<InstallOperation[]> {
+  const response = await request('/api/v1/admin/server-installs', installOperationListSchema, { signal })
+  return response.operations
+}
+
+export async function createServerInstall(input: ServerInstallRequest): Promise<InstallOperation> {
+  const response = await request('/api/v1/admin/server-installs', installOperationResultSchema, { method: 'POST', body: JSON.stringify(input) })
+  return response.operation
+}
+
+export async function getServerInstall(operationId: string, signal?: AbortSignal): Promise<InstallOperation> {
+  const response = await request(`/api/v1/admin/server-installs/${encodeURIComponent(operationId)}`, installOperationResultSchema, { signal })
+  return response.operation
 }

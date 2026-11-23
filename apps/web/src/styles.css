@@ -1413,6 +1413,65 @@ kbd { display: inline-flex; align-items: center; gap: 3px; height: 21px; padding
   .account-mobile-actions { flex-direction: column; }
 }
 
+/* Stage 4B real install flow */
+.install-wizard { width: min(740px, calc(100vw - 32px)); }
+.install-wizard-header { align-items: center; }
+.install-live-label { display: inline-flex; align-items: center; gap: 6px; min-height: 19px; padding: 0 7px; color: #b9c7aa; border: 1px solid #414c3b; border-radius: 20px; background: #20261e; font: 8px 'DM Mono', monospace; letter-spacing: .06em; }
+.install-live-label i { width: 6px; height: 6px; border-radius: 50%; background: #9fb88b; box-shadow: 0 0 8px #9fb88b55; }
+.install-wizard-body { min-height: 340px; }
+.install-info-row { display: flex; align-items: flex-start; gap: 8px; padding: 10px 11px; color: #a5ada1; border: 1px solid #303730; border-radius: 8px; background: #171a17; font-size: 10px; line-height: 1.5; }
+.install-info-row svg { flex: 0 0 auto; margin-top: 1px; color: #9baa8e; }
+.install-info-row code { color: #d3dacb; font: 9px 'DM Mono', monospace; }
+.install-select-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.install-select-grid .field { min-width: 0; }
+.install-select-grid select, .install-select-grid input, .install-java-row select { width: 100%; min-height: 38px; padding: 0 10px; color: var(--text); border: 1px solid var(--line); border-radius: 7px; background: #141714; font: inherit; }
+.install-java-row { display: flex; align-items: end; gap: 10px; }
+.install-java-row .field { flex: 1; min-width: 0; }
+.install-java-row select { min-height: 40px; }
+.install-java-row .button { flex: 0 0 auto; min-height: 40px; }
+.install-inline-status { display: flex; align-items: center; gap: 8px; color: #adb5aa; font-size: 10px; }
+.install-error-inline { display: flex; align-items: flex-start; gap: 8px; padding: 10px 11px; color: #dfb0a5; border: 1px solid #563b34; border-radius: 8px; background: #291d1a; font-size: 10px; line-height: 1.45; }
+.install-error-inline svg { flex: 0 0 auto; margin-top: 1px; }
+.software-option.unsupported { opacity: .58; cursor: not-allowed; }
+.software-unsupported { color: #b9b3a5; background: #2b2922; }
+.install-eula-check { display: flex; align-items: flex-start; gap: 9px; color: #c5cabe; font-size: 10px; line-height: 1.45; }
+.install-eula-check input { accent-color: var(--accent); margin-top: 2px; }
+.install-eula-check a { color: #c0ccaf; text-decoration: underline; text-underline-offset: 2px; }
+.install-progress-view { overflow-y: auto; padding: 33px 30px 28px; text-align: center; }
+.install-result-icon { width: 48px; height: 48px; display: grid; place-items: center; margin: 0 auto 16px; color: #bdc7b6; border: 1px solid #41493e; border-radius: 50%; background: #222720; }
+.install-result-icon.success { color: var(--accent); border-color: #4b5a41; background: #252d21; }
+.install-result-icon.failure { color: #e1a89a; border-color: #664137; background: #2a1e1a; }
+.install-progress-view .eyebrow { margin-bottom: 5px; color: #aab99e; }
+.install-progress-view h3 { margin: 0; color: var(--text); font-size: 17px; font-weight: 500; text-transform: capitalize; }
+.install-progress-view > p:not(.eyebrow) { max-width: 480px; margin: 8px auto 18px; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
+.install-progress-track { height: 6px; overflow: hidden; border-radius: 5px; background: #2b302b; }
+.install-progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .3s ease; }
+.install-progress-meta { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; color: #9da69a; font: 9px 'DM Mono', monospace; }
+.install-progress-meta span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.install-error-card { display: flex; flex-direction: column; gap: 5px; margin-top: 16px; padding: 12px; color: #dcb2a8; border: 1px solid #563b34; border-radius: 8px; background: #291d1a; text-align: left; font-size: 10px; }
+.install-error-card strong { font: 9px 'DM Mono', monospace; }
+.install-summary-list { width: min(420px, 100%); margin: 18px auto 0; padding: 5px 13px; border: 1px solid var(--line); border-radius: 9px; background: #151815; text-align: left; }
+.install-summary-list > div { min-height: 35px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line-quiet); }
+.install-summary-list > div:last-child { border: 0; }
+.install-summary-list span { color: var(--text-muted); font-size: 9px; }
+.install-summary-list strong { color: var(--text-secondary); font-size: 9px; font-weight: 500; text-align: right; }
+.install-progress-actions { display: flex; justify-content: center; gap: 9px; margin-top: 20px; }
+.install-locked { display: flex; flex-direction: column; align-items: center; gap: 9px; padding: 48px 25px; color: #adb9a4; text-align: center; }
+.install-locked strong { color: var(--text); font-size: 14px; font-weight: 500; }
+.install-locked p { max-width: 340px; margin: 0; color: var(--text-muted); font-size: 10px; }
+.spin { animation: install-spin .9s linear infinite; }
+@keyframes install-spin { to { transform: rotate(360deg); } }
+@media (max-width: 620px) {
+  .install-wizard { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+  .install-wizard-body { min-height: 280px; padding: 16px 14px; }
+  .install-select-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .install-java-row { align-items: stretch; flex-direction: column; }
+  .install-java-row .button { align-self: flex-start; }
+  .install-progress-view { padding: 25px 17px 20px; }
+  .install-progress-actions { flex-wrap: wrap; }
+}
 @media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+  .install-progress-track span { transition: none; }
   .auth-submit.is-busy svg, .auth-spinner { animation-duration: 2.5s; }
 }

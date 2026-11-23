@@ -22,6 +22,13 @@
       "when": 1795439500000,
       "tag": "0002_stage_04_local_inventory",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1795440000000,
+      "tag": "0003_stage_04b_install_operations",
+      "breakpoints": true
     }
   ]
 }

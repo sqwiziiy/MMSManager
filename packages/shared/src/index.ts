@@ -303,6 +303,59 @@ export const serverImportPreviewSchema = z.object({
   worldFolders: z.array(z.string()),
   alreadyRegistered: z.boolean(),
 })
+
+export const installSoftwareSchema = z.enum(['vanilla', 'fabric', 'paper'])
+export const installCatalogQuerySchema = z.object({
+  software: installSoftwareSchema,
+  version: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){1,3}$/).optional(),
+}).strict()
+export const installCatalogSchema = z.object({
+  software: installSoftwareSchema,
+  versions: z.array(z.string()).max(200),
+  loaders: z.array(z.string()).max(100),
+  builds: z.array(z.number().int().positive()).max(200),
+  installerVersion: z.string().nullable(),
+  requiredJavaMajor: z.number().int().positive().nullable(),
+}).strict()
+export const serverInstallRequestSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  directoryName: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._ -]*$/).refine((value) => value !== '.' && value !== '..'),
+  software: installSoftwareSchema,
+  version: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){1,3}$/),
+  loaderVersion: z.string().regex(/^\d+(?:\.\d+){1,3}$/).optional(),
+  installerVersion: z.string().regex(/^\d+(?:\.\d+){1,3}$/).optional(),
+  paperBuild: z.number().int().positive().optional(),
+  javaPath: z.string().trim().min(1).max(1024),
+  minMemoryMb: z.number().int().min(512).max(131072),
+  maxMemoryMb: z.number().int().min(512).max(131072),
+  port: z.number().int().min(1).max(65535),
+  eulaAccepted: z.boolean(),
+}).strict().refine((value) => value.maxMemoryMb >= value.minMemoryMb, {
+  path: ['maxMemoryMb'], message: 'Maximum memory must be at least the minimum memory.',
+}).refine((value) => value.software !== 'fabric' || Boolean(value.loaderVersion && value.installerVersion), {
+  path: ['loaderVersion'], message: 'Choose Fabric loader and installer versions.',
+})
+export const installOperationSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  directoryName: z.string(),
+  software: installSoftwareSchema,
+  version: z.string(),
+  status: z.enum(['pending', 'downloading', 'validating', 'completed', 'failed']),
+  progress: z.number().int().min(0).max(100),
+  phase: z.string(),
+  serverId: z.string().uuid().nullable(),
+  artifactUrl: z.string().url().nullable(),
+  artifactSize: z.number().int().positive().nullable(),
+  artifactSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  error: z.object({ code: z.string(), message: z.string() }).nullable(),
+  partialDirectory: z.string().nullable(),
+  createdAt: z.string().datetime({ offset: true }),
+  updatedAt: z.string().datetime({ offset: true }),
+}).strict()
+export const installOperationResultSchema = z.object({ operation: installOperationSchema }).strict()
+export const installOperationListSchema = z.object({ operations: z.array(installOperationSchema) }).strict()
+export const installOperationIdSchema = z.object({ operationId: z.string().uuid() }).strict()
 export const javaRuntimeSchema = z.object({
   path: z.string(),
   version: z.string(),
@@ -352,3 +405,7 @@ export type ServerInventory = z.infer<typeof serverInventorySchema>
 export type LocalServerSummary = z.infer<typeof localServerSummarySchema>
 export type ServerImportPreview = z.infer<typeof serverImportPreviewSchema>
 export type JavaRuntime = z.infer<typeof javaRuntimeSchema>
+export type InstallSoftware = z.infer<typeof installSoftwareSchema>
+export type InstallCatalog = z.infer<typeof installCatalogSchema>
+export type ServerInstallRequest = z.infer<typeof serverInstallRequestSchema>
+export type InstallOperation = z.infer<typeof installOperationSchema>

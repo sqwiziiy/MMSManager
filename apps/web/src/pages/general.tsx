@@ -60,7 +60,7 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
   }), [filter, query])
   const localFiltered = useMemo(() => localServers.filter((server) => `${server.name} ${server.software} ${server.version ?? ''} ${server.port ?? ''}`.toLowerCase().includes(query.toLowerCase())), [localServers, query])
   return <div className="page-stack">
-    <PageHeading title="Servers" description="Local inventory and clearly separated sample screens." actions={<><Button icon={Plus} onClick={onCreate}>Setup preview</Button>{isAdmin && <Button kind="primary" icon={FolderSearch} onClick={() => setImportOpen(true)}>Import existing</Button>}</>} />
+    <PageHeading title="Servers" description="Local inventory and clearly separated sample screens." actions={<><Button icon={Plus} onClick={onCreate}>Create server</Button>{isAdmin && <Button kind="primary" icon={FolderSearch} onClick={() => setImportOpen(true)}>Import existing</Button>}</>} />
     {localError && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Local server inventory unavailable</strong><small>{localError}</small></span><Button icon={RefreshCw} onClick={() => void loadLocal()}>Retry</Button></div>}
     <section className="local-server-section" aria-labelledby="local-servers-title">
       <div className="section-heading"><div><div className="card-kicker"><Server size={14} /> Local registry</div><h2 id="local-servers-title">This computer</h2><p>Real registered folders. Runtime status is unavailable until the server is explicitly managed.</p></div><Badge tone={localServers.length ? 'good' : 'neutral'}>{loadingLocal ? 'Loading' : `${localServers.length} registered`}</Badge></div>

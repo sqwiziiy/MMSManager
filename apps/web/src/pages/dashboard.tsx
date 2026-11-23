@@ -44,7 +44,7 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
           <span className="fleet-row-main"><strong>{server.name}</strong><small>{server.software} · {server.version}</small></span>
           <span className="fleet-row-right"><span className="fleet-status"><StatusDot status={server.status} />{server.status}</span><small>{server.players}/{server.capacity} players</small></span>
         </Link>)}</div>
-        <button className="fleet-create" onClick={onCreate}><span className="fleet-create-plus"><Plus size={12} aria-hidden="true" /></span><span>Create a server preview</span><ArrowUpRight size={14} /></button>
+        <button className="fleet-create" onClick={onCreate}><span className="fleet-create-plus"><Plus size={12} aria-hidden="true" /></span><span>Create a local server</span><ArrowUpRight size={14} /></button>
       </Card>
 
       <Card className="activity-card">

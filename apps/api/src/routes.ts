@@ -17,6 +17,11 @@ import {
   machineCurrentSchema,
   machineDaySchema,
   machineHistorySchema,
+  installCatalogQuerySchema,
+  installCatalogSchema,
+  installOperationIdSchema,
+  installOperationListSchema,
+  installOperationResultSchema,
   localServerListSchema,
   javaProbeRequestSchema,
   javaRuntimeListSchema,
@@ -34,6 +39,7 @@ import {
   serverImportRegistrationSchema,
   serverImportRequestSchema,
   serverInventorySchema,
+  serverInstallRequestSchema,
 } from '@mmsmanager/shared'
 import { API_HOST, WEB_ORIGIN } from './config.js'
 import type { AppDatabase } from './db/client.js'
@@ -45,6 +51,7 @@ import type { SessionPrincipal } from './auth/service.js'
 import { AvatarStore, InvalidAvatarError, MAX_AVATAR_BYTES } from './auth/avatar-store.js'
 import { JavaRuntimeError, JavaRuntimeRegistry } from './servers/java.js'
 import { ServerInventoryError, ServerRegistry } from './servers/registry.js'
+import { ServerInstallError, ServerInstallService } from './servers/install.js'
 
 class InvalidRequestError extends Error {}
 
@@ -159,6 +166,8 @@ export async function createApiApp(options: {
 }): Promise<FastifyInstance> {
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, trustProxy: false })
   const history = new MachineHistoryService(options.db, options.timeZone, options.now)
+  const installs = new ServerInstallService(options.db, options.servers, options.javaRuntimes)
+  await installs.prepare()
   const webOrigin = options.webOrigin ?? WEB_ORIGIN
   const apiPort = options.apiPort ?? 4174
   const secureCookies = options.secureCookies ?? false
@@ -240,6 +249,10 @@ export async function createApiApp(options: {
   }
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ServerInstallError) {
+      const status = error.code === 'INSTALL_LIMIT' ? 409 : error.code.endsWith('_UNAVAILABLE') || error.code === 'PROVIDER_UNAVAILABLE' ? 502 : error.code === 'PAPER_CONTACT_REQUIRED' ? 503 : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
     if (error instanceof ServerInventoryError) {
       const duplicate = error.code === 'duplicate'
       return reply.code(duplicate ? 409 : 400).send({
@@ -412,6 +425,22 @@ export async function createApiApp(options: {
     const input = parse(serverImportRegistrationSchema, request.body)
     const server = await options.servers.registerImport(input, request.principal!.userId)
     return reply.code(201).send({ server })
+  })
+  app.get('/api/v1/admin/server-installs/catalog', { preHandler: requireAdmin }, async (request) => {
+    const query = parse(installCatalogQuerySchema, request.query)
+    return installCatalogSchema.parse(await installs.catalog(query.software, query.version))
+  })
+  app.get('/api/v1/admin/server-installs', { preHandler: requireAdmin }, async () => installOperationListSchema.parse({ operations: installs.list() }))
+  app.get('/api/v1/admin/server-installs/:operationId', { preHandler: requireAdmin }, async (request, reply) => {
+    const params = parse(installOperationIdSchema, request.params)
+    const operation = installs.get(params.operationId)
+    if (!operation) return reply.code(404).send({ error: { code: 'INSTALL_NOT_FOUND', message: 'The installation operation was not found.' } })
+    return installOperationResultSchema.parse({ operation })
+  })
+  app.post('/api/v1/admin/server-installs', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const input = parse(serverInstallRequestSchema, request.body)
+    const operation = await installs.create(input, request.principal!.userId)
+    return reply.code(202).send(installOperationResultSchema.parse({ operation }))
   })
   app.get('/api/v1/admin/java', { preHandler: requireAdmin }, async () => javaRuntimeListSchema.parse({
     runtimes: options.javaRuntimes.list(),

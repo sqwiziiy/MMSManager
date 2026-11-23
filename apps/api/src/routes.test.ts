@@ -269,5 +269,22 @@ describe('authenticated local API', () => {
       payload: {},
     })
     expect(memberScan.statusCode).toBe(403)
+    const installInput = {
+      name: 'Should not install', directoryName: 'should-not-install', software: 'vanilla', version: '1.21.4',
+      javaPath: '/tmp/not-probed-java', minMemoryMb: 1024, maxMemoryMb: 2048, port: 25566, eulaAccepted: false,
+    }
+    const deniedInstall = await app.inject({
+      method: 'POST', url: '/api/v1/admin/server-installs',
+      headers: { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' },
+      payload: installInput,
+    })
+    expect(deniedInstall.statusCode).toBe(403)
+    const deniedInstallHistory = await app.inject({ method: 'GET', url: '/api/v1/admin/server-installs', headers: { ...requestHeaders, cookie: memberCookieHeader } })
+    expect(deniedInstallHistory.statusCode).toBe(403)
+    const installMissingCsrf = await app.inject({
+      method: 'POST', url: '/api/v1/admin/server-installs',
+      headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: installInput,
+    })
+    expect(installMissingCsrf.statusCode).toBe(403)
   })
 })
