@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Activity, Archive, Blocks, ChevronDown, ChevronRight, Command, Computer, FilePlus2,
-  LayoutDashboard, Menu, PanelLeftClose, Search, Server, Settings2, ShieldCheck, Users, X,
+  Activity, Archive, Blocks, CalendarDays, ChevronDown, ChevronRight, Computer, FilePlus2,
+  Info, LayoutDashboard, Menu, PanelLeftClose, Search, Server, Settings2, ShieldCheck, Users, X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { servers } from '../data'
 import { Button, IconButton } from './ui'
+import { useMachineMonitor } from '../state/use-machine-monitor'
 
 type NavItem = { label: string; to: string; icon: LucideIcon; exact?: boolean }
 const operations: NavItem[] = [
@@ -28,6 +29,8 @@ export function AppShell({ children, onCreate }: { children: React.ReactNode; on
   const [profileOpen, setProfileOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const location = useLocation()
+  const monitor = useMachineMonitor()
+  const machineLive = monitor.apiStatus === 'online' && monitor.current?.status === 'live'
 
   useEffect(() => {
     setMobileOpen(false)
@@ -51,7 +54,8 @@ export function AppShell({ children, onCreate }: { children: React.ReactNode; on
 
   const pageTitle = useMemo(() => {
     if (location.pathname.startsWith('/servers/')) return servers.find((server) => location.pathname.includes(server.id))?.name ?? 'Server'
-    return [...operations, ...library, ...administration].find((item) => item.to === location.pathname)?.label ?? 'MinePanel'
+    if (location.pathname === '/machine/history') return 'Machine history'
+    return [...operations, ...library, ...administration].find((item) => item.to === location.pathname)?.label ?? 'MMSManager'
   }, [location.pathname])
 
   return (
@@ -59,12 +63,12 @@ export function AppShell({ children, onCreate }: { children: React.ReactNode; on
       {mobileOpen && <button aria-label="Close navigation" className="mobile-scrim" onClick={() => setMobileOpen(false)} />}
       <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
         <div className="brand-row">
-          <NavLink to="/" className="brand-mark" aria-label="MinePanel dashboard"><span className="brand-glyph"><i /><i /><i /><i /></span><span className="brand-name">MinePanel</span></NavLink>
+          <NavLink to="/" className="brand-mark" aria-label="MMSManager dashboard"><span className="brand-glyph"><i /><i /><i /><i /></span><span className="brand-name">MMSManager</span></NavLink>
           <IconButton icon={PanelLeftClose} label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} className="collapse-sidebar" onClick={() => setCollapsed((value) => !value)} />
           <IconButton icon={X} label="Close navigation" className="close-mobile" onClick={() => setMobileOpen(false)} />
         </div>
 
-        <button className="sidebar-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search</span><kbd><Command size={11} /> K</kbd></button>
+        <button className="sidebar-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search</span><kbd>Ctrl K</kbd></button>
 
         <div className="sidebar-scroll">
           <NavGroup title="Workspace" items={operations} />
@@ -75,7 +79,7 @@ export function AppShell({ children, onCreate }: { children: React.ReactNode; on
         </div>
 
         <div className="sidebar-bottom">
-          <div className="local-node"><span className="node-icon"><Computer size={16} /></span><div><strong>Local node</strong><span>Demo environment</span></div><span className="node-dot" /></div>
+          <div className="local-node"><span className="node-icon"><Computer size={16} /></span><div><strong>Local machine</strong><span>{machineLive ? 'Live telemetry' : monitor.apiStatus === 'offline' ? 'API offline' : 'Waiting for sample'}</span></div><span className={`node-dot ${machineLive ? 'live' : ''}`} /></div>
           <button className="profile-trigger" onClick={() => setProfileOpen((value) => !value)} aria-expanded={profileOpen}>
             <span className="avatar avatar-green">AM</span><span className="profile-copy"><strong>Alex Mercer</strong><small>Administrator preview</small></span><ChevronDown size={15} className="profile-chevron" />
           </button>
@@ -83,7 +87,7 @@ export function AppShell({ children, onCreate }: { children: React.ReactNode; on
             <NavLink to="/profile"><span className="avatar avatar-green avatar-small">AM</span><span><strong>My profile</strong><small>Preview account</small></span></NavLink>
             <NavLink to="/users"><Users size={15} /><span><strong>User directory</strong><small>Sample users</small></span></NavLink>
             <NavLink to="/settings"><Settings2 size={15} /><span><strong>Settings</strong><small>Preferences preview</small></span></NavLink>
-            <div className="profile-menu-note"><ShieldCheck size={14} /> No real account is signed in</div>
+          <div className="profile-menu-note"><ShieldCheck size={14} /> No real account is signed in</div>
           </div>}
         </div>
       </aside>
@@ -91,9 +95,9 @@ export function AppShell({ children, onCreate }: { children: React.ReactNode; on
       <main className="main-panel">
         <header className="topbar">
           <div className="topbar-left"><IconButton icon={Menu} label="Open navigation" className="menu-mobile" onClick={() => setMobileOpen(true)} /><span className="topbar-page">{pageTitle}</span><span className="breadcrumb-divider">/</span><span className="breadcrumb-current">Workspace</span></div>
-          <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd>⌘ K</kbd></button><span className="topbar-separator" /><span className="top-demo"><span />Mock environment</span><Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button></div>
+          <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd>Ctrl K</kbd></button><span className="topbar-separator" /><span className={`top-demo ${machineLive ? 'machine-live' : ''}`}><span />{machineLive ? 'Local machine · Live' : 'Local machine · Offline'}</span><Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button></div>
         </header>
-        <div className="global-demo-bar"><span className="demo-bar-mark">i</span><span><strong>Preview workspace</strong><span className="demo-bar-divider">·</span> Server and machine values are fictional sample data</span><span className="demo-bar-right">No system access</span></div>
+        <div className="global-demo-bar"><span className="demo-bar-mark"><Info size={10} aria-hidden="true" /></span><span><strong>MMSManager</strong><span className="demo-bar-divider">·</span> Server records are DEMO; machine metrics are LIVE when connected</span><span className="demo-bar-right">Loopback only</span></div>
         <div className="page-content" key={location.pathname}>{children}</div>
       </main>
       {searchOpen && <QuickSearch onClose={() => setSearchOpen(false)} />}
@@ -116,6 +120,7 @@ function QuickSearch({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate()
   const entries = [
     ...operations.map(({ label, to, icon }) => ({ label, to, icon, group: 'Workspace' })),
+    { label: 'Machine history', to: '/machine/history', icon: CalendarDays, group: 'Machine' },
     ...library.map(({ label, to, icon }) => ({ label, to, icon, group: 'Library' })),
     ...administration.map(({ label, to, icon }) => ({ label, to, icon, group: 'Administration' })),
     ...servers.map((server) => ({ label: server.name, to: `/servers/${server.id}`, icon: Server, group: 'Servers' })),

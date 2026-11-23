@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1795432805424,
+      "tag": "0000_stage_02_machine_history",
+      "breakpoints": true
+    }
+  ]
+}

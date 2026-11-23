@@ -5,9 +5,11 @@ import { CreateServerWizard } from '../components/create-wizard'
 import { DashboardPage } from '../pages/dashboard'
 import { ActivityPage, BackupsPage, MachinePage, NotFoundPage, ProfilePage, ServersPage, SettingsPage, TemplatesPage, UsersPage } from '../pages/general'
 import { ServerDetailPage } from '../pages/server-detail'
+import { MachineHistoryPage } from '../pages/machine-history'
+import { MachineMonitorProvider } from '../state/machine-monitor'
 
 export function App() {
-  return <BrowserRouter><Workspace /></BrowserRouter>
+  return <BrowserRouter><MachineMonitorProvider><Workspace /></MachineMonitorProvider></BrowserRouter>
 }
 
 function Workspace() {
@@ -19,6 +21,7 @@ function Workspace() {
         <Route path="/servers" element={<ServersPage onCreate={() => setCreateOpen(true)} />} />
         <Route path="/servers/:serverId/*" element={<ServerDetailPage />} />
         <Route path="/machine" element={<MachinePage />} />
+        <Route path="/machine/history" element={<MachineHistoryPage />} />
         <Route path="/activity" element={<ActivityPage />} />
         <Route path="/backups" element={<BackupsPage />} />
         <Route path="/templates" element={<TemplatesPage />} />

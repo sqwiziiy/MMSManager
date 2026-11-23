@@ -1,0 +1,35 @@
+{
+  "name": "@minepanel/api",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate --config drizzle.config.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "11.4.3",
+    "@mmsmanager/shared": "workspace:*",
+    "better-sqlite3": "13.2.0",
+    "drizzle-orm": "0.45.4",
+    "fastify": "5.12.8",
+    "systeminformation": "5.33.21"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.17.0",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "26.6.6",
+    "drizzle-kit": "0.31.11",
+    "eslint": "9.17.0",
+    "globals": "15.14.0",
+    "tsx": "4.23.15",
+    "typescript": "5.7.2",
+    "typescript-eslint": "8.19.0",
+    "vitest": "2.1.9"
+  }
+}

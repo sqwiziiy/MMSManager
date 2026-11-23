@@ -1,5 +1,3 @@
-# Local agent instructions stay local
-
 # Package manager and build output
 node_modules/
 dist/
@@ -8,6 +6,15 @@ coverage/
 *.log
 *.tsbuildinfo
 .DS_Store
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.dump
+*.backup
+.env
+.env.*
+!.env.example
 apps/web/test-results/
 apps/web/playwright-report/
 apps/web/blob-report/
