@@ -15,6 +15,13 @@
       "when": 1795436914385,
       "tag": "0001_stage_03_auth_workspace",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1795439500000,
+      "tag": "0002_stage_04_local_inventory",
+      "breakpoints": true
     }
   ]
 }

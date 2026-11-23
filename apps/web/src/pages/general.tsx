@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity, Archive, ArrowDownToLine, ArrowRight, CalendarClock, CalendarDays, ChevronRight, CircleHelp,
-  CloudDownload, Cpu, Database, HardDrive, Layers3, MemoryStick, Monitor, Plus,
-  RefreshCw, Search, ShieldCheck, Wifi,
+  CloudDownload, Cpu, Database, FolderSearch, HardDrive, Layers3, MemoryStick, Monitor, Plus,
+  RefreshCw, Search, Server, ShieldCheck, Wifi,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { activities, servers } from '../data'
@@ -12,24 +12,71 @@ import { ServerTile } from './dashboard'
 import { useMachineMonitor } from '../state/use-machine-monitor'
 import { LiveResourceChart } from '../components/live-chart'
 import { formatBytes, formatPercent, formatRate, formatTimestamp } from '../lib/format'
+import { getLocalServers, getServerInventory } from '../api/servers'
+import type { LocalServerSummary, ServerInventory } from '@mmsmanager/shared'
+import { useAuth } from '../state/use-auth'
+import { ImportServerDialog } from '../components/import-server-dialog'
+import { JavaInventoryCard } from '../components/java-inventory'
 
 type ServerFilter = 'All servers' | 'Online' | 'Offline'
 
 export function ServersPage({ onCreate }: { onCreate: () => void }) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<ServerFilter>('All servers')
+  const [localServers, setLocalServers] = useState<LocalServerSummary[]>([])
+  const [inventory, setInventory] = useState<ServerInventory | null>(null)
+  const [loadingLocal, setLoadingLocal] = useState(true)
+  const [localError, setLocalError] = useState<string | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
+  const { snapshot } = useAuth()
+  const isAdmin = snapshot?.user.role === 'administrator'
+  const loadLocal = useCallback(async (signal?: AbortSignal) => {
+    setLoadingLocal(true)
+    try {
+      const [items, details] = await Promise.all([
+        getLocalServers(signal),
+        isAdmin ? getServerInventory(signal) : Promise.resolve(null),
+      ])
+      setLocalServers(items)
+      setInventory(details)
+      setLocalError(null)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      setLocalError(error instanceof Error ? error.message : 'The local server list could not be loaded.')
+    } finally {
+      setLoadingLocal(false)
+    }
+  }, [isAdmin])
+  useEffect(() => {
+    const controller = new AbortController()
+    void loadLocal(controller.signal)
+    return () => controller.abort()
+  }, [loadLocal])
+
   const filtered = useMemo(() => servers.filter((server) => {
     const matchesStatus = filter === 'All servers' || server.status === filter
     const matchesQuery = `${server.name} ${server.software} ${server.version}`.toLowerCase().includes(query.toLowerCase())
     return matchesStatus && matchesQuery
   }), [filter, query])
+  const localFiltered = useMemo(() => localServers.filter((server) => `${server.name} ${server.software} ${server.version ?? ''} ${server.port ?? ''}`.toLowerCase().includes(query.toLowerCase())), [localServers, query])
   return <div className="page-stack">
-    <PageHeading title="Servers" description="Sample Minecraft instances in this preview workspace." actions={<Button kind="primary" icon={Plus} onClick={onCreate}>Create server</Button>} />
+    <PageHeading title="Servers" description="Local inventory and clearly separated sample screens." actions={<><Button icon={Plus} onClick={onCreate}>Setup preview</Button>{isAdmin && <Button kind="primary" icon={FolderSearch} onClick={() => setImportOpen(true)}>Import existing</Button>}</>} />
+    {localError && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Local server inventory unavailable</strong><small>{localError}</small></span><Button icon={RefreshCw} onClick={() => void loadLocal()}>Retry</Button></div>}
+    <section className="local-server-section" aria-labelledby="local-servers-title">
+      <div className="section-heading"><div><div className="card-kicker"><Server size={14} /> Local registry</div><h2 id="local-servers-title">This computer</h2><p>Real registered folders. Runtime status is unavailable until the server is explicitly managed.</p></div><Badge tone={localServers.length ? 'good' : 'neutral'}>{loadingLocal ? 'Loading' : `${localServers.length} registered`}</Badge></div>
+      {isAdmin && inventory && <div className="server-root-note"><span>Managed root <code>{inventory.managedRoot}</code></span><span>Import roots {inventory.importRoots.length ? inventory.importRoots.map((root) => <code key={root}>{root}</code>) : 'none configured'}</span></div>}
+      {loadingLocal && !localServers.length ? <div className="local-server-empty"><span className="loading-pulse" /><span>Reading the local registry…</span></div> : localFiltered.length ? <div className="local-server-grid">{localFiltered.map((server) => {
+        const details = inventory?.servers.find((item) => item.id === server.id)
+        return <Card className="local-server-card" key={server.id}><div className="local-server-card-header"><span className="local-server-icon"><Server size={17} /></span><div><strong>{server.name}</strong><small>{server.source === 'imported' ? 'Imported folder' : 'Created by MMSManager'}</small></div><Badge tone={server.managed ? 'good' : 'warn'}>{server.managed ? 'Managed' : 'Unmanaged'}</Badge></div><div className="local-server-facts"><div><span>Software</span><strong>{server.software === 'unknown' ? 'Unknown' : `${server.software[0]!.toUpperCase()}${server.software.slice(1)}${server.version ? ` ${server.version}` : ''}`}</strong></div><div><span>Game port</span><strong>{server.port ?? 'Not detected'}</strong></div><div><span>Memory</span><strong>{server.minMemoryMb}–{server.maxMemoryMb} MB</strong></div><div><span>EULA file</span><strong>{server.eula === 'accepted' ? 'Accepted' : server.eula === 'not-accepted' ? 'Not accepted' : 'Not found'}</strong></div></div>{server.worldFolders.length > 0 && <div className="local-server-worlds">Detected folders {server.worldFolders.join(' · ')}</div>}{isAdmin && details && <code className="local-server-path">{details.directory}</code>}<div className="local-server-card-footer"><span>Inventory only · not running by MMSManager</span><span>Lifecycle actions pending</span></div></Card>
+      })}</div> : <Card className="local-server-empty-card"><div className="empty-list"><FolderSearch size={20} /><strong>No local servers registered</strong><span>{isAdmin ? 'Import an existing folder inside an allowed import root.' : 'An administrator has not added a local server yet.'}</span></div></Card>}
+    </section>
     <div className="list-toolbar"><div className="filter-tabs" role="tablist" aria-label="Filter servers">{(['All servers', 'Online', 'Offline'] as const).map((item) => <button key={item} role="tab" aria-selected={filter === item} className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item}<span>{item === 'All servers' ? servers.length : servers.filter((server) => server.status === item).length}</span></button>)}</div>
       <label className="inline-search"><Search size={15} /><input aria-label="Search servers" placeholder="Search servers" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div>
+    <div className="demo-section-heading"><div><p className="eyebrow">VISUAL PREVIEW</p><h2>Sample server screens</h2><p>These three cards use fictional names, addresses, players and activity.</p></div><PreviewFlag>Sample data</PreviewFlag></div>
     <div className="server-grid">{filtered.map((server) => <ServerTile server={server} key={server.id} />)}</div>
-    {!filtered.length && <Card><div className="empty-list"><Search size={20} /><strong>No servers match</strong><span>Try another name or status filter</span></div></Card>}
-    <div className="list-footnote"><span className="footnote-dot" /> Showing fictional sample servers only <span>·</span> no local directories were scanned</div>
+    {!filtered.length && <Card><div className="empty-list"><Search size={20} /><strong>No sample servers match</strong><span>Try another name or status filter</span></div></Card>}
+    <div className="list-footnote"><span className="footnote-dot" /> Fictional sample dataset <span>·</span> not connected to local server folders</div>
+    {importOpen && inventory && <ImportServerDialog roots={inventory.importRoots} onClose={() => setImportOpen(false)} onImported={() => loadLocal()} />}
   </div>
 }
 
@@ -63,7 +110,7 @@ export function MachinePage() {
       <Card><SectionHeading title="Network interface" description="Rates use sampled counters from the default interface." /><div className="network-detail-grid"><div><span>Interface</span><strong>{sample?.network.interface ?? 'Unavailable'}</strong></div><div><span>Receive</span><strong>{formatRate(sample?.network.rxBytesPerSecond ?? null)}</strong></div><div><span>Transmit</span><strong>{formatRate(sample?.network.txBytesPerSecond ?? null)}</strong></div><div><span>Sampled</span><strong>{formatTimestamp(sample?.collectedAt ?? null, timeZone)}</strong></div></div></Card>
     </div>
     <div className="machine-page-grid lower"><Card><SectionHeading title="Host summary" description="Collected from this local machine only." /><div className="machine-host-details"><div><span>Hostname</span><strong>{host?.hostname ?? 'Unavailable'}</strong></div><div><span>Operating system</span><strong>{host ? `${host.distro ?? host.platform} ${host.release ?? ''}` : 'Unavailable'}</strong></div><div><span>Architecture</span><strong>{host?.architecture ?? 'Unavailable'}</strong></div><div><span>CPU cores</span><strong>{host?.coreCount ?? 'Unavailable'}</strong></div><div><span>Uptime</span><strong>{host?.uptimeSeconds === null || host?.uptimeSeconds === undefined ? 'Unavailable' : `${Math.floor(host.uptimeSeconds / 3600)} h`}</strong></div><div><span>Data source</span><strong>Local system information</strong></div></div></Card>
-      <Card><SectionHeading title="Java inventory" description="Runtime discovery is not part of this stage." /><div className="machine-coming-preview"><span className="machine-icon"><Cpu size={18} /></span><div><strong>Coming later</strong><small>This stage does not scan for Java or Minecraft servers.</small></div><ComingSoon /></div></Card></div>
+      <JavaInventoryCard /></div>
   </div>
 }
 

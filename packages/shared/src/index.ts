@@ -239,6 +239,80 @@ export const machineDaySchema = z.object({
   }),
 })
 
+export const serverSoftwareSchema = z.enum(['vanilla', 'fabric', 'paper', 'unknown'])
+export const serverEulaSchema = z.enum(['accepted', 'not-accepted', 'unknown'])
+export const registeredServerSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  directory: z.string(),
+  source: z.enum(['created', 'imported']),
+  software: serverSoftwareSchema,
+  version: z.string().nullable(),
+  jarName: z.string().nullable(),
+  javaPath: z.string().nullable(),
+  javaMajor: z.number().int().positive().nullable(),
+  minMemoryMb: z.number().int().positive(),
+  maxMemoryMb: z.number().int().positive(),
+  port: z.number().int().min(1).max(65535).nullable(),
+  eula: serverEulaSchema,
+  managed: z.boolean(),
+  worldFolders: z.array(z.string()),
+  createdAt: z.string().datetime({ offset: true }),
+})
+export const serverInventorySchema = z.object({
+  servers: z.array(registeredServerSchema),
+  managedRoot: z.string(),
+  importRoots: z.array(z.string()),
+})
+export const localServerSummarySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  source: z.enum(['created', 'imported']),
+  software: serverSoftwareSchema,
+  version: z.string().nullable(),
+  jarName: z.string().nullable(),
+  javaMajor: z.number().int().positive().nullable(),
+  minMemoryMb: z.number().int().positive(),
+  maxMemoryMb: z.number().int().positive(),
+  port: z.number().int().min(1).max(65535).nullable(),
+  eula: serverEulaSchema,
+  managed: z.boolean(),
+  worldFolders: z.array(z.string()),
+  createdAt: z.string().datetime({ offset: true }),
+})
+export const localServerListSchema = z.object({ servers: z.array(localServerSummarySchema) })
+export const serverImportResultSchema = z.object({ server: localServerSummarySchema })
+export const serverImportRequestSchema = z.object({
+  path: z.string().trim().min(1).max(1024),
+}).strict()
+export const serverImportRegistrationSchema = serverImportRequestSchema.extend({
+  name: z.string().trim().min(1).max(60),
+  minMemoryMb: z.number().int().min(512).max(131072),
+  maxMemoryMb: z.number().int().min(512).max(131072),
+}).strict().refine((value) => value.maxMemoryMb >= value.minMemoryMb, {
+  path: ['maxMemoryMb'], message: 'Maximum memory must be at least the minimum memory.',
+})
+export const serverImportPreviewSchema = z.object({
+  path: z.string(),
+  directoryName: z.string(),
+  software: serverSoftwareSchema,
+  version: z.string().nullable(),
+  jarName: z.string().nullable(),
+  port: z.number().int().min(1).max(65535).nullable(),
+  eula: serverEulaSchema,
+  worldFolders: z.array(z.string()),
+  alreadyRegistered: z.boolean(),
+})
+export const javaRuntimeSchema = z.object({
+  path: z.string(),
+  version: z.string(),
+  major: z.number().int().positive(),
+  vendor: z.string().nullable(),
+  source: z.enum(['discovered', 'custom']),
+})
+export const javaRuntimeListSchema = z.object({ runtimes: z.array(javaRuntimeSchema) })
+export const javaProbeRequestSchema = z.object({ path: z.string().trim().min(1).max(1024) }).strict()
+
 export const calendarQuerySchema = z.object({
   year: z.coerce.number().int().min(2000).max(2100),
   month: z.coerce.number().int().min(1).max(12),
@@ -273,3 +347,8 @@ export type AuthUser = z.infer<typeof authUserSchema>
 export type AuthMe = z.infer<typeof authMeSchema>
 export type AdminUser = z.infer<typeof adminUserSchema>
 export type AuditRecord = z.infer<typeof auditRecordSchema>
+export type RegisteredServer = z.infer<typeof registeredServerSchema>
+export type ServerInventory = z.infer<typeof serverInventorySchema>
+export type LocalServerSummary = z.infer<typeof localServerSummarySchema>
+export type ServerImportPreview = z.infer<typeof serverImportPreviewSchema>
+export type JavaRuntime = z.infer<typeof javaRuntimeSchema>

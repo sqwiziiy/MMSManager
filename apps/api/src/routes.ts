@@ -17,6 +17,10 @@ import {
   machineCurrentSchema,
   machineDaySchema,
   machineHistorySchema,
+  localServerListSchema,
+  javaProbeRequestSchema,
+  javaRuntimeListSchema,
+  javaRuntimeSchema,
   passwordChangeSchema,
   profileUpdateSchema,
   publicHealthSchema,
@@ -26,6 +30,10 @@ import {
   userPreferencesSchema,
   userUpdateSchema,
   workspacePreferencesSchema,
+  serverImportPreviewSchema,
+  serverImportRegistrationSchema,
+  serverImportRequestSchema,
+  serverInventorySchema,
 } from '@mmsmanager/shared'
 import { API_HOST, WEB_ORIGIN } from './config.js'
 import type { AppDatabase } from './db/client.js'
@@ -35,6 +43,8 @@ import { validateCalendarDate } from './time.js'
 import { AuthFailure, AuthService } from './auth/service.js'
 import type { SessionPrincipal } from './auth/service.js'
 import { AvatarStore, InvalidAvatarError, MAX_AVATAR_BYTES } from './auth/avatar-store.js'
+import { JavaRuntimeError, JavaRuntimeRegistry } from './servers/java.js'
+import { ServerInventoryError, ServerRegistry } from './servers/registry.js'
 
 class InvalidRequestError extends Error {}
 
@@ -140,6 +150,8 @@ export async function createApiApp(options: {
   timeZone: string
   auth: AuthService
   avatars: AvatarStore
+  servers: ServerRegistry
+  javaRuntimes: JavaRuntimeRegistry
   webOrigin?: string
   apiPort?: number
   secureCookies?: boolean
@@ -228,6 +240,15 @@ export async function createApiApp(options: {
   }
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ServerInventoryError) {
+      const duplicate = error.code === 'duplicate'
+      return reply.code(duplicate ? 409 : 400).send({
+        error: { code: duplicate ? 'SERVER_ALREADY_REGISTERED' : 'SERVER_PATH_REJECTED', message: error.message },
+      })
+    }
+    if (error instanceof JavaRuntimeError) {
+      return reply.code(400).send({ error: { code: 'JAVA_RUNTIME_REJECTED', message: error.message } })
+    }
     if (error instanceof InvalidRequestError || error instanceof RangeError) {
       return reply.code(400).send({ error: { code: 'BAD_REQUEST', message: 'The request payload is invalid.' } })
     }
@@ -374,6 +395,34 @@ export async function createApiApp(options: {
     return workspacePreferencesSchema.parse(options.auth.getWorkspace())
   })
   app.get('/api/v1/admin/audit', { preHandler: requireAdmin }, async () => auditRecordsSchema.parse(options.auth.listAuditEvents()))
+
+  app.get('/api/v1/admin/servers', { preHandler: requireAdmin }, async () => serverInventorySchema.parse({
+    servers: await options.servers.list(),
+    managedRoot: options.servers.managedRoot,
+    importRoots: options.servers.importRoots,
+  }))
+  app.get('/api/v1/servers', { preHandler: requireAuth }, async () => localServerListSchema.parse({
+    servers: await options.servers.listPublic(),
+  }))
+  app.post('/api/v1/admin/servers/import/inspect', { preHandler: requireAdminMutation }, async (request) => {
+    const input = parse(serverImportRequestSchema, request.body)
+    return serverImportPreviewSchema.parse(await options.servers.inspect(input.path))
+  })
+  app.post('/api/v1/admin/servers/import', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const input = parse(serverImportRegistrationSchema, request.body)
+    const server = await options.servers.registerImport(input, request.principal!.userId)
+    return reply.code(201).send({ server })
+  })
+  app.get('/api/v1/admin/java', { preHandler: requireAdmin }, async () => javaRuntimeListSchema.parse({
+    runtimes: options.javaRuntimes.list(),
+  }))
+  app.post('/api/v1/admin/java/scan', { preHandler: requireAdminMutation }, async () => javaRuntimeListSchema.parse({
+    runtimes: await options.javaRuntimes.scan(),
+  }))
+  app.post('/api/v1/admin/java/probe', { preHandler: requireAdminMutation }, async (request) => {
+    const input = parse(javaProbeRequestSchema, request.body)
+    return javaRuntimeSchema.parse(await options.javaRuntimes.probe(input.path))
+  })
 
   app.get('/api/v1/machine/current', { preHandler: requireAuth }, async () => machineCurrentSchema.parse(history.getCurrent(options.collector.health)))
   app.get('/api/v1/machine/history', { preHandler: requireAuth }, async (request) => {

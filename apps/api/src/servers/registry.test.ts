@@ -1,0 +1,152 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { openDatabase } from '../db/client.js'
+import { users } from '../db/schema.js'
+import { inspectJavaRuntime, JavaRuntimeError, JavaRuntimeRegistry } from './java.js'
+import { ServerRegistry } from './registry.js'
+
+describe('local server inventory', () => {
+  let directory: string
+  let serverRoot: string
+  let opened: Awaited<ReturnType<typeof openDatabase>>
+  let registry: ServerRegistry
+  let userId: string
+
+  beforeEach(async () => {
+    directory = await mkdtemp(join(tmpdir(), 'mmsmanager-inventory-'))
+    serverRoot = join(directory, 'servers')
+    opened = await openDatabase({ path: join(directory, 'mmsmanager.sqlite') })
+    registry = new ServerRegistry(opened.db, directory, {
+      MMSMANAGER_SERVER_ROOT: serverRoot,
+      MMSMANAGER_IMPORT_ROOTS: serverRoot,
+    }, () => Date.parse('2026-11-23T12:00:00.000Z'))
+    await registry.prepare()
+    userId = randomUUID()
+    const now = '2026-11-23T12:00:00.000Z'
+    await opened.db.insert(users).values({
+      id: userId,
+      username: 'inventory-test',
+      usernameKey: 'inventory-test',
+      displayName: 'Inventory Test',
+      role: 'administrator',
+      passwordHash: 'test-only-not-a-login-hash',
+      createdAt: now,
+      updatedAt: now,
+      passwordChangedAt: now,
+    })
+  })
+
+  afterEach(async () => {
+    opened.native.close()
+    await rm(directory, { recursive: true, force: true })
+  })
+
+  async function makeServer(name = 'Legacy World') {
+    const serverDirectory = join(serverRoot, name)
+    await mkdir(join(serverDirectory, 'world'), { recursive: true })
+    await mkdir(join(serverDirectory, 'mods'))
+    await writeFile(join(serverDirectory, 'server-1.21.4.jar'), 'disposable fake archive')
+    await writeFile(join(serverDirectory, 'server.properties'), '# server setting\nserver-port=25569\nonline-mode=true\n')
+    await writeFile(join(serverDirectory, 'eula.txt'), 'eula=true\n')
+    return serverDirectory
+  }
+
+  it('inspects and registers a real local directory without changing its contents', async () => {
+    const serverDirectory = await makeServer()
+    const beforeNames = (await readdir(serverDirectory)).sort()
+    const beforeProperties = await readFile(join(serverDirectory, 'server.properties'), 'utf8')
+    const beforeEula = await readFile(join(serverDirectory, 'eula.txt'), 'utf8')
+    const beforeJar = await readFile(join(serverDirectory, 'server-1.21.4.jar'))
+    const preview = await registry.inspect(serverDirectory)
+    expect(preview).toMatchObject({
+      path: serverDirectory,
+      directoryName: 'Legacy World',
+      software: 'vanilla',
+      version: '1.21.4',
+      jarName: 'server-1.21.4.jar',
+      port: 25569,
+      eula: 'accepted',
+      worldFolders: ['world'],
+      alreadyRegistered: false,
+    })
+
+    const server = await registry.registerImport({
+      path: serverDirectory,
+      name: 'Legacy World',
+      minMemoryMb: 1024,
+      maxMemoryMb: 4096,
+    }, userId)
+    expect(server).toMatchObject({ source: 'imported', managed: false, software: 'vanilla', eula: 'accepted' })
+    expect((await registry.inspect(serverDirectory)).alreadyRegistered).toBe(true)
+    expect((await readdir(serverDirectory)).sort()).toEqual(beforeNames)
+    expect(await readFile(join(serverDirectory, 'server.properties'), 'utf8')).toBe(beforeProperties)
+    expect(await readFile(join(serverDirectory, 'eula.txt'), 'utf8')).toBe(beforeEula)
+    expect(await readFile(join(serverDirectory, 'server-1.21.4.jar'))).toEqual(beforeJar)
+    expect((await lstat(join(serverDirectory, 'world'))).isDirectory()).toBe(true)
+  })
+
+  it('rejects paths outside configured roots, directories that are symlinks, and duplicate registration', async () => {
+    const serverDirectory = await makeServer()
+    const outside = join(directory, 'outside')
+    await mkdir(outside)
+    const alias = join(serverRoot, 'linked-server')
+    await symlink(outside, alias, 'dir')
+    await expect(registry.inspect(outside)).rejects.toMatchObject({ code: 'outside-allowlist' })
+    await expect(registry.inspect(alias)).rejects.toMatchObject({ code: 'not-directory' })
+    const input = { path: serverDirectory, name: 'Legacy World', minMemoryMb: 1024, maxMemoryMb: 4096 }
+    await registry.registerImport(input, userId)
+    await expect(registry.registerImport(input, userId)).rejects.toMatchObject({ code: 'duplicate' })
+  })
+
+  it('does not follow symlinks for server metadata and bounds property reads', async () => {
+    const serverDirectory = await makeServer()
+    const externalProperties = join(directory, 'external.properties')
+    await writeFile(externalProperties, 'server-port=25580\n')
+    await rm(join(serverDirectory, 'server.properties'))
+    await symlink(externalProperties, join(serverDirectory, 'server.properties'))
+    await expect(registry.inspect(serverDirectory)).rejects.toMatchObject({ code: 'unsafe-file' })
+
+    await rm(join(serverDirectory, 'server.properties'))
+    await writeFile(join(serverDirectory, 'server.properties'), 'x'.repeat(65_537))
+    await expect(registry.inspect(serverDirectory)).rejects.toMatchObject({ code: 'unsafe-file' })
+  })
+
+  it('probes only the supplied executable without a shell and reports its Java major version', async () => {
+    const fakeJava = join(directory, 'fake-java')
+    await writeFile(fakeJava, '#!/bin/sh\nprintf \'openjdk version "21.0.4" 2024-07-16\\n\' >&2\n')
+    await chmod(fakeJava, 0o700)
+    await expect(inspectJavaRuntime(fakeJava)).resolves.toMatchObject({
+      path: fakeJava,
+      version: '21.0.4',
+      major: 21,
+      vendor: 'OpenJDK',
+      source: 'custom',
+    })
+
+    const notJava = join(directory, 'not-java')
+    await writeFile(notJava, '#!/bin/sh\nprintf \'not a runtime\\n\'\n')
+    await chmod(notJava, 0o700)
+    await expect(inspectJavaRuntime(notJava)).rejects.toBeInstanceOf(JavaRuntimeError)
+  })
+
+  it('keeps discovered Java results in memory only after an explicit scan', async () => {
+    const javaRegistry = new JavaRuntimeRegistry(async () => [{
+      path: '/test/java-21/bin/java', version: '21.0.4', major: 21, vendor: 'OpenJDK', source: 'discovered',
+    }])
+    expect(javaRegistry.list()).toEqual([])
+    await expect(javaRegistry.scan()).resolves.toMatchObject([{ major: 21, version: '21.0.4' }])
+    expect(javaRegistry.list()).toHaveLength(1)
+  })
+
+  it('keeps the default app-owned server root private', async () => {
+    const defaultRoot = join(directory, 'app-owned', 'servers')
+    await mkdir(defaultRoot, { recursive: true, mode: 0o755 })
+    await chmod(defaultRoot, 0o755)
+    const defaultRegistry = new ServerRegistry(opened.db, join(directory, 'app-owned'), {})
+    await defaultRegistry.prepare()
+    expect((await lstat(defaultRoot)).mode & 0o777).toBe(0o700)
+  })
+})

@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 
 const screenshotDir = resolve(process.cwd(), '../../reports/screenshots')
@@ -10,7 +10,8 @@ const memberPassword = process.env['MMSMANAGER_E2E_MEMBER_PASSWORD']!
 const browserSessionPath = resolve(process.env['MMSMANAGER_DATA_DIR']!, 'browser-session.json')
 
 test.use({
-  storageState: async (_fixtures, use) => {
+  storageState: async ({ browser: _browser }, use) => {
+    void _browser
     await use(existsSync(browserSessionPath) ? browserSessionPath : undefined)
   },
 })
@@ -110,6 +111,33 @@ test('server wizard stays a preview through all steps', async ({ page }) => {
   await expect(page.getByRole('dialog', { name: 'Create server' })).toHaveCount(0)
 })
 
+test('admin imports a disposable local folder through a read-only preview', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  const serverDirectory = join(process.env['MMSMANAGER_DATA_DIR']!, 'servers', 'e2e-import')
+  mkdirSync(serverDirectory, { recursive: true })
+  writeFileSync(join(serverDirectory, 'server.properties'), '# fixture only\nserver-port=25571\n')
+  writeFileSync(join(serverDirectory, 'server.jar'), 'not a real Minecraft archive')
+
+  await page.goto('/servers')
+  await page.getByRole('button', { name: 'Import existing' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Import an existing server' })
+  await dialog.getByLabel('Absolute server folder path').fill(serverDirectory)
+  await dialog.getByRole('button', { name: 'Inspect folder' }).click()
+  await expect(dialog.getByText('Vanilla')).toBeVisible()
+  await expect(dialog.getByText('25571')).toBeVisible()
+  await expect(dialog.locator('.server-import-facts').getByText('Not found').first()).toBeVisible()
+  await dialog.getByLabel('Display name').fill('Temporary Smoke Server')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-04a-import-dialog-desktop.png') })
+  await dialog.getByRole('button', { name: 'Add to local registry' }).click()
+  await expect(page.getByText('Temporary Smoke Server')).toBeVisible()
+  await expect(page.getByText(serverDirectory, { exact: true })).toBeVisible()
+  expect(existsSync(join(serverDirectory, 'server.properties'))).toBe(true)
+  expect(existsSync(join(serverDirectory, 'server.jar'))).toBe(true)
+  expect(existsSync(join(serverDirectory, 'eula.txt'))).toBe(false)
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-04a-servers-desktop.png'), fullPage: true })
+})
+
 test('mobile dashboard, account screens and navigation fit a narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await signIn(page)
@@ -124,6 +152,7 @@ test('mobile dashboard, account screens and navigation fit a narrow viewport', a
     await expect(page.getByRole('heading', { name: heading }).first()).toBeVisible()
     await expectNoHorizontalOverflow(page, route)
     if (route === '/machine') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-machine-mobile.png'), fullPage: true })
+    if (route === '/servers') await page.screenshot({ path: resolve(screenshotDir, 'stage-04a-servers-mobile.png'), fullPage: true })
     if (route === '/users') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-users-mobile.png'), fullPage: true })
     if (route === '/profile') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-profile-mobile.png'), fullPage: true })
     if (route === '/settings') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-settings-mobile.png'), fullPage: true })
@@ -145,6 +174,16 @@ test('local host metrics and history remain protected and visibly local', async 
   await expect(page.getByRole('heading', { name: 'Machine' })).toBeVisible()
   await expect(page.getByText('Local API connected')).toBeVisible()
   await expect(page.getByText('Collected from this local machine only.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Java runtime inventory' })).toBeVisible()
+  await expect(page.getByText('Reading checked runtimes…')).toHaveCount(0, { timeout: 10_000 })
+  await page.route('**/api/v1/admin/java/scan', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ runtimes: [{ path: '/test/java-21/bin/java', version: '21.0.4', major: 21, vendor: 'Temurin', source: 'discovered' }] }),
+  }))
+  await page.getByRole('button', { name: 'Scan standard paths' }).click()
+  await expect(page.getByText('Temurin 21')).toBeVisible()
+  await page.locator('.java-inventory-card').screenshot({ path: resolve(screenshotDir, 'stage-04a-java-inventory-desktop.png') })
   await page.screenshot({ path: resolve(screenshotDir, 'stage-03-machine-desktop.png'), fullPage: true })
 
   await page.goto('/machine/history?month=2001-01&date=2001-01-01')
@@ -170,6 +209,10 @@ test('local accounts enforce administrator-only management and member access', a
 
   await signOut(page)
   await signIn(page, 'stage-member', memberPassword)
+  await page.goto('/servers')
+  await expect(page.getByText('Temporary Smoke Server')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Import existing' })).toHaveCount(0)
+  await expect(page.getByText(join(process.env['MMSMANAGER_DATA_DIR']!, 'servers', 'e2e-import'), { exact: true })).toHaveCount(0)
   await page.goto('/users')
   await expect(page.getByRole('heading', { name: 'Administrator access required' })).toBeVisible()
   const forbiddenStatus = await page.evaluate(async () => (await fetch('/api/v1/admin/users')).status)

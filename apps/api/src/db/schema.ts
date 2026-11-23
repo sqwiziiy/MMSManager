@@ -190,3 +190,47 @@ export const auditEvents = sqliteTable('security_audit_events', {
   index('security_audit_events_actor_idx').on(table.actorUserId, table.occurredAt),
   check('security_audit_events_outcome_check', sql`${table.outcome} IN ('success', 'failure')`),
 ])
+
+export const localServers = sqliteTable('local_servers', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  directory: text('directory').notNull(),
+  source: text('source', { enum: ['created', 'imported'] }).notNull(),
+  software: text('software', { enum: ['vanilla', 'fabric', 'paper', 'unknown'] }).notNull(),
+  version: text('version'),
+  jarName: text('jar_name'),
+  javaPath: text('java_path'),
+  javaMajor: integer('java_major'),
+  minMemoryMb: integer('min_memory_mb').notNull(),
+  maxMemoryMb: integer('max_memory_mb').notNull(),
+  port: integer('port'),
+  eula: text('eula', { enum: ['accepted', 'not-accepted', 'unknown'] }).notNull(),
+  managed: integer('managed', { mode: 'boolean' }).notNull().default(false),
+  worldFolders: text('world_folders').notNull(),
+  createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('local_servers_directory_unique').on(table.directory),
+  index('local_servers_created_at_idx').on(table.createdAt),
+  check('local_servers_source_check', sql`${table.source} IN ('created', 'imported')`),
+  check('local_servers_software_check', sql`${table.software} IN ('vanilla', 'fabric', 'paper', 'unknown')`),
+  check('local_servers_memory_check', sql`${table.minMemoryMb} >= 512 AND ${table.maxMemoryMb} >= ${table.minMemoryMb}`),
+  check('local_servers_port_check', sql`${table.port} IS NULL OR (${table.port} >= 1 AND ${table.port} <= 65535)`),
+  check('local_servers_eula_check', sql`${table.eula} IN ('accepted', 'not-accepted', 'unknown')`),
+  check('local_servers_managed_check', sql`${table.managed} IN (0, 1)`),
+])
+
+export const localServerEvents = sqliteTable('local_server_events', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  serverId: text('server_id').references(() => localServers.id, { onDelete: 'cascade' }),
+  actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  action: text('action').notNull(),
+  outcome: text('outcome', { enum: ['success', 'failure'] }).notNull(),
+  occurredAt: text('occurred_at').notNull(),
+  detail: text('detail').notNull(),
+}, (table) => [
+  index('local_server_events_time_idx').on(table.occurredAt),
+  index('local_server_events_server_idx').on(table.serverId, table.occurredAt),
+  check('local_server_events_outcome_check', sql`${table.outcome} IN ('success', 'failure')`),
+])

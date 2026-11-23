@@ -1,6 +1,6 @@
 # MMSManager
 
-MMSManager is a local-first workspace for Minecraft server operators. The interface includes real, read-only metrics from the Linux host running the app and a persistent machine history. Server and Minecraft data remains clearly marked `DEMO`; the app does not read or change Minecraft servers or files.
+MMSManager is a local-first workspace for Minecraft server operators. It includes real, read-only metrics from the Linux host, persistent machine history, an authenticated local server-folder inventory, and an explicit Java version scan. Fictional server cards and sample data remain clearly marked; an imported folder remains read only and unmanaged.
 
 ## Run locally
 
@@ -35,6 +35,10 @@ Passwords are stored as salted Argon2id hashes. Sessions use HttpOnly, SameSite 
 
 `MMSMANAGER_TIME_ZONE` sets the collector's IANA timezone and defaults to the host timezone. Keep it stable while collecting history. Raw telemetry samples are retained for 7 days, minute rollups for 90 days, and daily rollups remain until a cleanup policy is configured.
 
+The local server registry is stored in the same SQLite database. The app-managed root defaults to `${MMSMANAGER_DATA_DIR}/servers` (mode `0700`); set `MMSMANAGER_SERVER_ROOT` to choose another local root. `MMSMANAGER_IMPORT_ROOTS` is an optional colon-separated allowlist of existing folders. Without it, only subdirectories of the managed root may be imported. Import inspection reads immediate directory entries and bounded `server.properties`/`eula.txt` files only; it does not write to the selected server folder. Imported servers stay unmanaged.
+
+An administrator can explicitly scan known local Java locations or check a custom executable from Machine settings. Each check calls only `java -version` with no shell, a short timeout and an output limit. A normal page read does not run Java. No Minecraft process is launched by the inventory scan.
+
 ## Checks
 
 ```sh
@@ -47,7 +51,7 @@ pnpm build
 ## Current boundaries
 
 - Machine metrics and history are real, read-only measurements from this local Linux host when available. The app does not inspect other machines.
-- Minecraft servers, players, mods, logs, backups, worlds, Java inventory and server performance remain labeled `DEMO` or `Preview`.
-- Server creation is a preview wizard. Console, moderation, file, install, server lifecycle and notification actions are disabled or marked `Coming soon`; no real server operation is performed.
+- The local server registry and Java version checks are real, local-only features. Existing folder imports do not modify files and remain unmanaged. Server runtime state, players, mods, logs, backups, worlds and performance are still `DEMO` or `Preview`.
+- Server creation is still a preview wizard. Installation and lifecycle controls are not connected yet; EULA files are never written by import or preview actions.
 - User creation, roles, profile, password, avatar and workspace/personal settings are backed by the local SQLite workspace. They do not control Minecraft permissions or server access.
-- No Java discovery, Minecraft file/process access, RCON, SSH, remote host, LAN API, arbitrary shell endpoint or login backend outside the local workspace is included.
+- No Minecraft process control, RCON, SSH, remote host, LAN API or arbitrary shell endpoint is included. The API and Vite remain loopback-only.

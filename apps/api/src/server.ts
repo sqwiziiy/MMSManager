@@ -6,6 +6,8 @@ import { MachineCollector } from './machine/collector.js'
 import { SystemInformationReader } from './machine/reader.js'
 import { AuthService } from './auth/service.js'
 import { AvatarStore } from './auth/avatar-store.js'
+import { ServerRegistry } from './servers/registry.js'
+import { JavaRuntimeRegistry } from './servers/java.js'
 
 async function main(): Promise<void> {
   if (process.platform !== 'linux') {
@@ -20,6 +22,9 @@ async function main(): Promise<void> {
   await auth.prepare()
   const avatars = new AvatarStore(dataDirectory)
   await avatars.prepare()
+  const servers = new ServerRegistry(database.db, dataDirectory)
+  await servers.prepare()
+  const javaRuntimes = new JavaRuntimeRegistry()
   const collector = new MachineCollector(database.db, new SystemInformationReader(), timeZone)
   const app = await createApiApp({
     db: database.db,
@@ -27,6 +32,8 @@ async function main(): Promise<void> {
     timeZone,
     auth,
     avatars,
+    servers,
+    javaRuntimes,
     webOrigin: getWebOrigin(),
     apiPort,
     secureCookies: secureCookiesEnabled(),
