@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
+    "auth:recover": "tsx src/recover-admin.ts",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
@@ -14,10 +15,14 @@
   },
   "dependencies": {
     "@fastify/cors": "11.4.3",
+    "@fastify/multipart": "^10.1.9",
+    "@fastify/rate-limit": "^11.3.0",
     "@mmsmanager/shared": "workspace:*",
+    "@node-rs/argon2": "^2.2.2",
     "better-sqlite3": "13.2.0",
     "drizzle-orm": "0.45.4",
     "fastify": "5.12.8",
+    "sharp": "^0.35.5",
     "systeminformation": "5.33.21"
   },
   "devDependencies": {

@@ -36,3 +36,21 @@ export function getApiPort(env: NodeJS.ProcessEnv = process.env): number {
   }
   return port
 }
+
+export function getWebPort(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env['MMSMANAGER_WEB_PORT']
+  if (!raw) return 5173
+  const port = Number(raw)
+  if (!Number.isInteger(port) || port < 1024 || port > 65_535) {
+    throw new Error('MMSMANAGER_WEB_PORT must be an integer between 1024 and 65535')
+  }
+  return port
+}
+
+export function getWebOrigin(env: NodeJS.ProcessEnv = process.env): string {
+  return `http://127.0.0.1:${getWebPort(env)}`
+}
+
+export function secureCookiesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['MMSMANAGER_COOKIE_SECURE'] === 'true'
+}

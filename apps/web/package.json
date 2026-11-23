@@ -9,7 +9,7 @@
     "lint": "eslint src vite.config.ts playwright.config.ts e2e",
     "typecheck": "tsc -b --pretty",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "node e2e/run.mjs"
   },
   "dependencies": {
     "@mmsmanager/shared": "workspace:*",

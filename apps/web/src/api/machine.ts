@@ -10,7 +10,9 @@ async function readResponse<T>(url: string, schema: { parse: (value: unknown) =>
   const response = await fetch(url, {
     headers: { accept: 'application/json' },
     signal,
+    credentials: 'same-origin',
   })
+  if (response.status === 401 && typeof window !== 'undefined') window.dispatchEvent(new Event('mmsmanager:session-expired'))
   if (!response.ok) throw new Error(`Local API returned ${response.status}`)
   const body: unknown = await response.json()
   return schema.parse(body)

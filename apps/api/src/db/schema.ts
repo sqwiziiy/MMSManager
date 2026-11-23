@@ -1,4 +1,5 @@
-import { index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { sql } from 'drizzle-orm'
+import { check, index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 export const machines = sqliteTable('machines', {
   id: text('id').primaryKey(),
@@ -115,4 +116,77 @@ export const machineEvents = sqliteTable('machine_events', {
   source: text('source').notNull(),
 }, (table) => [
   index('machine_events_date_idx').on(table.machineId, table.timeZone, table.localDate, table.occurredAt),
+])
+
+export const users = sqliteTable('users', {
+  id: text('id').primaryKey(),
+  username: text('username').notNull(),
+  usernameKey: text('username_key').notNull(),
+  displayName: text('display_name').notNull(),
+  role: text('role', { enum: ['administrator', 'member'] }).notNull(),
+  passwordHash: text('password_hash').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  avatarKey: text('avatar_key'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  lastLoginAt: text('last_login_at'),
+  passwordChangedAt: text('password_changed_at').notNull(),
+}, (table) => [
+  uniqueIndex('users_username_key_unique').on(table.usernameKey),
+  index('users_enabled_role_idx').on(table.enabled, table.role),
+  check('users_role_check', sql`${table.role} IN ('administrator', 'member')`),
+  check('users_enabled_check', sql`${table.enabled} IN (0, 1)`),
+])
+
+export const sessions = sqliteTable('sessions', {
+  tokenHash: text('token_hash').primaryKey(),
+  csrfHash: text('csrf_hash').notNull(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  createdAt: text('created_at').notNull(),
+  expiresAt: text('expires_at').notNull(),
+  lastSeenAt: text('last_seen_at').notNull(),
+  revokedAt: text('revoked_at'),
+}, (table) => [
+  index('sessions_user_active_idx').on(table.userId, table.revokedAt, table.expiresAt),
+  check('sessions_expiry_check', sql`${table.expiresAt} > ${table.createdAt}`),
+])
+
+export const authState = sqliteTable('auth_state', {
+  id: integer('id').primaryKey(),
+  bootstrapHash: text('bootstrap_hash'),
+  bootstrapExpiresAt: text('bootstrap_expires_at'),
+  bootstrapConsumedAt: text('bootstrap_consumed_at'),
+  initializedAt: text('initialized_at'),
+}, (table) => [check('auth_state_singleton_check', sql`${table.id} = 1`)])
+
+export const workspacePreferences = sqliteTable('workspace_preferences', {
+  id: integer('id').primaryKey(),
+  displayName: text('display_name').notNull(),
+  defaultLanding: text('default_landing', { enum: ['dashboard', 'machine'] }).notNull().default('dashboard'),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  check('workspace_preferences_singleton_check', sql`${table.id} = 1`),
+  check('workspace_preferences_landing_check', sql`${table.defaultLanding} IN ('dashboard', 'machine')`),
+])
+
+export const userPreferences = sqliteTable('user_preferences', {
+  userId: text('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  compactNavigation: integer('compact_navigation', { mode: 'boolean' }).notNull().default(false),
+  defaultLanding: text('default_landing', { enum: ['dashboard', 'machine'] }).notNull().default('dashboard'),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  check('user_preferences_landing_check', sql`${table.defaultLanding} IN ('dashboard', 'machine')`),
+])
+
+export const auditEvents = sqliteTable('security_audit_events', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  subjectUserId: text('subject_user_id').references(() => users.id, { onDelete: 'set null' }),
+  action: text('action').notNull(),
+  outcome: text('outcome', { enum: ['success', 'failure'] }).notNull(),
+  occurredAt: text('occurred_at').notNull(),
+}, (table) => [
+  index('security_audit_events_time_idx').on(table.occurredAt),
+  index('security_audit_events_actor_idx').on(table.actorUserId, table.occurredAt),
+  check('security_audit_events_outcome_check', sql`${table.outcome} IN ('success', 'failure')`),
 ])

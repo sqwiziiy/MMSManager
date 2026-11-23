@@ -8,6 +8,7 @@ import type { LucideIcon } from 'lucide-react'
 import { servers } from '../data'
 import { Button, IconButton } from './ui'
 import { useMachineMonitor } from '../state/use-machine-monitor'
+import type { AuthUser } from '@mmsmanager/shared'
 
 type NavItem = { label: string; to: string; icon: LucideIcon; exact?: boolean }
 const operations: NavItem[] = [
@@ -23,14 +24,17 @@ const administration: NavItem[] = [
   { label: 'Settings', to: '/settings', icon: Settings2 },
 ]
 
-export function AppShell({ children, onCreate }: { children: React.ReactNode; onCreate: () => void }) {
-  const [collapsed, setCollapsed] = useState(false)
+export function AppShell({ children, onCreate, onSignOut, user, workspaceName }: { children: React.ReactNode; onCreate: () => void; onSignOut: () => void; user: AuthUser; workspaceName: string }) {
+  const [collapsed, setCollapsed] = useState(user.preferences.compactNavigation)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const location = useLocation()
   const monitor = useMachineMonitor()
   const machineLive = monitor.apiStatus === 'online' && monitor.current?.status === 'live'
+  const accountNavigation = user.role === 'administrator' ? administration : administration.filter((item) => item.to !== '/users')
+
+  useEffect(() => { setCollapsed(user.preferences.compactNavigation) }, [user.preferences.compactNavigation])
 
   useEffect(() => {
     setMobileOpen(false)
@@ -55,8 +59,8 @@ export function AppShell({ children, onCreate }: { children: React.ReactNode; on
   const pageTitle = useMemo(() => {
     if (location.pathname.startsWith('/servers/')) return servers.find((server) => location.pathname.includes(server.id))?.name ?? 'Server'
     if (location.pathname === '/machine/history') return 'Machine history'
-    return [...operations, ...library, ...administration].find((item) => item.to === location.pathname)?.label ?? 'MMSManager'
-  }, [location.pathname])
+    return [...operations, ...library, ...accountNavigation].find((item) => item.to === location.pathname)?.label ?? workspaceName
+  }, [location.pathname, accountNavigation, workspaceName])
 
   return (
     <div className={`app-frame ${collapsed ? 'sidebar-collapsed' : ''}`}>
@@ -75,19 +79,19 @@ export function AppShell({ children, onCreate }: { children: React.ReactNode; on
           <div className="sidebar-divider" />
           <NavGroup title="Library" items={library} />
           <div className="sidebar-divider" />
-          <NavGroup title="Administration" items={administration} />
+          <NavGroup title="Account" items={accountNavigation} />
         </div>
 
         <div className="sidebar-bottom">
           <div className="local-node"><span className="node-icon"><Computer size={16} /></span><div><strong>Local machine</strong><span>{machineLive ? 'Live telemetry' : monitor.apiStatus === 'offline' ? 'API offline' : 'Waiting for sample'}</span></div><span className={`node-dot ${machineLive ? 'live' : ''}`} /></div>
           <button className="profile-trigger" onClick={() => setProfileOpen((value) => !value)} aria-expanded={profileOpen}>
-            <span className="avatar avatar-green">AM</span><span className="profile-copy"><strong>Alex Mercer</strong><small>Administrator preview</small></span><ChevronDown size={15} className="profile-chevron" />
+            <ProfileAvatar user={user} /><span className="profile-copy"><strong>{user.displayName}</strong><small>{user.role === 'administrator' ? 'Administrator' : 'Member'}</small></span><ChevronDown size={15} className="profile-chevron" />
           </button>
           {profileOpen && <div className="profile-menu">
-            <NavLink to="/profile"><span className="avatar avatar-green avatar-small">AM</span><span><strong>My profile</strong><small>Preview account</small></span></NavLink>
-            <NavLink to="/users"><Users size={15} /><span><strong>User directory</strong><small>Sample users</small></span></NavLink>
-            <NavLink to="/settings"><Settings2 size={15} /><span><strong>Settings</strong><small>Preferences preview</small></span></NavLink>
-          <div className="profile-menu-note"><ShieldCheck size={14} /> No real account is signed in</div>
+            <NavLink to="/profile"><ProfileAvatar user={user} small /><span><strong>Profile</strong><small>Account details and security</small></span></NavLink>
+            {user.role === 'administrator' && <NavLink to="/users"><Users size={15} /><span><strong>User directory</strong><small>Manage workspace accounts</small></span></NavLink>}
+            <NavLink to="/settings"><Settings2 size={15} /><span><strong>Settings</strong><small>Workspace and preferences</small></span></NavLink>
+            <button className="profile-menu-signout" onClick={onSignOut}><ShieldCheck size={15} /><span>Sign out</span></button>
           </div>}
         </div>
       </aside>
@@ -97,10 +101,10 @@ export function AppShell({ children, onCreate }: { children: React.ReactNode; on
           <div className="topbar-left"><IconButton icon={Menu} label="Open navigation" className="menu-mobile" onClick={() => setMobileOpen(true)} /><span className="topbar-page">{pageTitle}</span><span className="breadcrumb-divider">/</span><span className="breadcrumb-current">Workspace</span></div>
           <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd>Ctrl K</kbd></button><span className="topbar-separator" /><span className={`top-demo ${machineLive ? 'machine-live' : ''}`}><span />{machineLive ? 'Local machine · Live' : 'Local machine · Offline'}</span><Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button></div>
         </header>
-        <div className="global-demo-bar"><span className="demo-bar-mark"><Info size={10} aria-hidden="true" /></span><span><strong>MMSManager</strong><span className="demo-bar-divider">·</span> Server records are DEMO; machine metrics are LIVE when connected</span><span className="demo-bar-right">Loopback only</span></div>
+        <div className="global-demo-bar"><span className="demo-bar-mark"><Info size={10} aria-hidden="true" /></span><span><strong>{workspaceName}</strong><span className="demo-bar-divider">·</span> Server records are DEMO; machine metrics are LIVE when connected</span><span className="demo-bar-right">Loopback only</span></div>
         <div className="page-content" key={location.pathname}>{children}</div>
       </main>
-      {searchOpen && <QuickSearch onClose={() => setSearchOpen(false)} />}
+      {searchOpen && <QuickSearch onClose={() => setSearchOpen(false)} includeUsers={user.role === 'administrator'} />}
     </div>
   )
 }
@@ -114,7 +118,7 @@ function NavGroup({ title, items }: { title: string; items: NavItem[] }) {
   </nav>
 }
 
-function QuickSearch({ onClose }: { onClose: () => void }) {
+function QuickSearch({ onClose, includeUsers }: { onClose: () => void; includeUsers: boolean }) {
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const navigate = useNavigate()
@@ -122,7 +126,7 @@ function QuickSearch({ onClose }: { onClose: () => void }) {
     ...operations.map(({ label, to, icon }) => ({ label, to, icon, group: 'Workspace' })),
     { label: 'Machine history', to: '/machine/history', icon: CalendarDays, group: 'Machine' },
     ...library.map(({ label, to, icon }) => ({ label, to, icon, group: 'Library' })),
-    ...administration.map(({ label, to, icon }) => ({ label, to, icon, group: 'Administration' })),
+    ...administration.filter((item) => includeUsers || item.to !== '/users').map(({ label, to, icon }) => ({ label, to, icon, group: 'Account' })),
     ...servers.map((server) => ({ label: server.name, to: `/servers/${server.id}`, icon: Server, group: 'Servers' })),
   ]
   const shown = entries.filter((entry) => entry.label.toLowerCase().includes(query.toLowerCase()))
@@ -151,4 +155,12 @@ function QuickSearch({ onClose }: { onClose: () => void }) {
       <div className="quick-search-foot"><span><kbd>↑</kbd><kbd>↓</kbd> to navigate</span><span><kbd>Enter</kbd> to open</span></div>
     </div>
   </div>
+}
+
+function ProfileAvatar({ user, small = false }: { user: AuthUser; small?: boolean }) {
+  const initials = user.displayName.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('') || user.username.slice(0, 2).toUpperCase()
+  return <span className={`avatar ${user.role === 'administrator' ? 'avatar-green' : ''} ${small ? 'avatar-small' : ''} ${user.avatarUrl ? 'avatar-with-image' : ''}`}>
+    {user.avatarUrl && <img src={user.avatarUrl} alt="" />}
+    {!user.avatarUrl && initials}
+  </span>
 }

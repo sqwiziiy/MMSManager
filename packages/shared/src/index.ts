@@ -51,17 +51,105 @@ export const machineHostSchema = z.object({
   source: z.literal('systeminformation'),
 })
 
-export const machineHealthSchema = z.object({
+export const publicHealthSchema = z.object({
   service: z.literal('mmsmanager-local-api'),
   status: z.literal('ok'),
-  timeZone: z.string(),
-  collector: z.object({
-    running: z.boolean(),
-    intervalMs: z.number().int().positive(),
-    lastSampleAt: z.string().datetime({ offset: true }).nullable(),
-    lastSuccessfulAt: z.string().datetime({ offset: true }).nullable(),
-  }),
+  setupRequired: z.boolean(),
 })
+
+export const userRoleSchema = z.enum(['administrator', 'member'])
+export const landingPageSchema = z.enum(['dashboard', 'machine'])
+
+const usernameSchema = z.string().trim().min(3).max(32).regex(/^[a-zA-Z0-9._-]+$/)
+const displayNameSchema = z.string().trim().min(1).max(60)
+const passwordSchema = z.string().min(14).max(128)
+
+export const bootstrapSchema = z.object({
+  token: z.string().min(40).max(80),
+  username: usernameSchema,
+  displayName: displayNameSchema,
+  password: passwordSchema,
+  confirmPassword: z.string().min(14).max(128),
+}).strict().refine((value) => value.password === value.confirmPassword, {
+  path: ['confirmPassword'], message: 'Passwords do not match.',
+})
+
+export const loginSchema = z.object({
+  username: usernameSchema,
+  password: z.string().min(1).max(128),
+}).strict()
+
+export const passwordChangeSchema = z.object({
+  currentPassword: z.string().min(1).max(128),
+  newPassword: passwordSchema,
+  confirmPassword: z.string().min(14).max(128),
+}).strict().refine((value) => value.newPassword === value.confirmPassword, {
+  path: ['confirmPassword'], message: 'Passwords do not match.',
+})
+
+export const userCreateSchema = z.object({
+  username: usernameSchema,
+  displayName: displayNameSchema,
+  password: passwordSchema,
+  role: userRoleSchema,
+}).strict()
+
+export const userUpdateSchema = z.object({
+  role: userRoleSchema,
+  enabled: z.boolean(),
+}).strict()
+
+export const userPasswordResetSchema = z.object({ password: passwordSchema }).strict()
+export const profileUpdateSchema = z.object({ displayName: displayNameSchema }).strict()
+export const userPreferencesSchema = z.object({
+  compactNavigation: z.boolean(),
+  defaultLanding: landingPageSchema,
+}).strict()
+export const workspacePreferencesSchema = z.object({
+  displayName: z.string().trim().min(1).max(60),
+  defaultLanding: landingPageSchema,
+}).strict()
+
+export const authUserSchema = z.object({
+  id: z.string().uuid(),
+  username: z.string(),
+  displayName: z.string(),
+  role: userRoleSchema,
+  enabled: z.boolean(),
+  createdAt: z.string().datetime({ offset: true }),
+  lastLoginAt: z.string().datetime({ offset: true }).nullable(),
+  avatarUrl: z.string().nullable(),
+  preferences: userPreferencesSchema,
+})
+
+export const authSessionSchema = z.object({
+  id: z.string(),
+  createdAt: z.string().datetime({ offset: true }),
+  lastSeenAt: z.string().datetime({ offset: true }),
+  current: z.boolean(),
+})
+
+export const authMeSchema = z.object({
+  user: authUserSchema,
+  workspace: workspacePreferencesSchema,
+  sessions: z.array(authSessionSchema),
+})
+
+export const adminUserSchema = authUserSchema.extend({
+  activeSessionCount: z.number().int().nonnegative(),
+})
+export const adminUsersSchema = z.object({ users: z.array(adminUserSchema) })
+export const adminUserResultSchema = z.object({ user: adminUserSchema })
+export const apiAckSchema = z.object({ ok: z.literal(true), signInAgain: z.boolean().optional() })
+export const auditRecordSchema = z.object({
+  id: z.number().int().positive(),
+  action: z.string(),
+  outcome: z.enum(['success', 'failure']),
+  occurredAt: z.string().datetime({ offset: true }),
+  actor: z.string().nullable(),
+  subject: z.string().nullable(),
+})
+export const auditRecordsSchema = z.object({ events: z.array(auditRecordSchema) })
 
 export const machineCurrentSchema = z.object({
   status: z.enum(['live', 'stale', 'collecting']),
@@ -157,6 +245,7 @@ export const calendarQuerySchema = z.object({
 })
 
 export const dateParamSchema = z.object({ date: z.string().regex(datePattern) })
+export const userIdParamSchema = z.object({ userId: z.string().uuid() }).strict()
 
 export const historyQuerySchema = z.object({
   from: z.string().datetime({ offset: true }),
@@ -170,7 +259,7 @@ export const apiErrorSchema = z.object({
 
 export type MachineMetricSample = z.infer<typeof machineMetricSampleSchema>
 export type MachineHost = z.infer<typeof machineHostSchema>
-export type MachineHealth = z.infer<typeof machineHealthSchema>
+export type PublicHealth = z.infer<typeof publicHealthSchema>
 export type MachineCurrent = z.infer<typeof machineCurrentSchema>
 export type MachineResourcePoint = z.infer<typeof machineResourcePointSchema>
 export type MachineHistory = z.infer<typeof machineHistorySchema>
@@ -178,3 +267,9 @@ export type MachineCalendarDay = z.infer<typeof machineCalendarDaySchema>
 export type MachineCalendar = z.infer<typeof machineCalendarSchema>
 export type MachineEvent = z.infer<typeof machineEventSchema>
 export type MachineDay = z.infer<typeof machineDaySchema>
+export type UserRole = z.infer<typeof userRoleSchema>
+export type LandingPage = z.infer<typeof landingPageSchema>
+export type AuthUser = z.infer<typeof authUserSchema>
+export type AuthMe = z.infer<typeof authMeSchema>
+export type AdminUser = z.infer<typeof adminUserSchema>
+export type AuditRecord = z.infer<typeof auditRecordSchema>

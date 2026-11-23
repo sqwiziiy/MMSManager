@@ -1,25 +1,31 @@
 import { defineConfig } from '@playwright/test'
 
+const dataDirectory = process.env['MMSMANAGER_DATA_DIR']
+if (!dataDirectory?.startsWith('/tmp/mmsmanager-stage3-e2e-')) {
+  throw new Error('Run browser checks with the web package e2e script so test data stays isolated.')
+}
+
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: true,
+  fullyParallel: false,
+  workers: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:5183',
+    baseURL: 'http://127.0.0.1:5184',
     browserName: 'chromium',
     headless: true,
     trace: 'retain-on-failure',
   },
   webServer: {
     command: 'pnpm --dir ../.. dev',
-    url: 'http://127.0.0.1:5183',
+    url: 'http://127.0.0.1:5184',
     reuseExistingServer: false,
     timeout: 30_000,
     env: {
-      MMSMANAGER_DATA_DIR: '/tmp/mmsmanager-e2e-data',
+      MMSMANAGER_DATA_DIR: dataDirectory,
       MMSMANAGER_TIME_ZONE: 'Europe/Paris',
-      MMSMANAGER_API_PORT: '4183',
-      MMSMANAGER_WEB_PORT: '5183',
+      MMSMANAGER_API_PORT: '4184',
+      MMSMANAGER_WEB_PORT: '5184',
     },
   },
 })
