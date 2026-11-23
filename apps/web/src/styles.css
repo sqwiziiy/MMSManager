@@ -1220,6 +1220,13 @@ kbd { display: inline-flex; align-items: center; gap: 3px; height: 21px; padding
 .local-logs-card { min-width: 0; }
 .local-logs-card .logs-list { max-height: 62vh; overflow: auto; }
 .local-logs-card .log-row { grid-template-columns: 128px auto minmax(0, 1fr) 57px; }
+.local-player-actions { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-quiet); }
+.local-player-actions form { display: grid; grid-template-columns: minmax(150px, .72fr) minmax(170px, 1fr) auto; align-items: end; gap: 10px; margin: 12px 0 0; }
+.local-player-actions label { min-width: 0; display: flex; flex-direction: column; gap: 5px; color: var(--text-muted); font-size: 9px; }
+.local-player-actions input, .local-player-actions select { width: 100%; min-height: 36px; padding: 0 9px; color: var(--text); border: 1px solid var(--line); border-radius: 7px; background: #141714; font: inherit; font-size: 10px; }
+.local-player-actions input:focus, .local-player-actions select:focus { outline: 2px solid #7b8c68; outline-offset: 1px; }
+.local-player-actions > p { margin: 9px 0 0; color: var(--text-muted); font-size: 8px; line-height: 1.45; }
+.local-action-result { margin-top: 9px; padding: 9px 10px; color: #c0d0b1; border: 1px solid #384135; border-radius: 7px; background: #1a2118; font-size: 9px; line-height: 1.45; }
 .local-properties-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(240px, .8fr); gap: 12px; align-items: start; }
 .local-properties-card { min-width: 0; }
 .local-properties-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 17px; }
@@ -1271,6 +1278,7 @@ kbd { display: inline-flex; align-items: center; gap: 3px; height: 21px; padding
 }
 @media (max-width: 760px) {
   .local-runtime-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .local-player-actions form { grid-template-columns: minmax(0, 1fr); }
   .local-runtime-metrics > div:nth-child(2) { border-right: 0; }
   .local-runtime-metrics > div:nth-child(-n+2) { border-bottom: 1px solid var(--line-quiet); }
   .local-detail-grid, .local-console-layout, .local-properties-layout { grid-template-columns: minmax(0, 1fr); }

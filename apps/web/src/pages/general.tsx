@@ -8,7 +8,6 @@ import { Link } from 'react-router-dom'
 import { activities, servers } from '../data'
 import { MetricTrack, WorldBlocks } from '../components/charts'
 import { Badge, Button, Card, ComingSoon, DisabledButton, PageHeading, PreviewFlag, SectionHeading, StatusDot } from '../components/ui'
-import { ServerTile } from './dashboard'
 import { useMachineMonitor } from '../state/use-machine-monitor'
 import { LiveResourceChart } from '../components/live-chart'
 import { formatBytes, formatPercent, formatRate, formatTimestamp } from '../lib/format'
@@ -18,7 +17,7 @@ import { useAuth } from '../state/use-auth'
 import { ImportServerDialog } from '../components/import-server-dialog'
 import { JavaInventoryCard } from '../components/java-inventory'
 
-type ServerFilter = 'All servers' | 'Online' | 'Offline'
+type ServerFilter = 'All servers' | 'Running' | 'Other'
 
 export function ServersPage({ onCreate }: { onCreate: () => void }) {
   const [query, setQuery] = useState('')
@@ -53,31 +52,25 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
     return () => controller.abort()
   }, [loadLocal])
 
-  const filtered = useMemo(() => servers.filter((server) => {
-    const matchesStatus = filter === 'All servers' || server.status === filter
-    const matchesQuery = `${server.name} ${server.software} ${server.version}`.toLowerCase().includes(query.toLowerCase())
-    return matchesStatus && matchesQuery
-  }), [filter, query])
-  const localFiltered = useMemo(() => localServers.filter((server) => `${server.name} ${server.software} ${server.version ?? ''} ${server.port ?? ''}`.toLowerCase().includes(query.toLowerCase())), [localServers, query])
+  const localFiltered = useMemo(() => localServers.filter((server) => {
+    const matchesStatus = filter === 'All servers' || (filter === 'Running' ? server.runtimeStatus === 'running' : server.runtimeStatus !== 'running')
+    return matchesStatus && `${server.name} ${server.software} ${server.version ?? ''} ${server.port ?? ''}`.toLowerCase().includes(query.toLowerCase())
+  }), [localServers, filter, query])
   return <div className="page-stack">
-    <PageHeading title="Servers" description="Local inventory and clearly separated sample screens." actions={<><Button icon={Plus} onClick={onCreate}>Create server</Button>{isAdmin && <Button kind="primary" icon={FolderSearch} onClick={() => setImportOpen(true)}>Import existing</Button>}</>} />
+    <PageHeading title="Servers" description="Registered server folders on this computer." actions={isAdmin ? <><Button icon={Plus} onClick={onCreate}>Create server</Button><Button kind="primary" icon={FolderSearch} onClick={() => setImportOpen(true)}>Import existing</Button></> : undefined} />
     {localError && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Local server inventory unavailable</strong><small>{localError}</small></span><Button icon={RefreshCw} onClick={() => void loadLocal()}>Retry</Button></div>}
+    <div className="list-toolbar"><div className="filter-tabs" role="tablist" aria-label="Filter servers">{(['All servers', 'Running', 'Other'] as const).map((item) => <button key={item} role="tab" aria-selected={filter === item} className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item}<span>{item === 'All servers' ? localServers.length : item === 'Running' ? localServers.filter((server) => server.runtimeStatus === 'running').length : localServers.filter((server) => server.runtimeStatus !== 'running').length}</span></button>)}</div>
+      <label className="inline-search"><Search size={15} /><input aria-label="Search servers" placeholder="Search servers" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div>
     <section className="local-server-section" aria-labelledby="local-servers-title">
       <div className="section-heading"><div><div className="card-kicker"><Server size={14} /> Local registry</div><h2 id="local-servers-title">This computer</h2><p>Panel-created instances can be controlled here. Imported folders stay read only.</p></div><Badge tone={localServers.length ? 'good' : 'neutral'}>{loadingLocal ? 'Loading' : `${localServers.length} registered`}</Badge></div>
       {isAdmin && inventory && <div className="server-root-note"><span>Managed root <code>{inventory.managedRoot}</code></span><span>Import roots {inventory.importRoots.length ? inventory.importRoots.map((root) => <code key={root}>{root}</code>) : 'none configured'}</span></div>}
-      {loadingLocal && !localServers.length ? <div className="local-server-empty"><span className="loading-pulse" /><span>Reading the local registry…</span></div> : localFiltered.length ? <div className="local-server-grid">{localFiltered.map((server) => {
+      {loadingLocal && !localServers.length ? <div className="local-server-empty"><span className="loading-pulse" /><span>Reading the local registry…</span></div> : localError ? null : localFiltered.length ? <div className="local-server-grid">{localFiltered.map((server) => {
         const details = inventory?.servers.find((item) => item.id === server.id)
         const runtimeStatus = server.runtimeStatus ?? 'stopped'
         const tone = runtimeStatus === 'running' ? 'good' : runtimeStatus === 'crashed' || runtimeStatus === 'error' ? 'danger' : runtimeStatus === 'external/unmanaged' ? 'warn' : 'neutral'
         return <Link className="local-server-card-link" to={`/servers/${server.id}/overview`} key={server.id}><Card className="local-server-card"><div className="local-server-card-header"><span className="local-server-icon"><Server size={17} /></span><div><strong>{server.name}</strong><small>{server.source === 'imported' ? 'Imported folder' : 'Created by MMSManager'}</small></div><Badge tone={tone}>{runtimeStatus === 'external/unmanaged' ? 'Unmanaged' : runtimeStatus[0]!.toUpperCase() + runtimeStatus.slice(1)}</Badge></div><div className="local-server-facts"><div><span>Software</span><strong>{server.software === 'unknown' ? 'Unknown' : `${server.software[0]!.toUpperCase()}${server.software.slice(1)}${server.version ? ` ${server.version}` : ''}`}</strong></div><div><span>Game port</span><strong>{server.port ?? 'Not detected'}</strong></div><div><span>Memory</span><strong>{server.minMemoryMb}–{server.maxMemoryMb} MB</strong></div><div><span>EULA</span><strong>{server.eula === 'accepted' ? 'Accepted' : server.eula === 'not-accepted' ? 'Not accepted' : 'Not found'}</strong></div></div>{server.worldFolders.length > 0 && <div className="local-server-worlds">Detected folders {server.worldFolders.join(' · ')}</div>}{isAdmin && details && <code className="local-server-path">{details.directory}</code>}<div className="local-server-card-footer"><span>{server.managed ? 'Local process controls available' : 'Imported · read only'}</span><span>Open details <ChevronRight size={13} /></span></div></Card></Link>
-      })}</div> : <Card className="local-server-empty-card"><div className="empty-list"><FolderSearch size={20} /><strong>No local servers registered</strong><span>{isAdmin ? 'Import an existing folder inside an allowed import root.' : 'An administrator has not added a local server yet.'}</span></div></Card>}
+      })}</div> : <Card className="local-server-empty-card"><div className="empty-list"><FolderSearch size={20} /><strong>{localServers.length ? 'No servers match this filter' : 'No local servers registered'}</strong><span>{localServers.length ? 'Try another name or state.' : isAdmin ? 'Create a managed server or import a folder inside an allowed root.' : 'An administrator has not added a local server yet.'}</span></div></Card>}
     </section>
-    <div className="list-toolbar"><div className="filter-tabs" role="tablist" aria-label="Filter servers">{(['All servers', 'Online', 'Offline'] as const).map((item) => <button key={item} role="tab" aria-selected={filter === item} className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item}<span>{item === 'All servers' ? servers.length : servers.filter((server) => server.status === item).length}</span></button>)}</div>
-      <label className="inline-search"><Search size={15} /><input aria-label="Search servers" placeholder="Search servers" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div>
-    <div className="demo-section-heading"><div><p className="eyebrow">VISUAL PREVIEW</p><h2>Sample server screens</h2><p>These three cards use fictional names, addresses, players and activity.</p></div><PreviewFlag>Sample data</PreviewFlag></div>
-    <div className="server-grid">{filtered.map((server) => <ServerTile server={server} key={server.id} />)}</div>
-    {!filtered.length && <Card><div className="empty-list"><Search size={20} /><strong>No sample servers match</strong><span>Try another name or status filter</span></div></Card>}
-    <div className="list-footnote"><span className="footnote-dot" /> Fictional sample dataset <span>·</span> not connected to local server folders</div>
     {importOpen && inventory && <ImportServerDialog roots={inventory.importRoots} onClose={() => setImportOpen(false)} onImported={() => loadLocal()} />}
   </div>
 }

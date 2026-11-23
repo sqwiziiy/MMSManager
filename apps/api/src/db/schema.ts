@@ -303,3 +303,17 @@ export const localServerPropertiesBackups = sqliteTable('local_server_properties
 }, (table) => [
   index('local_server_properties_backups_server_time_idx').on(table.serverId, table.createdAt),
 ])
+
+export const localServerStatusSamples = sqliteTable('local_server_status_samples', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  checkedAt: text('checked_at').notNull(),
+  state: text('state', { enum: ['reachable', 'unreachable'] }).notNull(),
+  playersOnline: integer('players_online'),
+  playersMax: integer('players_max'),
+  versionName: text('version_name'),
+  description: text('description'),
+  latencyMs: integer('latency_ms'),
+  errorCode: text('error_code'),
+  source: text('source').notNull().default('local-status-ping'),
+}, (table) => [index('local_server_status_samples_server_time_idx').on(table.serverId, table.checkedAt)])

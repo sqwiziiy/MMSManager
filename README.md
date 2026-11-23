@@ -53,7 +53,9 @@ Only an administrator can control a new, panel-managed server with an accepted E
 
 The local Console shows output from the owned process and sends bounded Minecraft commands to its stdin; browser input is never passed to a shell. Console history retains the most recent 5,000 entries. Raw stdout/stderr logs rotate into 16 MiB files with a 256 MiB total cap, stored privately under the MMSManager data directory. New raw capture pauses at the cap; existing logs are not deleted.
 
-The visual Properties editor changes a supported set of `server.properties` options for managed folders only. It preserves comments and unknown keys, creates a private recovery copy before each atomic replacement, and flags changes made while running as restart required. Network binding stays fixed at `127.0.0.1`. Backup restoration controls, players, mods, worlds, files, automation and rich runtime telemetry are not currently available.
+The visual Properties editor changes a supported set of `server.properties` options for managed folders only. It preserves comments and unknown keys, creates a private recovery copy before each atomic replacement, and flags changes made while running as restart required. Network binding stays fixed at `127.0.0.1`. Backup restoration controls, mods, worlds, files, automation and rich runtime telemetry are not currently available.
+
+The dashboard and Servers list now read the local registry and show an honest empty state when no servers are registered. The server Overview shows persistent server metadata plus process RSS, uptime and CPU only when the process identity is verifiably owned by MMSManager. A bounded status ping targets only `127.0.0.1` at the registered game port and can report a count, version and description; it is never treated as proof of player identities. For Administrators, the Players tab can query names from the owned process `list` response. Fixed kick, ban, pardon, op/deop and whitelist commands require a browser confirmation, validated username and an owned running process. The result is marked confirmed only when a known server response appears; otherwise the UI says the action is unverified and points to Console. Imported folders remain read-only.
 
 ## Checks
 
@@ -68,6 +70,6 @@ pnpm build
 
 - Machine metrics and history are real, read-only measurements from this local Linux host when available. The app does not inspect other machines.
 - The local server registry, Java version checks, Vanilla/Fabric/Paper installation, panel-owned start/stop, basic process console/logs and managed `server.properties` editing are local-only features. Existing folder imports do not modify files and remain unmanaged.
-- Player counts and CPU usage per server remain unavailable. Player management, mods, backups, worlds, files, automation, restore UI, RCON and restart controls are still `Coming soon` or disabled previews.
+- Per-server CPU comes only from the verified owned process; status-ping player counts and process console identities show their own source and freshness. Fixed player actions are Admin-only and use response verification. Mods/plugins, files, worlds, backups, backup restore, automation, RCON and orchestrated restart remain `Coming soon` or disabled previews.
 - User creation, roles, profile, password, avatar and workspace/personal settings are backed by the local SQLite workspace. They do not control Minecraft permissions or server access.
 - No RCON, SSH, remote host, LAN API or arbitrary OS shell endpoint is included. The API and Vite remain loopback-only.

@@ -374,6 +374,43 @@ export const serverRuntimeSchema = z.object({
   errorMessage: z.string().nullable(),
 }).strict()
 export const serverRuntimeResultSchema = z.object({ runtime: serverRuntimeSchema }).strict()
+export const serverStatusSchema = z.object({
+  serverId: z.string().uuid(),
+  checkedAt: z.string().datetime({ offset: true }),
+  source: z.literal('local-status-ping'),
+  state: z.enum(['reachable', 'unreachable', 'unavailable']),
+  playersOnline: z.number().int().nonnegative().nullable(),
+  playersMax: z.number().int().nonnegative().nullable(),
+  versionName: z.string().max(120).nullable(),
+  description: z.string().max(256).nullable(),
+  latencyMs: z.number().int().nonnegative().nullable(),
+  errorCode: z.string().nullable(),
+  authoritativePlayerList: z.literal(false),
+}).strict()
+export const serverStatusResultSchema = z.object({ status: serverStatusSchema }).strict()
+export const serverPlayerListSchema = z.object({
+  serverId: z.string().uuid(),
+  state: z.enum(['authoritative', 'unavailable']),
+  source: z.enum(['owned-console-list', 'unavailable']),
+  sampledAt: z.string().datetime({ offset: true }).nullable(),
+  names: z.array(z.string().regex(/^[A-Za-z0-9_]{3,16}$/)).max(500),
+  reason: z.string().max(160).nullable(),
+}).strict()
+export const serverPlayerListResultSchema = z.object({ players: serverPlayerListSchema }).strict()
+export const serverPlayerActionSchema = z.enum(['kick', 'ban', 'pardon', 'op', 'deop', 'whitelist-add', 'whitelist-remove', 'whitelist-list'])
+export const serverPlayerActionRequestSchema = z.object({
+  action: serverPlayerActionSchema,
+  username: z.string().trim().regex(/^[A-Za-z0-9_]{3,16}$/).optional(),
+}).strict().refine((value) => value.action === 'whitelist-list' ? value.username === undefined : value.username !== undefined, {
+  path: ['username'], message: 'A valid player name is required for this action.',
+})
+export const serverPlayerActionResultSchema = z.object({
+  state: z.enum(['confirmed', 'unverified']),
+  action: serverPlayerActionSchema,
+  username: z.string().regex(/^[A-Za-z0-9_]{3,16}$/).nullable(),
+  submittedAt: z.string().datetime({ offset: true }),
+  confirmedAt: z.string().datetime({ offset: true }).nullable(),
+}).strict()
 export const serverConsoleEntrySchema = z.object({
   id: z.number().int().positive(),
   occurredAt: z.string().datetime({ offset: true }),
@@ -459,6 +496,10 @@ export type InstallCatalog = z.infer<typeof installCatalogSchema>
 export type ServerInstallRequest = z.infer<typeof serverInstallRequestSchema>
 export type InstallOperation = z.infer<typeof installOperationSchema>
 export type ServerRuntime = z.infer<typeof serverRuntimeSchema>
+export type ServerStatus = z.infer<typeof serverStatusSchema>
+export type ServerPlayerList = z.infer<typeof serverPlayerListSchema>
+export type ServerPlayerAction = z.infer<typeof serverPlayerActionSchema>
+export type ServerPlayerActionResult = z.infer<typeof serverPlayerActionResultSchema>
 export type ServerConsoleEntry = z.infer<typeof serverConsoleEntrySchema>
 export type ServerPropertySettings = z.infer<typeof serverPropertySettingsSchema>
 export type ServerPropertiesUpdate = z.infer<typeof serverPropertiesUpdateSchema>

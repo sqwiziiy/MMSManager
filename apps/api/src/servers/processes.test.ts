@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { users, localServers, localServerRuntime } from '../db/schema.js'
+import { eq } from 'drizzle-orm'
+import { users, localServers, localServerRuntime, localServerEvents } from '../db/schema.js'
 import { openDatabase } from '../db/client.js'
 import { ServerRegistry } from './registry.js'
 import { ServerProcessManager } from './processes.js'
@@ -37,6 +38,9 @@ printf '[Server thread/INFO]: Starting fixture\\n'
 ( sleep 0.05; printf '[Server thread/INFO]: Done (0.1s)! For help, type "help"\\n' ) &
 while IFS= read -r line; do
   if [ "$line" = "stop" ]; then printf '[Server thread/INFO]: Stopping fixture\\n'; exit 0; fi
+  if [ "$line" = "list" ]; then printf '[Server thread/INFO]: There are 2 of a max of 20 players online: MiraWoods, Alex_123\\n'; continue; fi
+  if [ "$line" = "kick MiraWoods" ]; then printf '[Server thread/INFO]: Kicked MiraWoods from the game\\n'; continue; fi
+  if [ "$line" = "whitelist list" ]; then printf '[Server thread/INFO]: There are no whitelisted players.\\n'; continue; fi
   printf '[Server thread/INFO]: %s\\n' "$line"
 done
 `)
@@ -94,7 +98,27 @@ done
     const starting = await manager.start(managedId, userId)
     expect(starting).toMatchObject({ status: 'starting', restartRequired: true })
     const ready = await waitForStatus('running')
-    expect(ready).toMatchObject({ ready: true, playersOnline: null, cpuPercent: null, memoryRssBytes: expect.any(Number) })
+    expect(ready).toMatchObject({ ready: true, playersOnline: null, memoryRssBytes: expect.any(Number) })
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100))
+    expect((await manager.get(managedId)).cpuPercent).toEqual(expect.any(Number))
+    expect(await manager.players(importedId)).toMatchObject({ state: 'unavailable', names: [] })
+    await expect(manager.players(managedId)).resolves.toMatchObject({ state: 'authoritative', source: 'owned-console-list', names: ['MiraWoods', 'Alex_123'] })
+    await expect(manager.playerAction(managedId, userId, 'kick', 'MiraWoods')).resolves.toMatchObject({ state: 'confirmed', action: 'kick', username: 'MiraWoods', confirmedAt: expect.any(String) })
+    await expect(manager.playerAction(managedId, userId, 'whitelist-list', null)).resolves.toMatchObject({ state: 'confirmed', action: 'whitelist-list', username: null })
+    await expect(manager.playerAction(managedId, userId, 'ban', 'Alex_123')).resolves.toMatchObject({ state: 'unverified', action: 'ban', username: 'Alex_123', confirmedAt: null })
+    await expect(manager.playerAction(managedId, userId, 'kick', 'MiraWoods;stop')).rejects.toMatchObject({ code: 'INVALID_PLAYER_NAME' })
+    await expect(manager.playerAction(importedId, userId, 'ban', 'MiraWoods')).rejects.toMatchObject({ code: 'SERVER_NOT_PANEL_MANAGED' })
+    const confirmedActions = opened.db.select().from(localServerEvents).where(eq(localServerEvents.action, 'player-kick')).all()
+    expect(confirmedActions).toHaveLength(1)
+    expect(confirmedActions[0]).toMatchObject({ serverId: managedId, actorUserId: userId, outcome: 'success' })
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const { entries } = await manager.console(managedId, 0, 200)
+      if (entries.some((entry) => entry.message.includes('Kicked MiraWoods from the game')) && entries.some((entry) => entry.message.includes('There are no whitelisted players'))) break
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10))
+    }
+    const actionConsole = await manager.console(managedId, 0, 200)
+    expect(actionConsole.entries.some((entry) => entry.source === 'stdout' && entry.message.includes('Kicked MiraWoods from the game'))).toBe(true)
+    expect(actionConsole.entries.some((entry) => entry.source === 'stdout' && entry.message.includes('There are no whitelisted players'))).toBe(true)
     expect(ready.restartRequired).toBe(false)
     await manager.sendCommand(managedId, userId, 'say fixture-console-check')
     for (let attempt = 0; attempt < 100; attempt += 1) {

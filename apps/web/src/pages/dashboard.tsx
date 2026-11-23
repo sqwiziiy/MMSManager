@@ -1,14 +1,32 @@
-import { ArrowRight, ArrowUpRight, CalendarDays, Cpu, HardDrive, MemoryStick, Plus, RefreshCw, Server, Users, Wifi } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { ArrowRight, ArrowUpRight, CalendarDays, Cpu, HardDrive, Plus, RefreshCw, Server, Users, Wifi } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { activities, formatMemory, getServerSummary, servers } from '../data'
-import { MetricTrack, WorldBlocks } from '../components/charts'
-import { Badge, Card, PageHeading, StatusDot } from '../components/ui'
+import type { LocalServerSummary } from '@mmsmanager/shared'
+import { MetricTrack } from '../components/charts'
+import { Badge, Card, PageHeading } from '../components/ui'
 import { LiveResourceChart } from '../components/live-chart'
+import { getLocalServers } from '../api/servers'
+import { useAuth } from '../state/use-auth'
 import { useMachineMonitor } from '../state/use-machine-monitor'
 import { formatBytes, formatPercent, formatTimestamp } from '../lib/format'
 
 export function DashboardPage({ onCreate }: { onCreate: () => void }) {
-  const summary = getServerSummary()
+  const [registered, setRegistered] = useState<LocalServerSummary[]>([])
+  const [serverLoading, setServerLoading] = useState(true)
+  const [serverError, setServerError] = useState<string | null>(null)
+  const { snapshot } = useAuth()
+  const isAdmin = snapshot?.user.role === 'administrator'
+  const loadServers = useCallback(async (signal?: AbortSignal) => {
+    try {
+      setRegistered(await getLocalServers(signal))
+      setServerError(null)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      setServerError(error instanceof Error ? error.message : 'The local server registry is unavailable.')
+    } finally { setServerLoading(false) }
+  }, [])
+  useEffect(() => { const controller = new AbortController(); void loadServers(controller.signal); return () => controller.abort() }, [loadServers])
+  const running = registered.filter((server) => server.runtimeStatus === 'running').length
   const monitor = useMachineMonitor()
   const current = monitor.current
   const sample = current?.sample ?? null
@@ -16,12 +34,12 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
   const connected = monitor.apiStatus === 'online' && current?.status === 'live'
   const today = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())
   return <div className="page-stack dashboard-page">
-    <PageHeading eyebrow={today} title="Dashboard" description="Server previews beside live readings from this local machine." />
+    <PageHeading eyebrow={today} title="Dashboard" description="Registered local servers and live readings from this machine." />
 
-    <div className="overview-strip" aria-label="Server demo summary and live local CPU">
-      <div className="overview-number"><span className="overview-icon"><Server size={17} /></span><div><span>Servers online · DEMO</span><strong>{summary.online}<small> / {summary.total}</small></strong></div></div>
-      <div className="overview-number"><span className="overview-icon"><Users size={17} /></span><div><span>Players online · DEMO</span><strong>{summary.players}<small> sample count</small></strong></div></div>
-      <div className="overview-number"><span className="overview-icon"><MemoryStick size={17} /></span><div><span>Allocated memory · DEMO</span><strong>{summary.allocatedMemory}<small> sample total</small></strong></div></div>
+    <div className="overview-strip" aria-label="Registered server summary and local CPU">
+      <div className="overview-number"><span className="overview-icon"><Server size={17} /></span><div><span>Running servers</span><strong>{serverLoading || serverError ? '—' : running}<small> / {serverLoading || serverError ? '—' : registered.length} registered</small></strong></div></div>
+      <div className="overview-number"><span className="overview-icon"><Users size={17} /></span><div><span>Players online</span><strong>—<small> query unavailable</small></strong></div></div>
+      <div className="overview-number"><span className="overview-icon"><HardDrive size={17} /></span><div><span>Managed servers</span><strong>{serverLoading || serverError ? '—' : registered.filter((server) => server.managed && server.source === 'created').length}<small> local instances</small></strong></div></div>
       <div className="overview-number overview-machine-number"><span className="overview-icon"><Cpu size={17} /></span><div><span>Local CPU · LIVE</span><strong>{formatPercent(sample?.cpuPercent ?? null)}<small>{connected ? 'current' : current?.status === 'stale' ? 'stale' : 'unavailable'}</small></strong></div><span className={`live-indicator ${connected ? 'connected' : ''}`} aria-label={connected ? 'Live local machine' : 'Local machine unavailable'} />
       </div>
     </div>
@@ -38,22 +56,18 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
       </Card>
 
       <Card className="fleet-card">
-        <div className="card-heading-row"><div><div className="card-kicker"><Server size={15} /> Server fleet · DEMO</div><h2>Server status</h2></div><Link className="text-link" to="/servers">View all <ArrowRight size={14} /></Link></div>
-        <div className="fleet-list">{servers.map((server) => <Link className="fleet-row" to={`/servers/${server.id}`} key={server.id}>
-          <WorldBlocks server={server} compact />
-          <span className="fleet-row-main"><strong>{server.name}</strong><small>{server.software} · {server.version}</small></span>
-          <span className="fleet-row-right"><span className="fleet-status"><StatusDot status={server.status} />{server.status}</span><small>{server.players}/{server.capacity} players</small></span>
-        </Link>)}</div>
-        <button className="fleet-create" onClick={onCreate}><span className="fleet-create-plus"><Plus size={12} aria-hidden="true" /></span><span>Create a local server</span><ArrowUpRight size={14} /></button>
+        <div className="card-heading-row"><div><div className="card-kicker"><Server size={15} /> Local registry</div><h2>Server status</h2></div><Link className="text-link" to="/servers">View all <ArrowRight size={14} /></Link></div>
+        <div className="fleet-list">{serverLoading ? <div className="local-server-empty">Reading registered servers…</div> : serverError ? <div className="local-server-empty" role="status">{serverError} <button className="text-link" onClick={() => void loadServers()}>Retry</button></div> : registered.length ? registered.slice(0, 5).map((server) => <Link className="fleet-row" to={`/servers/${server.id}/overview`} key={server.id}>
+          <span className="local-server-icon"><Server size={16} /></span>
+          <span className="fleet-row-main"><strong>{server.name}</strong><small>{server.software} · {server.version ?? 'version unknown'} · {server.source === 'imported' ? 'read only' : 'managed'}</small></span>
+          <span className="fleet-row-right"><Badge tone={server.runtimeStatus === 'running' ? 'good' : server.runtimeStatus === 'error' || server.runtimeStatus === 'crashed' ? 'danger' : 'neutral'}>{server.runtimeStatus === 'external/unmanaged' ? 'Unmanaged' : server.runtimeStatus ?? 'Unavailable'}</Badge><small>{server.port ? `127.0.0.1:${server.port}` : 'Port unknown'}</small></span>
+        </Link>) : <div className="local-server-empty">No servers registered on this computer.</div>}</div>
+        {isAdmin && <button className="fleet-create" onClick={onCreate}><span className="fleet-create-plus"><Plus size={12} aria-hidden="true" /></span><span>Create a local server</span><ArrowUpRight size={14} /></button>}
       </Card>
 
       <Card className="activity-card">
-        <div className="card-heading-row"><div><div className="card-kicker"><Wifi size={15} /> Server activity · DEMO</div><h2>Sample events</h2></div><Link className="text-link" to="/activity">Activity log <ArrowRight size={14} /></Link></div>
-        <div className="activity-list">{activities.slice(0, 3).map((activity) => <div className="activity-row" key={activity.id}>
-          <span className={`activity-marker marker-${activity.tone}`} />
-          <div className="activity-copy"><strong>{activity.event}</strong><span>{activity.server} <span className="activity-dot-sep">·</span> {activity.detail}</span></div>
-          <time>{activity.time}</time>
-        </div>)}</div>
+        <div className="card-heading-row"><div><div className="card-kicker"><Wifi size={15} /> Server activity</div><h2>Recent events</h2></div><Link className="text-link" to="/activity">Activity log <ArrowRight size={14} /></Link></div>
+        <div className="local-server-empty">A server event timeline will appear after structured event collection is connected.</div>
       </Card>
 
       <Card className="machine-card">
@@ -64,19 +78,11 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
         </div>
       </Card>
     </div>
-    {monitor.apiStatus === 'offline' && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Local metrics are unavailable</strong><small>Server cards remain DEMO. No machine values are being substituted.</small></span><button className="button button-secondary" onClick={monitor.refreshNow}><RefreshCw size={14} /> Retry</button></div>}
+    {monitor.apiStatus === 'offline' && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Local metrics are unavailable</strong><small>No machine values are being substituted.</small></span><button className="button button-secondary" onClick={monitor.refreshNow}><RefreshCw size={14} /> Retry</button></div>}
   </div>
 }
 
 function MachineMetricTrack({ label, value, detail, tone }: { label: string; value: number | null; detail: string; tone: 'accent' | 'blue' | 'amber' }) {
   if (value === null) return <div className="metric-unavailable"><div className="metric-track-copy"><span>{label}</span><strong>Unavailable</strong></div><p>{detail}</p></div>
   return <MetricTrack label={label} value={Math.round(value)} detail={detail} tone={tone} />
-}
-
-export function ServerTile({ server }: { server: (typeof servers)[number] }) {
-  return <Link to={`/servers/${server.id}`} className="server-tile">
-    <div className="server-tile-top"><WorldBlocks server={server} /><div><div className="server-tile-title"><strong>{server.name}</strong><Badge tone={server.status === 'Online' ? 'good' : 'neutral'}><StatusDot status={server.status} />{server.status}</Badge></div><p>{server.software} {server.version} <span>·</span> {server.world}</p></div></div>
-    <div className="server-tile-metrics"><div><span>Players</span><strong>{server.players}<small> / {server.capacity}</small></strong></div><div><span>Memory</span><strong>{formatMemory(server.memoryUsed)}<small> / {server.memoryTotal} GB</small></strong></div><div><span>Uptime</span><strong>{server.uptime}</strong></div></div>
-    <div className="server-tile-footer"><span>{server.address}</span><span>Open overview <ArrowRight size={13} /></span></div>
-  </Link>
 }

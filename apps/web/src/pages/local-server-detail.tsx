@@ -6,9 +6,9 @@ import {
   Send, Server, Settings2, Shield, Square, Terminal, Users, Wifi,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
-import type { LocalServerSummary, ServerConsoleEntry, ServerPropertiesResponse, ServerPropertySettings, ServerRuntime } from '@mmsmanager/shared'
+import type { LocalServerSummary, ServerConsoleEntry, ServerPropertiesResponse, ServerPropertySettings, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction } from '@mmsmanager/shared'
 import {
-  confirmLocalServerStopped, getServerConsole, getServerProperties, getServerRuntime,
+  confirmLocalServerStopped, getAuthoritativePlayers, getServerConsole, getServerProperties, getServerRuntime, getServerStatus, sendPlayerAction,
   sendLocalServerCommand, startLocalServer, stopLocalServer, updateServerProperties,
 } from '../api/servers'
 import { useAuth } from '../state/use-auth'
@@ -49,6 +49,8 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   const section = location.pathname.split('/')[3] || 'overview'
   const active = tabs.find((tab) => tab.id === section) ?? tabs[0]!
   const [runtime, setRuntime] = useState<ServerRuntime | null>(null)
+  const [statusSample, setStatusSample] = useState<ServerStatus | null>(null)
+  const [statusError, setStatusError] = useState<string | null>(null)
   const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -67,6 +69,17 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     const timer = window.setInterval(() => void refreshRuntime(), 2500)
     return () => window.clearInterval(timer)
   }, [refreshRuntime])
+  useEffect(() => {
+    let active = true
+    const refresh = () => { void getServerStatus(server.id).then((value) => {
+      if (active) { setStatusSample(value); setStatusError(null) }
+    }).catch((error: unknown) => {
+      if (active) setStatusError(error instanceof Error ? error.message : 'The local status query failed.')
+    }) }
+    refresh()
+    const timer = window.setInterval(refresh, 15_000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [server.id])
 
   async function runAction(action: 'start' | 'stop' | 'confirm') {
     setBusy(true)
@@ -102,19 +115,20 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     </div>
     <div className="server-detail-tabs" role="navigation" aria-label={`${server.name} pages`}>
       {tabs.map(({ id, label, icon: Icon }) => <NavLink key={id} to={`/servers/${server.id}/${id}`} className={section === id ? 'active' : ''}>
-        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties'].includes(id) && <span className="tab-preview-dot" />}
+        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players'].includes(id) && <span className="tab-preview-dot" />}
       </NavLink>)}
     </div>
     <div className="server-section-heading"><div><p className="eyebrow">{server.name} / {active.label}</p><h2>{sectionTitle(section)}</h2></div><Badge tone="good">Local registry</Badge></div>
     {(runtimeError || actionError) && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{actionError ?? runtimeError}</span><Button icon={RefreshCw} onClick={() => void refreshRuntime()}>Retry</Button></div>}
     {runtime?.errorMessage && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{runtime.errorMessage}</span></div>}
     {runtime?.restartRequired && <div className="local-restart-banner" role="status"><RefreshCw size={16} /><span><strong>Restart required</strong><small>Server properties changed while this process was running. The new values take effect after the next start.</small></span></div>}
-    {section === 'overview' && <LocalOverview server={server} runtime={runtime} isAdmin={isAdmin} />}
+    {section === 'overview' && <LocalOverview server={server} runtime={runtime} statusSample={statusSample} isAdmin={isAdmin} />}
+    {section === 'players' && <LocalPlayers serverId={server.id} isAdmin={isAdmin} canAct={Boolean(isManaged && runtime?.status === 'running')} statusSample={statusSample} error={statusError} />}
     {section === 'console' && <LocalConsole serverId={server.id} runtime={runtime} isAdmin={isAdmin} />}
     {section === 'logs' && <LocalLogs serverId={server.id} />}
     {section === 'properties' && isAdmin && <LocalProperties serverId={server.id} managed={isManaged} />}
     {section === 'properties' && !isAdmin && <LockedDetail title="Administrator access required" text="Server properties are visible only to workspace administrators." />}
-    {!['overview', 'console', 'logs', 'properties'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
+    {!['overview', 'console', 'logs', 'properties', 'players'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
   </div>
 }
 
@@ -140,10 +154,10 @@ function bytes(value: number | null) {
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-function LocalOverview({ server, runtime, isAdmin }: { server: LocalServerSummary; runtime: ServerRuntime | null; isAdmin: boolean }) {
+function LocalOverview({ server, runtime, statusSample, isAdmin }: { server: LocalServerSummary; runtime: ServerRuntime | null; statusSample: ServerStatus | null; isAdmin: boolean }) {
   return <>
     <div className="local-runtime-metrics">
-      <div><span>Players online</span><strong>Unavailable</strong><small>No player-query integration in this stage</small></div>
+      <div><span>Players online</span><strong>{statusSample?.state === 'reachable' ? statusSample.playersOnline : 'Unavailable'}</strong><small>{statusSample?.state === 'reachable' ? 'Local status ping · count only' : 'No current local status response'}</small></div>
       <div><span>Process memory</span><strong>{bytes(runtime?.memoryRssBytes ?? null)}</strong><small>Resident memory from this child process</small></div>
       <div><span>Uptime</span><strong>{duration(runtime?.uptimeSeconds ?? null)}</strong><small>{runtime?.startedAt ? `Started ${new Date(runtime.startedAt).toLocaleString()}` : 'No running process'}</small></div>
       <div><span>Java runtime</span><strong>{server.javaMajor ? `Java ${server.javaMajor}` : 'Not configured'}</strong><small>Minecraft server process only</small></div>
@@ -158,11 +172,83 @@ function LocalOverview({ server, runtime, isAdmin }: { server: LocalServerSummar
         <div><span>Process state</span><strong>{statusLabel(runtime?.status ?? server.runtimeStatus ?? 'unavailable')}</strong></div>
       </div><div className="local-detail-callout"><LockKeyhole size={15} /><span>Only the local child process created by MMSManager can be controlled. Imported folders remain unmanaged.</span></div></Card>
       <Card><SectionHeading title="Local process" description="Runtime values are separate from machine-wide telemetry." /><div className="local-process-state"><span className={`local-process-indicator ${runtime?.status === 'running' ? 'active' : ''}`} /><div><strong>{statusLabel(runtime?.status ?? server.runtimeStatus ?? 'unavailable')}</strong><small>{runtime?.ready ? 'Minecraft reported readiness in its output.' : runtime?.status === 'starting' ? 'Waiting for the Minecraft readiness line.' : 'No panel-owned ready process.'}</small></div></div>
-        <div className="local-detail-facts compact"><div><span>CPU</span><strong>Unavailable</strong></div><div><span>Connected players</span><strong>Unavailable</strong></div><div><span>Last exit code</span><strong>{runtime?.lastExitCode ?? '—'}</strong></div></div>
+        <div className="local-detail-facts compact"><div><span>Process CPU</span><strong>{runtime?.cpuPercent === null || runtime?.cpuPercent === undefined ? 'Unavailable' : `${runtime.cpuPercent.toFixed(1)}%`}</strong><small>Share of local host capacity; needs two samples</small></div><div><span>Connected players</span><strong>Unavailable</strong></div><div><span>Last exit code</span><strong>{runtime?.lastExitCode ?? '—'}</strong></div></div>
         {!isAdmin && <div className="local-detail-callout"><Shield size={15} /><span>Only administrators can start, stop, edit properties, or send console commands.</span></div>}
       </Card>
     </div>
   </>
+}
+
+const playerActionLabels: Record<ServerPlayerAction, string> = {
+  kick: 'Kick player', ban: 'Ban player', pardon: 'Pardon ban', op: 'Grant operator', deop: 'Remove operator',
+  'whitelist-add': 'Add to whitelist', 'whitelist-remove': 'Remove from whitelist', 'whitelist-list': 'List whitelist',
+}
+const playerActions: ServerPlayerAction[] = ['kick', 'ban', 'pardon', 'op', 'deop', 'whitelist-add', 'whitelist-remove', 'whitelist-list']
+
+function LocalPlayers({ serverId, isAdmin, canAct, statusSample, error }: { serverId: string; isAdmin: boolean; canAct: boolean; statusSample: ServerStatus | null; error: string | null }) {
+  const [players, setPlayers] = useState<ServerPlayerList | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [action, setAction] = useState<ServerPlayerAction>('kick')
+  const [username, setUsername] = useState('')
+  const [actionBusy, setActionBusy] = useState(false)
+  const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    if (!isAdmin) return
+    setLoading(true)
+    try {
+      setPlayers(await getAuthoritativePlayers(serverId, signal))
+      setListError(null)
+    } catch (issue) {
+      if (!(issue instanceof DOMException && issue.name === 'AbortError')) setListError(issue instanceof Error ? issue.message : 'The owned process player list is unavailable.')
+    } finally { setLoading(false) }
+  }, [serverId, isAdmin])
+  async function submitAction(event: FormEvent) {
+    event.preventDefault()
+    const target = action === 'whitelist-list' ? null : username.trim()
+    if (!canAct) return
+    if (target && !/^[A-Za-z0-9_]{3,16}$/.test(target)) {
+      setActionMessage('Enter a Minecraft username with 3 to 16 letters, numbers, or underscores.')
+      return
+    }
+    const description = target ? `${playerActionLabels[action]} for ${target}` : playerActionLabels[action]
+    if (!window.confirm(`${description}? MMSManager will send this fixed command to the panel-owned server. Confirm the result in Console.`)) return
+    setActionBusy(true)
+    setActionMessage(null)
+    try {
+      const result = await sendPlayerAction(serverId, action, target)
+      setActionMessage(result.state === 'confirmed'
+        ? `The server confirmed ${playerActionLabels[action].toLowerCase()}${target ? ` for ${target}` : ''} at ${new Date(result.confirmedAt!).toLocaleTimeString()}.`
+        : `The command was sent, but the server response was not recognized. Check Console; the action may or may not have taken effect.`)
+    } catch (issue) {
+      setActionMessage(issue instanceof Error ? issue.message : 'The player command could not be submitted.')
+    } finally { setActionBusy(false) }
+  }
+  useEffect(() => {
+    const controller = new AbortController()
+    void refresh(controller.signal)
+    return () => controller.abort()
+  }, [refresh])
+  return <Card className="local-properties-card"><SectionHeading title="Player status" description="Status ping counts and, for administrators, a fresh list from an owned process." />
+    {(error || listError) && <div className="local-inline-error" role="status">{error ?? listError}</div>}
+    <div className="local-detail-facts"><div><span>Online count</span><strong>{statusSample?.state === 'reachable' ? statusSample.playersOnline : 'Unavailable'}</strong></div><div><span>Maximum slots</span><strong>{statusSample?.state === 'reachable' ? statusSample.playersMax : 'Unavailable'}</strong></div><div><span>Count source</span><strong>Local status ping</strong></div><div><span>Checked</span><strong>{statusSample ? new Date(statusSample.checkedAt).toLocaleString() : 'Waiting for response'}</strong></div></div>
+    <div className="local-player-list"><div className="card-heading-row"><div><div className="card-kicker"><Users size={15} /> Owned process</div><h3>Online identities</h3></div>{isAdmin && <Button icon={RefreshCw} disabled={loading} onClick={() => void refresh()}>Refresh list</Button>}</div>
+      {!isAdmin ? <p>Administrator access is required to request player names.</p>
+        : loading && !players ? <p>Asking the owned process for its player list…</p>
+          : players?.state === 'authoritative' ? <><p>Reported by the owned console at {new Date(players.sampledAt!).toLocaleString()}. Names are not UUID verified.</p>{players.names.length ? <div className="local-player-names">{players.names.map((name) => <strong key={name}>{name}</strong>)}</div> : <p>No players were reported by the owned process.</p>}</>
+            : <p>{players?.reason ?? 'An owned, ready process is required for a verified player list.'}</p>}
+    </div>
+    {isAdmin && <div className="local-player-actions"><SectionHeading title="Player commands" description="Fixed Minecraft commands sent only to this panel-owned process." />
+      <form onSubmit={(event) => void submitAction(event)}>
+        <label><span>Action</span><select aria-label="Player action" value={action} onChange={(event) => setAction(event.target.value as ServerPlayerAction)}>{playerActions.map((choice) => <option key={choice} value={choice}>{playerActionLabels[choice]}</option>)}</select></label>
+        {action !== 'whitelist-list' && <label><span>Minecraft username</span><input aria-label="Minecraft username" autoComplete="off" maxLength={16} pattern="[A-Za-z0-9_]{3,16}" placeholder="Player name" required value={username} onChange={(event) => setUsername(event.target.value)} /></label>}
+        <Button icon={Shield} disabled={!canAct || actionBusy} kind={action === 'kick' || action === 'ban' ? 'danger' : 'secondary'}>{actionBusy ? 'Sending…' : 'Send player command'}</Button>
+      </form>
+      <p>{canAct ? 'Actions are submitted, not assumed successful. Check the owned console response.' : 'Player commands require an administrator and a running panel-owned server.'}</p>
+      {actionMessage && <div className="local-action-result" role="status">{actionMessage}</div>}
+    </div>}
+    <div className="local-detail-callout"><Users size={15} /><span>The status ping never proves player identities. Moderation actions remain unavailable until their command results can be verified.</span></div>
+  </Card>
 }
 
 function LocalConsole({ serverId, runtime, isAdmin }: { serverId: string; runtime: ServerRuntime | null; isAdmin: boolean }) {

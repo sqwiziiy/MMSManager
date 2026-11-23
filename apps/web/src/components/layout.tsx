@@ -5,7 +5,8 @@ import {
   Info, LayoutDashboard, Menu, PanelLeftClose, Search, Server, Settings2, ShieldCheck, Users, X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { servers } from '../data'
+import { getLocalServers } from '../api/servers'
+import type { LocalServerSummary } from '@mmsmanager/shared'
 import { Button, IconButton } from './ui'
 import { useMachineMonitor } from '../state/use-machine-monitor'
 import type { AuthUser } from '@mmsmanager/shared'
@@ -29,6 +30,7 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
   const [mobileOpen, setMobileOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [registeredServers, setRegisteredServers] = useState<LocalServerSummary[]>([])
   const location = useLocation()
   const monitor = useMachineMonitor()
   const machineLive = monitor.apiStatus === 'online' && monitor.current?.status === 'live'
@@ -39,6 +41,12 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
   useEffect(() => {
     setMobileOpen(false)
     setProfileOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void getLocalServers(controller.signal).then(setRegisteredServers).catch(() => undefined)
+    return () => controller.abort()
   }, [location.pathname])
 
   useEffect(() => {
@@ -57,10 +65,10 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
   }, [])
 
   const pageTitle = useMemo(() => {
-    if (location.pathname.startsWith('/servers/')) return servers.find((server) => location.pathname.includes(server.id))?.name ?? 'Server'
+    if (location.pathname.startsWith('/servers/')) return registeredServers.find((server) => location.pathname.includes(server.id))?.name ?? 'Server'
     if (location.pathname === '/machine/history') return 'Machine history'
     return [...operations, ...library, ...accountNavigation].find((item) => item.to === location.pathname)?.label ?? workspaceName
-  }, [location.pathname, accountNavigation, workspaceName])
+  }, [location.pathname, accountNavigation, workspaceName, registeredServers])
 
   return (
     <div className={`app-frame ${collapsed ? 'sidebar-collapsed' : ''}`}>
@@ -75,7 +83,7 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
         <button className="sidebar-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search</span><kbd>Ctrl K</kbd></button>
 
         <div className="sidebar-scroll">
-          <NavGroup title="Workspace" items={operations} />
+          <NavGroup title="Workspace" items={operations} serverCount={registeredServers.length} />
           <div className="sidebar-divider" />
           <NavGroup title="Library" items={library} />
           <div className="sidebar-divider" />
@@ -99,26 +107,26 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
       <main className="main-panel">
         <header className="topbar">
           <div className="topbar-left"><IconButton icon={Menu} label="Open navigation" className="menu-mobile" onClick={() => setMobileOpen(true)} /><span className="topbar-page">{pageTitle}</span><span className="breadcrumb-divider">/</span><span className="breadcrumb-current">Workspace</span></div>
-          <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd>Ctrl K</kbd></button><span className="topbar-separator" /><span className={`top-demo ${machineLive ? 'machine-live' : ''}`}><span />{machineLive ? 'Local machine · Live' : 'Local machine · Offline'}</span><Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button></div>
+          <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd>Ctrl K</kbd></button><span className="topbar-separator" /><span className={`top-demo ${machineLive ? 'machine-live' : ''}`}><span />{machineLive ? 'Local machine · Live' : 'Local machine · Offline'}</span>{user.role === 'administrator' && <Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button>}</div>
         </header>
-        <div className="global-demo-bar"><span className="demo-bar-mark"><Info size={10} aria-hidden="true" /></span><span><strong>{workspaceName}</strong><span className="demo-bar-divider">·</span> Sample fleet is DEMO; local server controls are connected</span><span className="demo-bar-right">Loopback only</span></div>
+        <div className="global-demo-bar"><span className="demo-bar-mark"><Info size={10} aria-hidden="true" /></span><span><strong>{workspaceName}</strong><span className="demo-bar-divider">·</span> Local server registry connected</span><span className="demo-bar-right">Loopback only</span></div>
         <div className="page-content" key={location.pathname}>{children}</div>
       </main>
-      {searchOpen && <QuickSearch onClose={() => setSearchOpen(false)} includeUsers={user.role === 'administrator'} />}
+      {searchOpen && <QuickSearch onClose={() => setSearchOpen(false)} includeUsers={user.role === 'administrator'} registeredServers={registeredServers} />}
     </div>
   )
 }
 
-function NavGroup({ title, items }: { title: string; items: NavItem[] }) {
+function NavGroup({ title, items, serverCount }: { title: string; items: NavItem[]; serverCount?: number }) {
   return <nav className="nav-group" aria-label={title}>
     <p className="nav-group-title">{title}</p>
     {items.map(({ label, to, icon: Icon, exact }) => <NavLink key={to} to={to} end={exact} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`} title={label}>
-      <Icon size={17} strokeWidth={1.7} /><span>{label}</span>{label === 'Servers' && <span className="nav-count">03</span>}
+      <Icon size={17} strokeWidth={1.7} /><span>{label}</span>{label === 'Servers' && serverCount !== undefined && <span className="nav-count">{serverCount}</span>}
     </NavLink>)}
   </nav>
 }
 
-function QuickSearch({ onClose, includeUsers }: { onClose: () => void; includeUsers: boolean }) {
+function QuickSearch({ onClose, includeUsers, registeredServers }: { onClose: () => void; includeUsers: boolean; registeredServers: LocalServerSummary[] }) {
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const navigate = useNavigate()
@@ -127,7 +135,7 @@ function QuickSearch({ onClose, includeUsers }: { onClose: () => void; includeUs
     { label: 'Machine history', to: '/machine/history', icon: CalendarDays, group: 'Machine' },
     ...library.map(({ label, to, icon }) => ({ label, to, icon, group: 'Library' })),
     ...administration.filter((item) => includeUsers || item.to !== '/users').map(({ label, to, icon }) => ({ label, to, icon, group: 'Account' })),
-    ...servers.map((server) => ({ label: server.name, to: `/servers/${server.id}`, icon: Server, group: 'Servers' })),
+    ...registeredServers.map((server) => ({ label: server.name, to: `/servers/${server.id}/overview`, icon: Server, group: 'Servers' })),
   ]
   const shown = entries.filter((entry) => entry.label.toLowerCase().includes(query.toLowerCase()))
   const openEntry = (to: string) => {

@@ -10,9 +10,12 @@ import {
   serverInventorySchema,
   serverConsoleResponseSchema,
   serverRuntimeResultSchema,
+  serverStatusResultSchema,
+  serverPlayerListResultSchema,
+  serverPlayerActionResultSchema,
   serverPropertiesResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerPropertiesResponse, ServerPropertiesUpdate } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesUpdate } from '@mmsmanager/shared'
 import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 
 async function request<T>(url: string, schema: { parse: (value: unknown) => T }, init: RequestInit = {}): Promise<T> {
@@ -37,6 +40,20 @@ async function request<T>(url: string, schema: { parse: (value: unknown) => T },
 export async function getLocalServers(signal?: AbortSignal): Promise<LocalServerSummary[]> {
   const response = await request('/api/v1/servers', localServerListSchema, { signal })
   return response.servers
+}
+
+export async function getServerStatus(serverId: string, signal?: AbortSignal): Promise<ServerStatus> {
+  const response = await request('/api/v1/servers/' + encodeURIComponent(serverId) + '/status', serverStatusResultSchema, { signal })
+  return response.status
+}
+
+export async function getAuthoritativePlayers(serverId: string, signal?: AbortSignal): Promise<ServerPlayerList> {
+  const response = await request('/api/v1/admin/servers/' + encodeURIComponent(serverId) + '/players', serverPlayerListResultSchema, { signal })
+  return response.players
+}
+
+export async function sendPlayerAction(serverId: string, action: ServerPlayerAction, username: string | null): Promise<ServerPlayerActionResult> {
+  return request('/api/v1/admin/servers/' + encodeURIComponent(serverId) + '/player-actions', serverPlayerActionResultSchema, { method: 'POST', body: JSON.stringify(username === null ? { action } : { action, username }) })
 }
 
 export function getServerInventory(signal?: AbortSignal): Promise<ServerInventory> {

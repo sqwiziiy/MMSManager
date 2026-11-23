@@ -56,6 +56,8 @@ async function mockLocalServer(page: Page) {
   await page.route('**/api/v1/servers', (route) => route.fulfill({ json: { servers: [server] } }))
   await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [{ ...server, directory: '/tmp/mmsmanager-e2e/local-fixture', javaPath: '/tmp/fake-java' }], managedRoot: '/tmp/mmsmanager-e2e/servers', importRoots: ['/tmp/mmsmanager-e2e/servers'] } }))
   await page.route(`**/api/v1/servers/${serverId}/runtime`, (route) => route.fulfill({ json: { runtime: { serverId, status: 'running', startedAt: now, uptimeSeconds: 153, memoryRssBytes: 536870912, cpuPercent: null, ready: true, playersOnline: null, eula: 'accepted', restartRequired, lastExitCode: null, errorMessage: null } } }))
+  await page.route(`**/api/v1/servers/${serverId}/status`, (route) => route.fulfill({ json: { status: { serverId, checkedAt: now, source: 'local-status-ping', state: 'reachable', playersOnline: 3, playersMax: 20, versionName: 'Paper 1.21.4', description: 'Local fixture', latencyMs: 4, errorCode: null, authoritativePlayerList: false } } }))
+  await page.route(`**/api/v1/admin/servers/${serverId}/players`, (route) => route.fulfill({ json: { players: { serverId, state: 'authoritative', source: 'owned-console-list', sampledAt: now, names: ['FixturePlayer'], reason: null } } }))
   await page.route(`**/api/v1/servers/${serverId}/console?*`, (route) => {
     const after = Number(new URL(route.request().url()).searchParams.get('after') ?? 0)
     return route.fulfill({ json: { entries: consoleResponse.entries.filter((entry) => entry.id > after), nextAfter: null } })
@@ -68,11 +70,16 @@ async function mockLocalServer(page: Page) {
     return route.fulfill({ json: { properties: properties() } })
   })
   let submittedCommand: string | undefined
+  let submittedPlayerAction: { action?: string; username?: string } | undefined
+  await page.route(`**/api/v1/admin/servers/${serverId}/player-actions`, async (route) => {
+    submittedPlayerAction = route.request().postDataJSON() as { action?: string; username?: string }
+    return route.fulfill({ json: { state: 'unverified', action: submittedPlayerAction.action, username: submittedPlayerAction.username ?? null, submittedAt: now, confirmedAt: null } })
+  })
   await page.route(`**/api/v1/admin/servers/${serverId}/console`, async (route) => {
     submittedCommand = (route.request().postDataJSON() as { command?: string }).command
     return route.fulfill({ status: 202, json: { ok: true } })
   })
-  return { serverId, get submittedCommand() { return submittedCommand } }
+  return { serverId, get submittedCommand() { return submittedCommand }, get submittedPlayerAction() { return submittedPlayerAction } }
 }
 
 test('first-run administrator setup creates the protected local workspace', async ({ page }) => {
@@ -90,9 +97,11 @@ test('first-run administrator setup creates the protected local workspace', asyn
   await page.getByLabel('Confirm password').fill(adminPassword)
   await page.getByRole('button', { name: 'Create administrator' }).click()
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
-  await expect(page.getByText('Sample fleet is DEMO; local server controls are connected')).toBeVisible()
+  await expect(page.getByText('Local server registry connected')).toBeVisible()
+  await expect(page.getByText('No servers registered on this computer.')).toBeVisible()
   await page.context().storageState({ path: browserSessionPath })
   await page.screenshot({ path: resolve(screenshotDir, 'stage-03-dashboard-desktop.png'), fullPage: true })
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05a-dashboard-empty-desktop.png'), fullPage: true })
   expect(page.url()).not.toContain('/setup')
 })
 
@@ -114,7 +123,8 @@ test('desktop navigation keeps server pages clearly in preview mode', async ({ p
 
   await page.getByRole('link', { name: 'Servers' }).click()
   await expect(page.getByRole('heading', { name: 'Servers' })).toBeVisible()
-  await page.getByRole('link', { name: /Alder SMP/ }).click()
+  await expect(page.getByRole('link', { name: /Alder SMP/ })).toHaveCount(0)
+  await page.goto('/servers/alder-smp/overview')
   await expect(page.getByRole('heading', { name: 'Server overview' })).toBeVisible()
   await page.getByRole('link', { name: 'Console' }).click()
   await expect(page.getByText('Sample console stream')).toBeVisible()
@@ -265,8 +275,20 @@ test('local server overview, console and visual properties use mocked API data',
   await page.getByRole('link', { name: /Local Fixture/ }).click()
   await expect(page.getByRole('heading', { name: 'Local Fixture' })).toBeVisible()
   await expect(page.getByText('Running', { exact: true }).first()).toBeVisible()
-  await expect(page.getByText('Players online').locator('..')).toContainText('Unavailable')
+  await expect(page.getByText('Players online').locator('..')).toContainText('3')
   await page.screenshot({ path: resolve(screenshotDir, 'stage-04c-local-server-desktop.png'), fullPage: true })
+  await page.getByRole('link', { name: 'Players' }).click()
+  await expect(page.getByRole('heading', { name: 'Online identities' })).toBeVisible()
+  await expect(page.getByText('FixturePlayer', { exact: true })).toBeVisible()
+  await expect(page.getByText('The status ping never proves player identities', { exact: false })).toBeVisible()
+  await page.getByLabel('Player action').selectOption('ban')
+  await page.getByLabel('Minecraft username').fill('FixturePlayer')
+  page.once('dialog', (dialog) => void dialog.accept())
+  await page.getByRole('button', { name: 'Send player command' }).click()
+  await expect.poll(() => fixture.submittedPlayerAction).toEqual({ action: 'ban', username: 'FixturePlayer' })
+  await expect(page.getByText(/command was sent, but the server response was not recognized/)).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05a-local-players-desktop.png'), fullPage: true })
+  await page.getByRole('link', { name: 'Overview' }).click()
 
   await page.getByRole('link', { name: 'Console' }).click()
   await expect(page.getByText('Connected to owned process')).toBeVisible()
@@ -307,6 +329,10 @@ test('local server detail and property controls fit a mobile viewport', async ({
   await expect(page.getByRole('textbox', { name: 'Minecraft server command' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'local server mobile console')
   await page.screenshot({ path: resolve(screenshotDir, 'stage-04c-local-console-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.getByRole('link', { name: 'Players' }).click()
+  await expect(page.getByRole('heading', { name: 'Online identities' })).toBeVisible()
+  await expectNoHorizontalOverflow(page, 'local server mobile players')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05a-local-players-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('mobile dashboard, account screens and navigation fit a narrow viewport', async ({ page }) => {
@@ -337,7 +363,7 @@ test('local host metrics and history remain protected and visibly local', async 
   await page.setViewportSize({ width: 1440, height: 1000 })
   await signIn(page)
   await expect(page.getByText('LIVE', { exact: true }).first()).toBeVisible({ timeout: 20_000 })
-  await expect(page.getByText('Servers online · DEMO')).toBeVisible()
+  await expect(page.getByText('Running servers')).toBeVisible()
   await expect(page.getByText('Local CPU · LIVE')).toBeVisible()
   await page.screenshot({ path: resolve(screenshotDir, 'stage-03-dashboard-authenticated-desktop.png'), fullPage: true })
 

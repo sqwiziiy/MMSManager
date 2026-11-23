@@ -9,7 +9,7 @@ import { asc, desc, eq, gt, lt, and } from 'drizzle-orm'
 import type { FileHandle } from 'node:fs/promises'
 import type { AppDatabase } from '../db/client.js'
 import { localServerConsoleEntries, localServerEvents, localServerRuntime, localServers } from '../db/schema.js'
-import type { ServerRuntime, ServerConsoleEntry } from '@mmsmanager/shared'
+import type { ServerRuntime, ServerConsoleEntry, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
 import { isLoopbackPortAvailable } from './install.js'
 
@@ -17,6 +17,16 @@ const MAX_LOG_SEGMENT_BYTES = 16 * 1024 * 1024
 const MAX_TOTAL_RAW_LOG_BYTES = 256 * 1024 * 1024
 const MAX_LINE_BYTES = 8192
 const MAX_CONSOLE_ENTRIES = 5000
+const PLAYER_ACTION_COMMANDS: Record<ServerPlayerAction, (username: string | null) => string> = {
+  kick: (username) => `kick ${username}`,
+  ban: (username) => `ban ${username}`,
+  pardon: (username) => `pardon ${username}`,
+  op: (username) => `op ${username}`,
+  deop: (username) => `deop ${username}`,
+  'whitelist-add': (username) => `whitelist add ${username}`,
+  'whitelist-remove': (username) => `whitelist remove ${username}`,
+  'whitelist-list': () => 'whitelist list',
+}
 
 type OutputStream = 'stdout' | 'stderr'
 type LogSegment = { handle: FileHandle; index: number; size: number }
@@ -35,6 +45,14 @@ type ManagedProcess = {
   segments: Record<OutputStream, LogSegment | null>
   writeQueues: Record<OutputStream, Promise<void>>
 }
+type PendingPlayerAction = {
+  action: ServerPlayerAction
+  username: string | null
+  actorUserId: string
+  submittedAt: string
+  timer: NodeJS.Timeout
+  resolve: (result: ServerPlayerActionResult) => void
+}
 
 export class ServerProcessError extends Error {
   constructor(readonly code: string, message: string) { super(message) }
@@ -46,6 +64,33 @@ function severityFor(line: string, stream: OutputStream): 'info' | 'warn' | 'err
   if (/\b(warn|warning)\b/i.test(line)) return 'warn'
   if (/\b(debug|trace)\b/i.test(line)) return 'debug'
   return stream === 'stderr' ? 'warn' : 'info'
+}
+
+function parsePlayerList(line: string): string[] | null {
+  const match = /(?:^|:\s*)There are (\d+) of a max of (\d+) players online:\s*(.*)$/.exec(line)
+  if (!match) return null
+  const count = Number(match[1])
+  const maximum = Number(match[2])
+  if (!Number.isInteger(count) || !Number.isInteger(maximum) || count < 0 || count > 500 || maximum < count) return null
+  const names = match[3] ? match[3].split(',').map((name) => name.trim()) : []
+  if (names.length !== count || new Set(names).size !== names.length || names.some((name) => !/^[A-Za-z0-9_]{3,16}$/.test(name))) return null
+  return names
+}
+
+function confirmsPlayerAction(action: ServerPlayerAction, username: string | null, line: string): boolean {
+  if (action === 'whitelist-list') return /There are (?:\d+ whitelisted players:|no whitelisted players\.?)/i.test(line)
+  if (!username) return false
+  const name = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const patterns: Record<Exclude<ServerPlayerAction, 'whitelist-list'>, RegExp> = {
+    kick: new RegExp(`Kicked ${name} from the game`, 'i'),
+    ban: new RegExp(`Banned ${name}(?:\\s|$)`, 'i'),
+    pardon: new RegExp(`Pardoned player ${name}(?:\\s|$)`, 'i'),
+    op: new RegExp(`Made ${name} a server operator`, 'i'),
+    deop: new RegExp(`Made ${name} no longer a server operator`, 'i'),
+    'whitelist-add': new RegExp(`Added ${name} to the whitelist`, 'i'),
+    'whitelist-remove': new RegExp(`Removed ${name} from the whitelist`, 'i'),
+  }
+  return patterns[action].test(line)
 }
 
 async function readBootId(): Promise<string> {
@@ -77,9 +122,28 @@ async function readProcessRssBytes(pid: number): Promise<number | null> {
   }
 }
 
+async function readProcessCpuSnapshot(pid: number): Promise<{ marker: string; processTicks: number; systemTicks: number } | null> {
+  try {
+    const [stat, systemStat] = await Promise.all([readFile(`/proc/${pid}/stat`, 'utf8'), readFile('/proc/stat', 'utf8')])
+    const close = stat.lastIndexOf(')')
+    if (close < 0) return null
+    const fields = stat.slice(close + 1).trim().split(/\s+/)
+    const marker = fields[19]
+    const userTicks = Number(fields[11])
+    const kernelTicks = Number(fields[12])
+    const cpuLine = systemStat.split('\n', 1)[0]?.trim().split(/\s+/)
+    const systemTicks = cpuLine?.[0] === 'cpu' ? cpuLine.slice(1, 9).reduce((total, value) => total + Number(value), 0) : NaN
+    if (!marker || !/^\d+$/.test(marker) || ![userTicks, kernelTicks, systemTicks].every(Number.isSafeInteger)) return null
+    return { marker, processTicks: userTicks + kernelTicks, systemTicks }
+  } catch { return null }
+}
+
 export class ServerProcessManager {
   private readonly children = new Map<string, ManagedProcess>()
   private readonly starting = new Set<string>()
+  private readonly cpuSnapshots = new Map<string, { pid: number; marker: string; processTicks: number; systemTicks: number }>()
+  private readonly playerQueries = new Map<string, { promise: Promise<ServerPlayerList>; resolve: (value: ServerPlayerList) => void; timer: NodeJS.Timeout }>()
+  private readonly playerActions = new Map<string, PendingPlayerAction[]>()
   private readonly logsDirectory: string
   private readonly commandTimes = new Map<string, number[]>()
   private bootId = ''
@@ -150,17 +214,29 @@ export class ServerProcessManager {
       ? Math.max(0, (this.now() - Date.parse(startedAt)) / 1000)
       : null
     let memoryRssBytes: number | null = null
+    let cpuPercent: number | null = null
     if (row?.processPid && row.processStartMarker && row.processBootId === this.bootId) {
       const marker = await readProcessStartMarker(row.processPid).catch(() => null)
-      if (marker === row.processStartMarker) memoryRssBytes = await readProcessRssBytes(row.processPid)
+      if (marker === row.processStartMarker) {
+        memoryRssBytes = await readProcessRssBytes(row.processPid)
+        const sample = await readProcessCpuSnapshot(row.processPid)
+        if (sample?.marker === marker) {
+          const previous = this.cpuSnapshots.get(serverId)
+          if (previous?.pid === row.processPid && previous.marker === marker && sample.systemTicks > previous.systemTicks && sample.processTicks >= previous.processTicks) {
+            cpuPercent = Math.min(100, Math.max(0, (sample.processTicks - previous.processTicks) / (sample.systemTicks - previous.systemTicks) * 100))
+          }
+          this.cpuSnapshots.set(serverId, { pid: row.processPid, ...sample })
+        }
+      }
     }
+    if (!row?.processPid || memoryRssBytes === null) this.cpuSnapshots.delete(serverId)
     return {
       serverId,
       status,
       startedAt,
       uptimeSeconds,
       memoryRssBytes,
-      cpuPercent: null,
+      cpuPercent,
       ready: status === 'running',
       playersOnline: null,
       eula: server.eula,
@@ -178,6 +254,59 @@ export class ServerProcessManager {
     const more = rows.length > limit
     const entries = rows.slice(0, limit).map((row) => ({ id: row.id, occurredAt: row.occurredAt, source: row.source, severity: row.severity, message: row.message }))
     return { entries, nextAfter: more ? entries.at(-1)?.id ?? null : null }
+  }
+
+  async players(serverId: string): Promise<ServerPlayerList> {
+    const server = this.serverRow(serverId)
+    const unavailable = (reason: string): ServerPlayerList => ({ serverId, state: 'unavailable', source: 'unavailable', sampledAt: null, names: [], reason })
+    if (server.source !== 'created' || !server.managed) return unavailable('Imported folders have no panel-owned console.')
+    const managed = this.children.get(serverId)
+    const status = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()?.status
+    if (!managed || status !== 'running') return unavailable('An owned, ready process is required for an authoritative player list.')
+    const existing = this.playerQueries.get(serverId)
+    if (existing) return existing.promise
+    let resolveQuery!: (value: ServerPlayerList) => void
+    const promise = new Promise<ServerPlayerList>((resolve) => { resolveQuery = resolve })
+    const timer = setTimeout(() => {
+      this.playerQueries.delete(serverId)
+      resolveQuery(unavailable('The owned process did not return a recognized list response in time.'))
+    }, 2_500)
+    timer.unref()
+    this.playerQueries.set(serverId, { promise, resolve: resolveQuery, timer })
+    managed.child.stdin.write('list\n', (error) => {
+      if (!error) return
+      const pending = this.playerQueries.get(serverId)
+      if (!pending) return
+      clearTimeout(pending.timer)
+      this.playerQueries.delete(serverId)
+      pending.resolve(unavailable('The list command could not be written to the owned process.'))
+    })
+    return promise
+  }
+
+  async playerAction(serverId: string, actorUserId: string, action: ServerPlayerAction, username: string | null): Promise<ServerPlayerActionResult> {
+    if (action === 'whitelist-list' ? username !== null : !username || !/^[A-Za-z0-9_]{3,16}$/.test(username)) throw new ServerProcessError('INVALID_PLAYER_NAME', 'Use a valid Minecraft username of 3 to 16 letters, numbers, or underscores.')
+    const command = PLAYER_ACTION_COMMANDS[action]
+    if (!command) throw new ServerProcessError('PLAYER_ACTION_UNSUPPORTED', 'This player action is not supported.')
+    const submittedAt = new Date(this.now()).toISOString()
+    let resolveAction!: (result: ServerPlayerActionResult) => void
+    const response = new Promise<ServerPlayerActionResult>((resolve) => { resolveAction = resolve })
+    const pending: PendingPlayerAction = {
+      action, username, actorUserId, submittedAt,
+      timer: setTimeout(() => this.finishPlayerAction(serverId, pending, false), 3_000),
+      resolve: resolveAction,
+    }
+    pending.timer.unref()
+    const actions = this.playerActions.get(serverId) ?? []
+    actions.push(pending)
+    this.playerActions.set(serverId, actions)
+    try {
+      await this.sendCommand(serverId, actorUserId, command(username))
+    } catch (error) {
+      this.finishPlayerAction(serverId, pending, false)
+      throw error
+    }
+    return response
   }
 
   async start(serverId: string, actorUserId: string): Promise<ServerRuntime> {
@@ -216,6 +345,7 @@ export class ServerProcessManager {
     if (server.port && !await isLoopbackPortAvailable(server.port)) throw new ServerProcessError('PORT_IN_USE', `Local port ${server.port} is already in use.`)
 
     const launchId = randomUUID()
+    this.cpuSnapshots.delete(serverId)
     const at = new Date(this.now()).toISOString()
     await this.writeRuntime(serverId, {
       status: 'starting', processPid: null, processStartMarker: null, processBootId: null,
@@ -380,6 +510,17 @@ export class ServerProcessManager {
   private receivedLine(serverId: string, managed: ManagedProcess, stream: OutputStream, line: string): void {
     const message = line.length > MAX_LINE_BYTES ? `${line.slice(0, MAX_LINE_BYTES)} [display truncated; raw log preserved]` : line
     void this.addEntry(serverId, stream, severityFor(message, stream), message)
+    if (stream === 'stdout' && this.children.get(serverId) === managed) {
+      const pending = this.playerQueries.get(serverId)
+      const names = pending ? parsePlayerList(line) : null
+      if (pending && names) {
+        clearTimeout(pending.timer)
+        this.playerQueries.delete(serverId)
+        pending.resolve({ serverId, state: 'authoritative', source: 'owned-console-list', sampledAt: new Date(this.now()).toISOString(), names, reason: null })
+      }
+      const pendingAction = (this.playerActions.get(serverId) ?? []).find((action) => confirmsPlayerAction(action.action, action.username, line))
+      if (pendingAction) this.finishPlayerAction(serverId, pendingAction, true)
+    }
     if (stream === 'stdout' && !managed.stopRequested && /Done \([^)]*\)! For help/.test(line)) {
       void this.updateRuntime(serverId, { status: 'running', errorMessage: null, restartRequired: false })
         .then(() => this.addEntry(serverId, 'system', 'info', 'Minecraft readiness was confirmed from the server output.'))
@@ -428,6 +569,14 @@ export class ServerProcessManager {
       await segment?.handle.close()
     }
     if (this.children.get(serverId) === managed) this.children.delete(serverId)
+    const playerQuery = this.playerQueries.get(serverId)
+    if (playerQuery) {
+      clearTimeout(playerQuery.timer)
+      this.playerQueries.delete(serverId)
+      playerQuery.resolve({ serverId, state: 'unavailable', source: 'unavailable', sampledAt: null, names: [], reason: 'The owned process exited before answering the list command.' })
+    }
+    for (const playerAction of [...(this.playerActions.get(serverId) ?? [])]) this.finishPlayerAction(serverId, playerAction, false)
+    this.cpuSnapshots.delete(serverId)
     const status: 'stopped' | 'crashed' | 'error' = managed.spawnFailed ? 'error' : managed.stopRequested || code === 0 ? 'stopped' : 'crashed'
     await this.updateRuntime(serverId, {
       status, processPid: null, processStartMarker: null, processBootId: null,
@@ -478,6 +627,19 @@ export class ServerProcessManager {
 
   private async event(serverId: string | null, actorUserId: string | null, action: string, outcome: 'success' | 'failure', detail: string): Promise<void> {
     this.db.insert(localServerEvents).values({ serverId, actorUserId, action, outcome, occurredAt: new Date(this.now()).toISOString(), detail: detail.slice(0, 2048) }).run()
+  }
+
+  private finishPlayerAction(serverId: string, pending: PendingPlayerAction, confirmed: boolean): void {
+    const actions = this.playerActions.get(serverId) ?? []
+    const index = actions.indexOf(pending)
+    if (index === -1) return
+    actions.splice(index, 1)
+    if (actions.length === 0) this.playerActions.delete(serverId)
+    else this.playerActions.set(serverId, actions)
+    clearTimeout(pending.timer)
+    const confirmedAt = confirmed ? new Date(this.now()).toISOString() : null
+    if (confirmed) void this.event(serverId, pending.actorUserId, `player-${pending.action}`, 'success', JSON.stringify({ username: pending.username }))
+    pending.resolve({ state: confirmed ? 'confirmed' : 'unverified', action: pending.action, username: pending.username, submittedAt: pending.submittedAt, confirmedAt })
   }
 
   private serverRow(serverId: string) {

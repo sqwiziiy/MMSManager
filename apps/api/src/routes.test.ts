@@ -86,6 +86,16 @@ describe('authenticated local API', () => {
     expect([current.statusCode, history.statusCode]).toEqual([401, 401])
   })
 
+  it('returns a proper rate-limit response after a bounded local request burst', async () => {
+    for (let index = 0; index < 600; index += 1) {
+      const response = await app.inject({ method: 'GET', url: '/api/v1/health' })
+      expect(response.statusCode).toBe(200)
+    }
+    const limited = await app.inject({ method: 'GET', url: '/api/v1/health' })
+    expect(limited.statusCode).toBe(429)
+    expect(limited.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } })
+  })
+
   it('consumes the out-of-band bootstrap credential and protects telemetry/history with a session', async () => {
     const session = await bootstrapAdmin()
     expect(auth.getSetupRequired()).toBe(false)
@@ -331,6 +341,9 @@ describe('authenticated local API', () => {
     expect(memberLogin.statusCode).toBe(200)
     expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/start`, headers: memberHeaders, payload: {} })).statusCode).toBe(403)
     expect((await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: memberHeaders, payload: { motd: 'Blocked' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/player-actions`, headers: memberHeaders, payload: { action: 'ban', username: 'Alex_123' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/player-actions`, headers: adminHeaders, payload: { action: 'ban', username: 'Alex_123;stop' } })).statusCode).toBe(400)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/player-actions`, headers: adminHeaders, payload: { action: 'ban', username: 'Alex_123' } })).statusCode).toBe(409)
     expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${id}/console`, headers: memberHeaders })).statusCode).toBe(200)
   })
 })

@@ -28,6 +28,10 @@ import {
   serverConsoleQuerySchema,
   serverConsoleResponseSchema,
   serverRuntimeResultSchema,
+  serverStatusResultSchema,
+  serverPlayerListResultSchema,
+  serverPlayerActionRequestSchema,
+  serverPlayerActionResultSchema,
   serverPropertiesResultSchema,
   serverPropertiesUpdateSchema,
   javaProbeRequestSchema,
@@ -61,6 +65,7 @@ import { ServerInventoryError, ServerRegistry } from './servers/registry.js'
 import { ServerInstallError, ServerInstallService } from './servers/install.js'
 import { ServerProcessError, ServerProcessManager } from './servers/processes.js'
 import { ServerPropertiesError, ServerPropertiesManager } from './servers/properties.js'
+import { ServerStatusError, ServerStatusService } from './servers/status.js'
 
 class InvalidRequestError extends Error {}
 
@@ -110,7 +115,7 @@ function nestedStatusCode(error: unknown): number | null {
   for (let depth = 0; depth < 3; depth += 1) {
     if (typeof value !== 'object' || value === null) return null
     const record = value as Record<string, unknown>
-    if (record['code'] === 'FST_ERR_RATE_LIMIT') return 429
+    if (record['code'] === 'FST_ERR_RATE_LIMIT' || record['code'] === 'RATE_LIMITED') return 429
     const statusCode = Number(record['statusCode'])
     if (Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599) return statusCode
     value = record['error']
@@ -181,6 +186,7 @@ export async function createApiApp(options: {
   const processes = options.processes ?? new ServerProcessManager(options.db, options.servers, options.now)
   await processes.prepare()
   const properties = new ServerPropertiesManager(options.db, options.servers, options.now)
+  const serverStatus = new ServerStatusService(options.db, options.now)
   const webOrigin = options.webOrigin ?? WEB_ORIGIN
   const apiPort = options.apiPort ?? 4174
   const secureCookies = options.secureCookies ?? false
@@ -193,7 +199,7 @@ export async function createApiApp(options: {
   })
   await app.register(rateLimit, {
     global: true,
-    max: 300,
+    max: 600,
     timeWindow: '1 minute',
     errorResponseBuilder: () => ({ error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again shortly.' } }),
   })
@@ -262,9 +268,10 @@ export async function createApiApp(options: {
   }
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ServerStatusError) return reply.code(404).send({ error: { code: error.code, message: error.message } })
     if (error instanceof ServerProcessError) {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
-        : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') ? 409
+        : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') || error.code.endsWith('_NOT_RUNNING') || error.code === 'SERVER_NOT_PANEL_MANAGED' ? 409
           : error.code.includes('UNAVAILABLE') ? 503 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
@@ -473,6 +480,19 @@ export async function createApiApp(options: {
   app.get('/api/v1/servers/:serverId/runtime', { preHandler: requireAuth }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverRuntimeResultSchema.parse({ runtime: await processes.get(params.serverId) })
+  })
+  app.get('/api/v1/servers/:serverId/status', { preHandler: requireAuth }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverStatusResultSchema.parse({ status: await serverStatus.get(params.serverId) })
+  })
+  app.get('/api/v1/admin/servers/:serverId/players', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverPlayerListResultSchema.parse({ players: await processes.players(params.serverId) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/player-actions', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverPlayerActionRequestSchema, request.body)
+    return serverPlayerActionResultSchema.parse(await processes.playerAction(params.serverId, request.principal!.userId, input.action, input.username ?? null))
   })
   app.get('/api/v1/servers/:serverId/console', { preHandler: requireAuth }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
