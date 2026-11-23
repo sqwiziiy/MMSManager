@@ -6,6 +6,27 @@ import Database from 'better-sqlite3'
 import { openDatabase } from './client.js'
 
 describe('SQLite migration recovery', () => {
+  it('applies the Stage 5D history migration and its bounded lookup indexes in a temporary database', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'mmsmanager-stage-5d-migration-'))
+    const databasePath = join(temp, 'state.sqlite')
+    try {
+      const opened = await openDatabase({ path: databasePath })
+      try {
+        const tables = opened.native.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => (row as { name: string }).name)
+        const indexes = opened.native.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map((row) => (row as { name: string }).name)
+        expect(tables).toContain('local_server_structured_events')
+        expect(tables).toContain('local_server_resource_samples')
+        expect(tables).toContain('local_server_sessions')
+        expect(indexes).toContain('local_server_structured_events_server_time_idx')
+        expect(indexes).toContain('local_server_resource_samples_server_minute_unique')
+        expect(indexes).toContain('local_server_sessions_active_unique')
+        expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
+      } finally { opened.native.close() }
+    } finally {
+      await rm(temp, { recursive: true, force: true })
+    }
+  })
+
   it('creates and verifies a private online backup before an additive migration', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'mmsmanager-migration-'))
     const migrationsFolder = join(temp, 'migrations')

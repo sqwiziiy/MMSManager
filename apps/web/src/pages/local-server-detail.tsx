@@ -6,9 +6,9 @@ import {
   Search, Send, Server, Settings2, Shield, Square, Terminal, Trash2, Upload, Users, Wifi,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
-import type { LocalServerSummary, ServerConsoleEntry, ServerModEntry, ServerModsInventory, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertySettings, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash } from '@mmsmanager/shared'
+import type { LocalServerSummary, ServerConsoleEntry, ServerModEntry, ServerModsInventory, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertySettings, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds } from '@mmsmanager/shared'
 import {
-  confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getServerConsole, getServerProperties, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, previewServerPropertiesRestore, restoreServerFileRecovery, restoreServerProperties, restoreTrashedServerFile, sendPlayerAction,
+  confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getServerConsole, getServerProperties, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, previewServerPropertiesRestore, restoreServerFileRecovery, restoreServerProperties, restoreTrashedServerFile, sendPlayerAction,
   sendLocalServerCommand, startLocalServer, stopLocalServer, updateServerProperties,
   getServerMods, uploadServerMod, uploadServerFile, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile,
 } from '../api/servers'
@@ -116,7 +116,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     </div>
     <div className="server-detail-tabs" role="navigation" aria-label={`${server.name} pages`}>
       {tabs.map(({ id, label, icon: Icon }) => <NavLink key={id} to={`/servers/${server.id}/${id}`} className={section === id ? 'active' : ''}>
-        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files'].includes(id) && <span className="tab-preview-dot" />}
+        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds'].includes(id) && <span className="tab-preview-dot" />}
       </NavLink>)}
     </div>
     <div className="server-section-heading"><div><p className="eyebrow">{server.name} / {active.label}</p><h2>{sectionTitle(section)}</h2></div><Badge tone="good">Local registry</Badge></div>
@@ -132,7 +132,9 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     {section === 'properties' && !isAdmin && <LockedDetail title="Administrator access required" text="Server properties are visible only to workspace administrators." />}
     {section === 'files' && isAdmin && <LocalFiles serverId={server.id} managed={isManaged} runtimeStatus={status} />}
     {section === 'files' && !isAdmin && <LockedDetail title="Administrator access required" text="Server files may contain credentials or private world data. Access is limited to workspace administrators." />}
-    {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
+    {section === 'worlds' && isAdmin && <LocalWorlds serverId={server.id} managed={isManaged} />}
+    {section === 'worlds' && !isAdmin && <LockedDetail title="Administrator access required" text="World paths and storage details are available only to workspace administrators." />}
+    {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
   </div>
 }
 
@@ -396,6 +398,57 @@ function LocalProperties({ serverId, managed }: { serverId: string; managed: boo
     <Card><SectionHeading title="Protected and preserved" description="Network and unrecognized properties are not editable here." /><div className="local-protected-setting"><LockKeyhole size={15} /><span><strong>Local network bind</strong><small>127.0.0.1 is preserved from the managed installation.</small></span></div><div className="local-unknown-setting"><strong>{properties.unknownKeys.length} other properties preserved</strong><span>{properties.unknownKeys.length ? properties.unknownKeys.slice(0, 12).join(' · ') : 'No additional keys found'}{properties.unknownKeys.length > 12 ? ' …' : ''}</span></div></Card>
     <Card><SectionHeading title="Recovery copies" description="Private snapshots made before each property change." /><div className="local-backup-list">{properties.backups.length ? properties.backups.map((backup) => <div key={backup.id}><span className="local-backup-icon"><Archive size={15} /></span><span><strong>{new Date(backup.createdAt).toLocaleString()}</strong><small>SHA-256 {backup.sha256.slice(0, 12)}…</small></span><Button icon={RotateCcw} onClick={() => void previewBackup(backup.id)}>Preview restore</Button></div>) : <span className="local-no-backups">No property changes saved yet.</span>}</div><p className="data-note">Preview compares supported settings. Secrets and unrecognized values are never shown.</p></Card>
   </div>{restorePreview && <div className="local-file-dialog-backdrop"><section className="local-file-dialog" role="dialog" aria-modal="true" aria-labelledby="property-restore-title"><div className="local-file-dialog-heading"><span className="local-backup-icon"><RotateCcw size={16} /></span><div><h3 id="property-restore-title">Restore properties</h3><p>Recovery copy from {new Date(restorePreview.createdAt).toLocaleString()}</p></div></div>{!restorePreview.checksumValid ? <div className="local-inline-error">This recovery copy failed checksum validation. It cannot be restored.</div> : restorePreview.changedSettings.length ? <div className="local-property-diff"><div className="local-property-diff-head"><span>Setting</span><span>Current</span><span>Restored</span></div>{restorePreview.changedSettings.map((change) => <div key={change.key}><strong>{change.key}</strong><span>{change.current}</span><span>{change.restored}</span></div>)}</div> : <div className="local-files-empty">No supported setting values differ.</div>}{restorePreview.otherContentDiffers && <p className="data-note">Comments and unrecognized properties also differ. Their values stay hidden in this preview and will be restored exactly.</p>}{restorePreview.running && <div className="local-file-warning"><RefreshCw size={15} /> The server is running. Restored values apply after its next restart.</div>}{restorePreview.restartRequiredAfterRestore && !restorePreview.running && <div className="local-file-warning"><RefreshCw size={15} /> A restart is already required. Restoring settings will keep that state.</div>}<div className="local-file-dialog-actions"><Button disabled={restoreBusy} onClick={() => setRestorePreview(null)}>Cancel</Button><Button kind="primary" icon={restoreBusy ? RefreshCw : RotateCcw} disabled={restoreBusy || !restorePreview.checksumValid || (restorePreview.changedSettings.length === 0 && !restorePreview.otherContentDiffers)} onClick={() => void restoreBackup()}>{restoreBusy ? 'Restoring…' : 'Restore this version'}</Button></div></section></div>}</div>
+}
+
+function LocalWorlds({ serverId, managed }: { serverId: string; managed: boolean }) {
+  const [worlds, setWorlds] = useState<ServerWorlds | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  useEffect(() => {
+    if (!managed) { setLoading(false); return }
+    const controller = new AbortController()
+    setLoading(true); setError(null); setWorlds(null)
+    void getServerWorlds(serverId, controller.signal).then((result) => {
+      setWorlds(result); setLoading(false)
+    }).catch((issue: unknown) => {
+      if (!controller.signal.aborted) {
+        setError(issue instanceof Error ? issue.message : 'The managed world inventory is unavailable.')
+        setLoading(false)
+      }
+    })
+    return () => controller.abort()
+  }, [serverId, managed, reloadKey])
+  if (!managed) return <LockedDetail title="Read only folder" text="World inventory is available only for servers created and managed by MMSManager. Imported folders are not scanned." />
+  return <div className="local-worlds-layout">
+    <Card className="local-worlds-card">
+      <div className="local-worlds-header"><div><div className="card-kicker"><Globe size={15} /> Managed world inventory</div><h3>World folders</h3><p>Configured name and bounded folder metadata · no world files are changed</p></div><Button icon={RotateCcw} disabled={loading} onClick={() => setReloadKey((value) => value + 1)}>Refresh</Button></div>
+      {error && <div className="local-inline-error" role="alert">{error}<Button icon={RotateCcw} onClick={() => setReloadKey((value) => value + 1)}>Retry</Button></div>}
+      {loading && <div className="local-files-empty" role="status"><span className="loading-pulse" /> Inspecting registered world folders…</div>}
+      {!loading && worlds?.status === 'unavailable' && <div className="local-files-empty"><AlertTriangle size={19} /><strong>World inventory unavailable</strong><span>{worlds.reason}</span></div>}
+      {worlds?.status === 'available' && <>
+        <div className="local-worlds-level"><span>Configured level-name</span><strong>{worlds.levelName}</strong><Badge tone="neutral">{worlds.levelNameSource === 'minecraft-default' ? 'Minecraft default' : 'server.properties'}</Badge></div>
+        <div className="local-world-list">
+          {worlds.entries.map((world) => <article className="local-world-row" key={world.path}>
+            <span className="local-world-icon"><Globe size={17} /></span>
+            <div className="local-world-primary"><strong>{world.name}</strong><span>{world.path} · {world.dimension}</span>{world.reason && <small>{world.reason}</small>}</div>
+            <Badge tone={world.state === 'available' ? 'good' : world.state === 'unsafe' ? 'danger' : 'warn'}>{world.state}</Badge>
+            <div className="local-world-stat"><span>Stored size</span><strong>{world.sizeBytes === null ? 'Unavailable' : `${world.sizeComplete ? '' : '≥ '}${formatWorldSize(world.sizeBytes)}`}</strong></div>
+            <div className="local-world-stat"><span>Last modified</span><strong>{world.modifiedAt ? new Date(world.modifiedAt).toLocaleString() : 'Unavailable'}</strong></div>
+            <div className="local-world-stat"><span>Backup</span><strong>{world.backupAvailable ? 'Available' : 'None yet'}</strong></div>
+          </article>)}
+        </div>
+        <div className="local-worlds-note"><Shield size={15} /><span>World folders are read only here. Backup availability will connect in Stage 5E. Visual world previews are unavailable.</span></div>
+      </>}
+    </Card>
+  </div>
+}
+
+function formatWorldSize(value: number): string {
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MiB`
+  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GiB`
 }
 
 function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; managed: boolean; runtimeStatus: string }) {

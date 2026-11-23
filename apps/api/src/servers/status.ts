@@ -3,6 +3,7 @@ import { and, desc, eq, lt } from 'drizzle-orm'
 import type { AppDatabase } from '../db/client.js'
 import { localServers, localServerStatusSamples } from '../db/schema.js'
 import type { ServerStatus } from '@mmsmanager/shared'
+import { recordServerResourceSample } from './history.js'
 
 const MAX_FRAME_BYTES = 65_536
 const TIMEOUT_MS = 1_500
@@ -137,6 +138,7 @@ export class ServerStatusService {
         playersMax: status.playersMax, versionName: status.versionName, description: status.description,
         latencyMs: status.latencyMs, errorCode: status.errorCode, source: status.source,
       }).run()
+      recordServerResourceSample(this.db, serverId, checkedAt, { playersOnline: status.playersOnline, playersMax: status.playersMax })
       const oldest = this.db.select({ id: localServerStatusSamples.id }).from(localServerStatusSamples)
         .where(eq(localServerStatusSamples.serverId, serverId)).orderBy(desc(localServerStatusSamples.id))
         .limit(1).offset(MAX_SAMPLES_PER_SERVER - 1).get()

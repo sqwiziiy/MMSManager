@@ -1114,6 +1114,25 @@ kbd { display: inline-flex; align-items: center; gap: 3px; height: 21px; padding
 .history-event-row strong { overflow: hidden; color: var(--text-secondary); font-size: 9px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .history-events-empty { margin: 8px 0 0; color: var(--text-muted); font-size: 9px; }
 .history-footnote { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 9px; }
+.server-day-summary .day-stat { min-height: 76px; }
+.server-history-chart { position: relative; padding: 8px 0 0 30px; }
+.server-history-chart svg { display: block; width: 100%; height: 146px; overflow: visible; }
+.server-history-chart svg path { fill: none; stroke: var(--line); stroke-dasharray: 3 5; stroke-width: 1; }
+.server-history-chart svg circle { fill: var(--moss-bright); stroke: #c3d4a4; stroke-width: 1.5; }
+.server-history-chart-label { position: absolute; top: 4px; bottom: 31px; left: 0; display: flex; flex-direction: column; justify-content: space-between; color: var(--text-muted); font: 8px 'DM Mono', ui-monospace, monospace; }
+.server-history-chart-range { display: flex; justify-content: space-between; gap: 10px; padding-top: 5px; color: var(--text-muted); font-size: 8px; }
+.server-history-chart-range strong { color: var(--text-secondary); font-weight: 500; }
+.server-history-chart-empty { min-height: 120px; display: grid; place-items: center; color: var(--text-muted); font-size: 10px; }
+.server-history-event, .server-history-session { display: flex; align-items: flex-start; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--line-quiet); }
+.server-history-event > div, .server-history-session > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.server-history-event time, .server-history-session small { color: var(--text-muted); font-size: 8px; }
+.server-history-event strong, .server-history-session strong { color: var(--text-secondary); font-size: 10px; font-weight: 500; overflow-wrap: anywhere; }
+.server-history-event small { color: var(--text-muted); font-size: 8px; text-transform: capitalize; }
+.server-history-event details { margin-top: 4px; color: var(--text-muted); font-size: 8px; }
+.server-history-event summary { cursor: pointer; width: fit-content; }
+.server-history-event code { display: block; margin-top: 6px; padding: 8px; border: 1px solid var(--line-quiet); border-radius: 6px; color: var(--text-secondary); background: #111411; font: 9px/1.5 'DM Mono', ui-monospace, monospace; overflow-wrap: anywhere; white-space: pre-wrap; }
+.server-history-session { align-items: center; }
+.server-history-session .badge { flex: none; }
 
 @media (max-width: 980px) {
   .history-layout { grid-template-columns: minmax(0, 1fr); }
@@ -1769,6 +1788,26 @@ kbd { display: inline-flex; align-items: center; gap: 3px; height: 21px; padding
 .install-locked p { max-width: 340px; margin: 0; color: var(--text-muted); font-size: 10px; }
 .spin { animation: install-spin .9s linear infinite; }
 @keyframes install-spin { to { transform: rotate(360deg); } }
+.local-worlds-layout { min-width: 0; }
+.local-worlds-card { min-width: 0; padding: 16px; }
+.local-worlds-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.local-worlds-header h3 { margin: 5px 0 3px; color: var(--text); font-size: 13px; font-weight: 500; }
+.local-worlds-header p { margin: 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
+.local-worlds-header .button { flex: 0 0 auto; }
+.local-worlds-level { min-height: 48px; display: flex; align-items: center; gap: 10px; padding: 8px 11px; margin-bottom: 10px; border: 1px solid var(--line-quiet); border-radius: 8px; background: #151815; }
+.local-worlds-level > span { color: var(--text-muted); font-size: 9px; }
+.local-worlds-level > strong { overflow: hidden; color: var(--text); font: 10px 'DM Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.local-world-list { display: grid; gap: 7px; }
+.local-world-row { min-width: 0; display: grid; grid-template-columns: 30px minmax(150px, 1fr) auto minmax(86px, .55fr) minmax(130px, .8fr) minmax(80px, .45fr); align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line-quiet); border-radius: 8px; background: #191d19; }
+.local-world-icon { width: 28px; height: 28px; display: grid; place-items: center; color: #a4b193; border: 1px solid #394135; border-radius: 7px; background: #222820; }
+.local-world-primary { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.local-world-primary strong { overflow: hidden; color: var(--text-secondary); font: 10px 'DM Mono', monospace; text-overflow: ellipsis; }
+.local-world-primary span, .local-world-primary small { overflow-wrap: anywhere; color: var(--text-muted); font-size: 8px; line-height: 1.4; }
+.local-world-stat { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.local-world-stat span { color: var(--text-muted); font-size: 8px; }
+.local-world-stat strong { overflow-wrap: anywhere; color: var(--text-secondary); font: 9px 'DM Mono', monospace; font-weight: 400; }
+.local-worlds-note { display: flex; align-items: flex-start; gap: 8px; padding: 10px 2px 0; margin-top: 12px; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
+.local-worlds-note svg { flex: 0 0 auto; color: #97a38b; }
 @media (max-width: 620px) {
   .install-wizard { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
   .install-wizard-body { min-height: 280px; padding: 16px 14px; }
@@ -1777,6 +1816,15 @@ kbd { display: inline-flex; align-items: center; gap: 3px; height: 21px; padding
   .install-java-row .button { align-self: flex-start; }
   .install-progress-view { padding: 25px 17px 20px; }
   .install-progress-actions { flex-wrap: wrap; }
+  .local-worlds-card { padding: 12px; }
+  .local-worlds-level { align-items: flex-start; flex-wrap: wrap; gap: 6px 8px; }
+  .local-worlds-level > span { flex-basis: 100%; }
+  .local-world-row { grid-template-columns: 28px minmax(0, 1fr) auto; gap: 8px; padding: 9px; }
+  .local-world-primary { grid-column: 2; }
+  .local-world-row > .badge { grid-column: 3; grid-row: 1; }
+  .local-world-icon { grid-column: 1; grid-row: 1; }
+  .local-world-stat { grid-column: 2 / 4; display: grid; grid-template-columns: minmax(70px, .7fr) minmax(0, 1fr); align-items: baseline; }
+  .local-world-stat strong { text-align: right; }
 }
 @media (prefers-reduced-motion: reduce) {
   .spin { animation: none; }

@@ -12,6 +12,7 @@ import { localServerConsoleEntries, localServerEvents, localServerRuntime, local
 import type { ServerRuntime, ServerConsoleEntry, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
 import { isLoopbackPortAvailable } from './install.js'
+import { finishServerSession, parseOwnedServerLogLine, recordServerResourceSample, recordStructuredServerEvent, startServerSession } from './history.js'
 
 const MAX_LOG_SEGMENT_BYTES = 16 * 1024 * 1024
 const MAX_TOTAL_RAW_LOG_BYTES = 256 * 1024 * 1024
@@ -38,6 +39,7 @@ type ManagedProcess = {
   rawLogCapNotified: boolean
   closePromise: Promise<void>
   spawnRecorded: Promise<void>
+  sampleTimer: NodeJS.Timeout | null
   stdoutDecoder: StringDecoder
   stderrDecoder: StringDecoder
   stdoutPending: string
@@ -176,20 +178,29 @@ export class ServerProcessManager {
       if (row.status === 'stopped' || row.status === 'crashed' || row.status === 'error' || row.status === 'external/unmanaged') continue
       const marker = row.processPid ? await readProcessStartMarker(row.processPid) : null
       if (!row.processPid || !row.processStartMarker || !row.processBootId) {
+        const at = new Date(this.now()).toISOString()
         await this.updateRuntime(row.serverId, { status: 'external/unmanaged', errorMessage: 'The previous process identity is incomplete after the API restart. MMSManager did not adopt or control it.' })
+        finishServerSession(this.db, row.serverId, at, 'interrupted')
+        recordStructuredServerEvent(this.db, { serverId: row.serverId, occurredAt: at, category: 'server', eventType: 'server_session_interrupted', description: 'The API restarted before the owned server session could be reconciled.', confidence: 'medium', source: 'panel-process' }, this.now)
         await this.event(row.serverId, null, 'server-process-externalized', 'failure', 'The previous process identity could not be verified after the API restart.')
         continue
       }
       if (marker && marker === row.processStartMarker && row.processBootId === this.bootId) {
+        const at = new Date(this.now()).toISOString()
         await this.updateRuntime(row.serverId, {
           status: 'external/unmanaged', errorMessage: 'The API restarted while this process was running. MMSManager did not adopt or control it.',
         })
+        finishServerSession(this.db, row.serverId, at, 'interrupted')
+        recordStructuredServerEvent(this.db, { serverId: row.serverId, occurredAt: at, category: 'server', eventType: 'server_session_interrupted', description: 'The API restarted while the server process remained unmanaged.', confidence: 'high', source: 'panel-process' }, this.now)
         await this.event(row.serverId, null, 'server-process-externalized', 'success', 'The previous panel process is running without an active MMSManager process handle.')
       } else {
+        const at = new Date(this.now()).toISOString()
         await this.updateRuntime(row.serverId, {
           status: 'crashed', processPid: null, processStartMarker: null, processBootId: null,
           lastExitCode: row.lastExitCode, errorMessage: 'The previously managed process is no longer present after the API restart.',
         })
+        finishServerSession(this.db, row.serverId, at, 'crashed')
+        recordStructuredServerEvent(this.db, { serverId: row.serverId, occurredAt: at, category: 'server', eventType: 'server_crashed', description: 'The previously owned process was no longer present after the API restarted.', confidence: 'high', source: 'panel-process' }, this.now)
         await this.event(row.serverId, null, 'server-process-recovery', 'failure', 'The previous panel process was not found after the API restart.')
       }
     }
@@ -216,9 +227,11 @@ export class ServerProcessManager {
       : null
     let memoryRssBytes: number | null = null
     let cpuPercent: number | null = null
+    let verifiedOwnedProcess = false
     if (row?.processPid && row.processStartMarker && row.processBootId === this.bootId) {
       const marker = await readProcessStartMarker(row.processPid).catch(() => null)
       if (marker === row.processStartMarker) {
+        verifiedOwnedProcess = true
         memoryRssBytes = await readProcessRssBytes(row.processPid)
         const sample = await readProcessCpuSnapshot(row.processPid)
         if (sample?.marker === marker) {
@@ -231,6 +244,9 @@ export class ServerProcessManager {
       }
     }
     if (!row?.processPid || memoryRssBytes === null) this.cpuSnapshots.delete(serverId)
+    if (status === 'running' && verifiedOwnedProcess && this.children.has(serverId) && memoryRssBytes !== null) {
+      recordServerResourceSample(this.db, serverId, new Date(this.now()).toISOString(), { cpuPercent, memoryRssBytes, uptimeSeconds })
+    }
     return {
       serverId,
       status,
@@ -388,17 +404,22 @@ export class ServerProcessManager {
     }
     const managed: ManagedProcess = {
       child, launchId, stopRequested: false, spawnFailed: false, rawLogCapNotified: false,
-      closePromise: Promise.resolve(), spawnRecorded: Promise.resolve(), stdoutDecoder: new StringDecoder('utf8'), stderrDecoder: new StringDecoder('utf8'),
+      closePromise: Promise.resolve(), spawnRecorded: Promise.resolve(), sampleTimer: null, stdoutDecoder: new StringDecoder('utf8'), stderrDecoder: new StringDecoder('utf8'),
       stdoutPending: '', stderrPending: '', segments: { stdout: null, stderr: null },
       writeQueues: { stdout: Promise.resolve(), stderr: Promise.resolve() },
     }
     this.children.set(serverId, managed)
+    managed.sampleTimer = setInterval(() => {
+      if (this.children.get(serverId) === managed) void this.get(serverId).catch(() => undefined)
+    }, 60_000)
+    managed.sampleTimer.unref()
     managed.closePromise = new Promise<void>((resolveClose) => {
       child.once('spawn', () => { managed.spawnRecorded = this.recordSpawn(serverId, child.pid ?? null) })
       child.stdout.on('data', (chunk: Buffer) => this.onOutput(serverId, managed, 'stdout', chunk))
       child.stderr.on('data', (chunk: Buffer) => this.onOutput(serverId, managed, 'stderr', chunk))
       child.once('error', () => {
         managed.spawnFailed = true
+        if (managed.sampleTimer) clearInterval(managed.sampleTimer)
         void this.failStart(serverId, actorUserId, 'JAVA_SPAWN_FAILED', 'The selected Java process failed to start.')
       })
       child.once('close', (code) => {
@@ -528,7 +549,16 @@ export class ServerProcessManager {
 
   private receivedLine(serverId: string, managed: ManagedProcess, stream: OutputStream, line: string): void {
     const message = line.length > MAX_LINE_BYTES ? `${line.slice(0, MAX_LINE_BYTES)} [display truncated; raw log preserved]` : line
-    void this.addEntry(serverId, stream, severityFor(message, stream), message)
+    const occurredAt = new Date(this.now()).toISOString()
+    void this.addEntry(serverId, stream, severityFor(message, stream), message, occurredAt).then((consoleEntryId) => {
+      if (stream !== 'stdout' || this.children.get(serverId) !== managed) return
+      const parsed = parseOwnedServerLogLine(line.slice(0, MAX_LINE_BYTES))
+      if (!parsed) return
+      recordStructuredServerEvent(this.db, {
+        serverId, consoleEntryId, occurredAt, ...parsed, rawMessage: line.slice(0, 8192), source: 'owned-log',
+      }, this.now)
+      if (parsed.eventType === 'server_ready') startServerSession(this.db, serverId, occurredAt, randomUUID())
+    }).catch(() => undefined)
     if (stream === 'stdout' && this.children.get(serverId) === managed) {
       const pending = this.playerQueries.get(serverId)
       const names = pending ? parsePlayerList(line) : null
@@ -544,6 +574,7 @@ export class ServerProcessManager {
       void this.updateRuntime(serverId, { status: 'running', errorMessage: null, restartRequired: false })
         .then(() => this.addEntry(serverId, 'system', 'info', 'Minecraft readiness was confirmed from the server output.'))
         .then(() => this.event(serverId, null, 'server-ready', 'success', 'The panel-owned server reported Minecraft readiness.'))
+        .then(() => this.get(serverId))
     }
   }
 
@@ -576,6 +607,7 @@ export class ServerProcessManager {
   }
 
   private async finish(serverId: string, actorUserId: string, managed: ManagedProcess, code: number | null): Promise<void> {
+    if (managed.sampleTimer) clearInterval(managed.sampleTimer)
     await managed.spawnRecorded
     for (const stream of ['stdout', 'stderr'] as const) {
       const decoder = stream === 'stdout' ? managed.stdoutDecoder : managed.stderrDecoder
@@ -601,13 +633,22 @@ export class ServerProcessManager {
       status, processPid: null, processStartMarker: null, processBootId: null,
       lastExitCode: code, errorMessage: status === 'crashed' ? `The server process exited unexpectedly with code ${code ?? 'unknown'}.` : null,
     })
+    const occurredAt = new Date(this.now()).toISOString()
+    finishServerSession(this.db, serverId, occurredAt, status === 'crashed' ? 'crashed' : 'stopped')
+    recordStructuredServerEvent(this.db, {
+      serverId, occurredAt, category: 'server', eventType: status === 'crashed' ? 'server_crashed' : 'server_stopped',
+      description: status === 'crashed' ? 'The owned server process exited unexpectedly.' : 'The owned server process stopped.',
+      confidence: 'high', source: 'panel-process',
+    }, this.now)
     const detail = JSON.stringify({ exitCode: code, stopRequested: managed.stopRequested })
     await this.event(serverId, actorUserId, status === 'crashed' ? 'server-crashed' : 'server-stopped', status === 'crashed' ? 'failure' : 'success', detail)
     await this.addEntry(serverId, 'system', status === 'crashed' ? 'error' : 'info', status === 'crashed' ? `The server process exited unexpectedly (${code ?? 'unknown'}).` : 'The server process stopped.')
   }
 
   private async failStart(serverId: string, actorUserId: string, code: string, message: string): Promise<void> {
+    const occurredAt = new Date(this.now()).toISOString()
     await this.updateRuntime(serverId, { status: 'error', processPid: null, processStartMarker: null, processBootId: null, errorMessage: message })
+    recordStructuredServerEvent(this.db, { serverId, occurredAt, category: 'server', eventType: 'server_start_failed', description: 'The managed server process could not start.', confidence: 'high', source: 'panel-process' }, this.now)
     await this.addEntry(serverId, 'system', 'error', message)
     await this.event(serverId, actorUserId, code, 'failure', message)
   }
@@ -634,14 +675,14 @@ export class ServerProcessManager {
     this.db.update(localServerRuntime).set({ ...fields, updatedAt: at }).where(eq(localServerRuntime.serverId, serverId)).run()
   }
 
-  private async addEntry(serverId: string, source: 'stdout' | 'stderr' | 'system' | 'command', severity: 'info' | 'warn' | 'error' | 'debug', message: string): Promise<void> {
+  private async addEntry(serverId: string, source: 'stdout' | 'stderr' | 'system' | 'command', severity: 'info' | 'warn' | 'error' | 'debug', message: string, occurredAt = new Date(this.now()).toISOString()): Promise<number> {
     const result = this.db.insert(localServerConsoleEntries).values({
-      serverId, occurredAt: new Date(this.now()).toISOString(), source, severity, message: message.slice(0, MAX_LINE_BYTES),
+      serverId, occurredAt, source, severity, message: message.slice(0, MAX_LINE_BYTES),
     }).run()
     const latest = this.db.select({ id: localServerConsoleEntries.id }).from(localServerConsoleEntries)
       .where(eq(localServerConsoleEntries.serverId, serverId)).orderBy(desc(localServerConsoleEntries.id)).limit(1).offset(MAX_CONSOLE_ENTRIES - 1).get()
     if (latest) this.db.delete(localServerConsoleEntries).where(and(eq(localServerConsoleEntries.serverId, serverId), lt(localServerConsoleEntries.id, latest.id))).run()
-    void result
+    return Number(result.lastInsertRowid)
   }
 
   private async event(serverId: string | null, actorUserId: string | null, action: string, outcome: 'success' | 'failure', detail: string): Promise<void> {

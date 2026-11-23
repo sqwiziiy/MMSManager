@@ -57,6 +57,13 @@
       "when": 1795462090430,
       "tag": "0007_stage_05c_file_manager",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1795463000000,
+      "tag": "0008_stage_05d_world_event_history",
+      "breakpoints": true
     }
   ]
 }

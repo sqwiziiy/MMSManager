@@ -533,6 +533,110 @@ export const serverFileRecoveryRestoreSchema = z.object({ expectedCurrentSha256:
 export const serverFilePathQuerySchema = z.object({ path: z.string().max(2048).default('') }).strict()
 export const serverFileReadQuerySchema = z.object({ path: z.string().min(1).max(2048) }).strict()
 export const serverFileIdParamSchema = z.object({ serverId: z.string().uuid(), id: z.string().uuid() }).strict()
+export const serverWorldEntrySchema = z.object({
+  name: z.string().max(255),
+  path: z.string().max(2048),
+  dimension: z.enum(['overworld', 'nether', 'end', 'custom']),
+  state: z.enum(['available', 'missing', 'incomplete', 'unsafe']),
+  sizeBytes: z.number().int().nonnegative().nullable(),
+  sizeComplete: z.boolean(),
+  modifiedAt: z.string().datetime({ offset: true }).nullable(),
+  backupAvailable: z.boolean(),
+  reason: z.string().max(300).nullable(),
+}).strict()
+export const serverWorldsSchema = z.object({
+  serverId: z.string().uuid(),
+  status: z.enum(['available', 'unavailable']),
+  levelName: z.string().max(2048).nullable(),
+  levelNameSource: z.enum(['server.properties', 'minecraft-default', 'unavailable']),
+  entries: z.array(serverWorldEntrySchema).max(100),
+  reason: z.string().max(300).nullable(),
+}).strict()
+export const serverWorldsResultSchema = z.object({ worlds: serverWorldsSchema }).strict()
+
+export const serverHistoryScopeSchema = z.union([z.literal('all'), z.string().uuid()])
+export const serverHistoryCalendarQuerySchema = z.object({
+  scope: serverHistoryScopeSchema.default('all'),
+  year: z.coerce.number().int().min(2000).max(2100),
+  month: z.coerce.number().int().min(1).max(12),
+}).strict()
+export const serverHistoryDayQuerySchema = z.object({
+  scope: serverHistoryScopeSchema.default('all'),
+  date: z.string().regex(datePattern),
+}).strict()
+export const serverHistoryCalendarDaySchema = z.object({
+  date: z.string().regex(datePattern),
+  status: z.enum(['observed', 'partial', 'no-data', 'future']),
+  sampleCount: z.number().int().nonnegative(),
+  eventCount: z.number().int().nonnegative(),
+  firstSampleAt: z.string().datetime({ offset: true }).nullable(),
+  lastSampleAt: z.string().datetime({ offset: true }).nullable(),
+  coveragePercent: z.number().finite().min(0).max(100),
+}).strict()
+export const serverHistoryCalendarSchema = z.object({
+  scope: serverHistoryScopeSchema,
+  year: z.number().int(),
+  month: z.number().int().min(1).max(12),
+  timeZone: z.string(),
+  days: z.array(serverHistoryCalendarDaySchema).max(31),
+}).strict()
+export const serverHistoryPointSchema = z.object({
+  observedAt: z.string().datetime({ offset: true }),
+  sampleCount: z.number().int().positive(),
+  serverCount: z.number().int().positive(),
+  cpuAveragePercent: nullablePercent,
+  memoryPeakBytes: nullableBytes,
+  playersPeak: z.number().int().nonnegative().nullable(),
+  uptimePeakSeconds: z.number().int().nonnegative().nullable(),
+}).strict()
+export const serverHistoryEventSchema = z.object({
+  id: z.number().int().positive(),
+  serverId: z.string().uuid(),
+  serverName: z.string().max(255),
+  occurredAt: z.string().datetime({ offset: true }),
+  category: z.enum(['server', 'player', 'moderation']),
+  eventType: z.string().max(80),
+  description: z.string().max(300),
+  rawMessage: z.string().max(8192).nullable(),
+  confidence: z.enum(['high', 'medium']),
+  source: z.enum(['owned-log', 'panel-process']),
+}).strict()
+export const serverHistorySessionSchema = z.object({
+  id: z.string().uuid(),
+  serverId: z.string().uuid(),
+  serverName: z.string().max(255),
+  startedAt: z.string().datetime({ offset: true }),
+  endedAt: z.string().datetime({ offset: true }).nullable(),
+  outcome: z.enum(['running', 'stopped', 'crashed', 'interrupted']),
+  uptimeSeconds: z.number().int().nonnegative().nullable(),
+  durationInDaySeconds: z.number().int().nonnegative(),
+}).strict()
+export const serverHistoryDaySchema = z.object({
+  scope: serverHistoryScopeSchema,
+  date: z.string().regex(datePattern),
+  timeZone: z.string(),
+  status: z.enum(['observed', 'partial', 'no-data', 'future']),
+  summary: z.object({
+    sampleCount: z.number().int().nonnegative(),
+    firstSampleAt: z.string().datetime({ offset: true }).nullable(),
+    lastSampleAt: z.string().datetime({ offset: true }).nullable(),
+    coveragePercent: z.number().finite().min(0).max(100),
+    cpuAveragePercent: nullablePercent,
+    cpuMaximumPercent: nullablePercent,
+    memoryPeakBytes: nullableBytes,
+    playersPeak: z.number().int().nonnegative().nullable(),
+    uptimeSeconds: z.number().int().nonnegative(),
+    sessionCount: z.number().int().nonnegative(),
+  }).strict().nullable(),
+  points: z.array(serverHistoryPointSchema).max(3000),
+  events: z.array(serverHistoryEventSchema).max(500),
+  eventsTruncated: z.boolean(),
+  sessions: z.array(serverHistorySessionSchema).max(200),
+  sessionsTruncated: z.boolean(),
+  window: z.object({ from: z.string().datetime({ offset: true }), to: z.string().datetime({ offset: true }), durationMs: z.number().int().positive() }).strict(),
+}).strict()
+export const serverHistoryCalendarResultSchema = z.object({ calendar: serverHistoryCalendarSchema }).strict()
+export const serverHistoryDayResultSchema = z.object({ day: serverHistoryDaySchema }).strict()
 export const javaRuntimeSchema = z.object({
   path: z.string(),
   version: z.string(),
@@ -603,3 +707,12 @@ export type ServerFileList = z.infer<typeof serverFileListSchema>
 export type ServerFileRead = z.infer<typeof serverFileReadSchema>
 export type ServerFileTrash = z.infer<typeof serverFileTrashSchema>
 export type ServerFileRecovery = z.infer<typeof serverFileRecoverySchema>
+export type ServerWorldEntry = z.infer<typeof serverWorldEntrySchema>
+export type ServerWorlds = z.infer<typeof serverWorldsSchema>
+export type ServerHistoryCalendar = z.infer<typeof serverHistoryCalendarSchema>
+export type ServerHistoryCalendarDay = z.infer<typeof serverHistoryCalendarDaySchema>
+export type ServerHistoryScope = z.infer<typeof serverHistoryScopeSchema>
+export type ServerHistoryPoint = z.infer<typeof serverHistoryPointSchema>
+export type ServerHistoryEvent = z.infer<typeof serverHistoryEventSchema>
+export type ServerHistorySession = z.infer<typeof serverHistorySessionSchema>
+export type ServerHistoryDay = z.infer<typeof serverHistoryDaySchema>

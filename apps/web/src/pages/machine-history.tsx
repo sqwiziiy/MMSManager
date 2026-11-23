@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Activity, CalendarDays, ChevronLeft, ChevronRight, Clock3, Cpu, HardDrive, MemoryStick, RefreshCw, Wifi } from 'lucide-react'
-import type { MachineCalendar, MachineDay } from '@mmsmanager/shared'
+import type { LocalServerSummary, MachineCalendar, MachineDay, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope } from '@mmsmanager/shared'
 import { Badge, Button, Card, PageHeading, SectionHeading } from '../components/ui'
 import { LiveResourceChart, CalendarMonthHeading } from '../components/live-chart'
 import { getMachineCalendar, getMachineDay, isRequestCancelled } from '../api/machine'
+import { getLocalServers, getServerHistoryCalendar, getServerHistoryDay } from '../api/servers'
 import { useMachineMonitor } from '../state/use-machine-monitor'
+import { useAuth } from '../state/use-auth'
 import { formatBytes, formatConfiguredDate, formatPercent, formatTimestamp } from '../lib/format'
 
 const weekdays = Array.from({ length: 7 }, (_, index) => {
@@ -53,6 +56,35 @@ function shiftMonth(year: number, month: number, amount: number): { year: number
 }
 
 export function MachineHistoryPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const { snapshot } = useAuth()
+  const isAdmin = snapshot?.user.role === 'administrator'
+  const [servers, setServers] = useState<LocalServerSummary[]>([])
+  useEffect(() => {
+    if (!isAdmin) { setServers([]); return }
+    const controller = new AbortController()
+    void getLocalServers(controller.signal).then(setServers).catch(() => setServers([]))
+    return () => controller.abort()
+  }, [isAdmin])
+  const managedServers = servers.filter((server) => server.source === 'created' && server.managed)
+  const requestedSource = searchParams.get('source') ?? 'local'
+  const matchingServer = managedServers.find((server) => server.id === requestedSource)
+  const source: 'local' | ServerHistoryScope = requestedSource === 'all' && isAdmin
+    ? 'all'
+    : isAdmin && matchingServer ? matchingServer.id : 'local'
+  const selectedServer = source === 'local' || source === 'all' ? null : managedServers.find((server) => server.id === source) ?? null
+  function changeSource(value: string) {
+    const next = new URLSearchParams(searchParams)
+    if (value === 'local') next.delete('source')
+    else next.set('source', value)
+    setSearchParams(next, { preventScrollReset: true })
+  }
+  const sourceFilter = <HistorySourceFilter value={source} servers={managedServers} isAdmin={isAdmin} onChange={changeSource} />
+  if (source === 'local') return <LocalMachineHistoryPage sourceFilter={sourceFilter} />
+  return <ServerHistoryPage sourceFilter={sourceFilter} scope={source} serverName={source === 'all' ? 'All managed servers' : selectedServer?.name ?? 'Managed server'} />
+}
+
+function LocalMachineHistoryPage({ sourceFilter }: { sourceFilter: ReactNode }) {
   const monitor = useMachineMonitor()
   const [searchParams, setSearchParams] = useSearchParams()
   const timeZone = monitor.current?.timeZone ?? monitor.history?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -124,14 +156,17 @@ export function MachineHistoryPage() {
   }
 
   function chooseMonth(nextMonth: { year: number; month: number; key: string }) {
-    const next = new URLSearchParams()
+    const next = new URLSearchParams(searchParams)
+    next.delete('date')
     next.set('month', nextMonth.key)
     if (selectedDate?.startsWith(nextMonth.key)) next.set('date', selectedDate)
     setSearchParams(next, { preventScrollReset: true })
   }
 
   function goToday() {
-    const next = new URLSearchParams({ month: today.slice(0, 7), date: today })
+    const next = new URLSearchParams(searchParams)
+    next.set('month', today.slice(0, 7))
+    next.set('date', today)
     setSearchParams(next, { preventScrollReset: true })
   }
 
@@ -140,16 +175,7 @@ export function MachineHistoryPage() {
 
   return <div className="page-stack machine-history-page">
     <PageHeading eyebrow="Local machine · persisted history" title="Machine history" description="Browse real readings saved by this local backend. Dates follow the configured timezone." actions={<Badge tone={monitor.apiStatus === 'online' ? 'good' : 'warn'}>{timeZone}</Badge>} />
-    <div className="history-filter-row">
-      <label htmlFor="history-source">History source</label>
-      <select id="history-source" aria-label="History source" value="local" onChange={() => undefined}>
-        <option value="local">Local machine · LIVE</option>
-        <option value="all" disabled>All servers · Coming later</option>
-        <option value="alder" disabled>Alder SMP · Coming later</option>
-        <option value="copper" disabled>Copper Grove · Coming later</option>
-      </select>
-      <span>Server history is not connected in this stage.</span>
-    </div>
+    {sourceFilter}
 
     {(calendarError || monitor.apiStatus === 'offline') && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Machine history is unavailable</strong><small>{calendarError ?? monitor.error ?? 'The local API is offline.'}</small></span><Button icon={RefreshCw} onClick={() => { monitor.refreshNow(); setCalendarError(null); setReloadKey((value) => value + 1) }}>Retry</Button></div>}
     {explicitDateIsInvalid && <div className="history-inline-error" role="alert">This history link contains an invalid calendar date.</div>}
@@ -216,6 +242,182 @@ export function MachineHistoryPage() {
     {calendar && <span className="sr-only" aria-live="polite">{calendar.days.filter((item) => item.sampleCount > 0).length} days contain saved readings in this month.</span>}
     <span className="sr-only">Showing month beginning {monthStart.toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' })}.</span>
   </div>
+}
+
+function HistorySourceFilter({ value, servers, isAdmin, onChange }: {
+  value: 'local' | ServerHistoryScope
+  servers: LocalServerSummary[]
+  isAdmin: boolean
+  onChange: (value: string) => void
+}) {
+  const description = value === 'local'
+    ? 'Host measurements stay separate from Minecraft process samples.'
+    : 'Managed-server samples and parsed owned-process events only.'
+  return <div className="history-filter-row">
+    <label htmlFor="history-source">History source</label>
+    <select id="history-source" aria-label="History source" value={value} onChange={(event) => onChange(event.target.value)}>
+      <option value="local">Local machine · HOST</option>
+      {isAdmin && <option value="all">All managed servers · SERVER</option>}
+      {isAdmin && servers.map((server) => <option key={server.id} value={server.id}>{server.name} · SERVER</option>)}
+    </select>
+    <span>{description}</span>
+  </div>
+}
+
+function ServerHistoryPage({ sourceFilter, scope, serverName }: { sourceFilter: ReactNode; scope: ServerHistoryScope; serverName: string }) {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [calendar, setCalendar] = useState<ServerHistoryCalendar | null>(null)
+  const [calendarError, setCalendarError] = useState<string | null>(null)
+  const [calendarLoading, setCalendarLoading] = useState(true)
+  const [day, setDay] = useState<ServerHistoryDay | null>(null)
+  const [dayError, setDayError] = useState<string | null>(null)
+  const [dayLoading, setDayLoading] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+  const timeZone = calendar?.timeZone ?? day?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+  const today = todayInZone(timeZone)
+  const rawDate = searchParams.get('date')
+  const explicitDateIsInvalid = rawDate !== null && !validDate(rawDate)
+  const month = monthKey(searchParams.get('month')) ?? (validDate(rawDate) ? rawDate.slice(0, 7) : today.slice(0, 7))
+  const year = Number(month.slice(0, 4))
+  const monthNumber = Number(month.slice(5, 7))
+  const selectedDate = validDate(rawDate) ? rawDate : searchParams.get('month') ? null : today
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setCalendar(null); setCalendarError(null); setCalendarLoading(true)
+    void getServerHistoryCalendar(scope, year, monthNumber, controller.signal).then((result) => {
+      setCalendar(result); setCalendarLoading(false)
+    }).catch((error: unknown) => {
+      if (!isRequestCancelled(error)) { setCalendarError('The server history calendar is unavailable.'); setCalendarLoading(false) }
+    })
+    return () => controller.abort()
+  }, [scope, year, monthNumber, reloadKey])
+
+  useEffect(() => {
+    if (!selectedDate || explicitDateIsInvalid) { setDay(null); setDayError(null); setDayLoading(false); return }
+    const controller = new AbortController()
+    setDay(null); setDayError(null); setDayLoading(true)
+    void getServerHistoryDay(scope, selectedDate, controller.signal).then((result) => {
+      setDay(result); setDayLoading(false)
+    }).catch((error: unknown) => {
+      if (!isRequestCancelled(error)) { setDayError('The selected server-history day could not be loaded.'); setDayLoading(false) }
+    })
+    return () => controller.abort()
+  }, [scope, selectedDate, explicitDateIsInvalid, reloadKey])
+
+  const cells = useMemo(() => {
+    const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate()
+    const firstWeekday = (new Date(Date.UTC(year, monthNumber - 1, 1)).getUTCDay() + 6) % 7
+    return [...Array.from({ length: firstWeekday }, () => null), ...Array.from({ length: daysInMonth }, (_, index) => index + 1)]
+  }, [year, monthNumber])
+  const calendarDays = new Map(calendar?.days.map((item) => [item.date, item]) ?? [])
+  function chooseDate(date: string) {
+    const next = new URLSearchParams(searchParams)
+    next.set('date', date); next.set('month', date.slice(0, 7))
+    setSearchParams(next, { preventScrollReset: true })
+  }
+  function chooseMonth(nextMonth: { year: number; month: number; key: string }) {
+    const next = new URLSearchParams(searchParams)
+    next.delete('date'); next.set('month', nextMonth.key)
+    if (selectedDate?.startsWith(nextMonth.key)) next.set('date', selectedDate)
+    setSearchParams(next, { preventScrollReset: true })
+  }
+  function goToday() {
+    const next = new URLSearchParams(searchParams)
+    next.set('month', today.slice(0, 7)); next.set('date', today)
+    setSearchParams(next, { preventScrollReset: true })
+  }
+  const statusText = day?.status === 'observed' ? 'Observed' : day?.status === 'partial' ? 'Partial day' : day?.status === 'future' ? 'Future date' : 'No data'
+
+  return <div className="page-stack machine-history-page">
+    <PageHeading eyebrow={`${serverName} · persisted server history`} title="Server history" description="Real samples from panel-owned process measurements and local status pings." actions={<Badge tone="neutral">{timeZone}</Badge>} />
+    {sourceFilter}
+    {(calendarError || dayError) && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Server history is unavailable</strong><small>{calendarError ?? dayError}</small></span><Button icon={RefreshCw} onClick={() => { setCalendarError(null); setDayError(null); setReloadKey((value) => value + 1) }}>Retry</Button></div>}
+    {explicitDateIsInvalid && <div className="history-inline-error" role="alert">This history link contains an invalid calendar date.</div>}
+    <div className="history-layout">
+      <Card className="history-calendar-card">
+        <div className="history-calendar-toolbar">
+          <button className="icon-button" aria-label="Previous month" title="Previous month" onClick={() => chooseMonth(shiftMonth(year, monthNumber, -1))}><ChevronLeft size={18} /></button>
+          <h2>{CalendarMonthHeading({ year, month: monthNumber, timeZone })}</h2>
+          <button className="icon-button" aria-label="Next month" title="Next month" onClick={() => chooseMonth(shiftMonth(year, monthNumber, 1))}><ChevronRight size={18} /></button>
+          <Button kind="quiet" icon={CalendarDays} onClick={goToday}>Today</Button>
+        </div>
+        {calendarLoading && <div className="calendar-loading" role="status">Loading saved server readings…</div>}
+        {calendarError && <div className="history-inline-error" role="alert">The server history calendar could not be loaded.</div>}
+        <div className="machine-calendar-grid" role="grid" aria-label={`${CalendarMonthHeading({ year, month: monthNumber, timeZone })} server history`}>
+          {weekdays.map((weekday) => <div className="calendar-weekday" role="columnheader" key={weekday}>{weekday}</div>)}
+          {cells.map((dateNumber, index) => {
+            if (dateNumber === null) return <div className="calendar-day-empty" role="gridcell" aria-hidden="true" key={`empty-${index}`} />
+            const date = `${year}-${monthNumber.toString().padStart(2, '0')}-${dateNumber.toString().padStart(2, '0')}`
+            const record = calendarDays.get(date)
+            const status = record?.status ?? (date > today ? 'future' : 'no-data')
+            const currentDay = date === today
+            const selected = selectedDate === date
+            const label = `${dateLabel(date, timeZone)}. ${status === 'observed' ? 'Data observed' : status === 'partial' ? 'Partial data' : status === 'future' ? 'Future date' : 'No data'}${record?.sampleCount ? `, ${record.sampleCount.toLocaleString()} samples` : ''}${record?.eventCount ? `, ${record.eventCount.toLocaleString()} events` : ''}`
+            return <div className="calendar-day-cell" role="gridcell" key={date}><button className={`calendar-day ${status} ${currentDay ? 'today' : ''} ${selected ? 'selected' : ''}`} aria-label={label} aria-pressed={selected} onClick={() => chooseDate(date)}><span className="calendar-day-number">{dateNumber}</span><span className="calendar-day-meta">{record?.sampleCount ? record.sampleCount.toLocaleString() : record?.eventCount ? `${record.eventCount} events` : status === 'future' ? 'Future' : '—'}</span><span className="calendar-day-marker" aria-hidden="true" /></button></div>
+          })}
+        </div>
+        <div className="calendar-legend"><span><i className="observed" />Observed readings</span><span><i className="partial" />Partial collection</span><span><i className="no-data" />No samples</span></div>
+        <div className="calendar-month-note">Collection gaps stay visible. Local calendar boundaries account for 23 and 25 hour DST days.</div>
+      </Card>
+
+      <Card className="history-day-card">
+        {!selectedDate && <HistoryEmpty icon={<CalendarDays size={20} />} title="Select a day" text="Choose a date to see its stored server readings, uptime sessions and parsed events." />}
+        {dayLoading && <HistoryEmpty icon={<RefreshCw size={18} />} title="Loading day" text="Reading stored server history." />}
+        {dayError && <HistoryEmpty icon={<Wifi size={18} />} title="Day is unavailable" text={dayError} />}
+        {day && selectedDate && !dayLoading && !dayError && <>
+          <div className="history-day-heading"><div><div className="card-kicker"><Clock3 size={14} />{day.timeZone}</div><h2>{dateLabel(selectedDate, day.timeZone)}</h2></div><Badge tone={day.status === 'observed' ? 'good' : day.status === 'partial' ? 'warn' : 'neutral'}>{statusText}</Badge></div>
+          {day.status === 'future' && <div className="history-status-note"><CalendarDays size={17} /><span><strong>Future date</strong><small>Samples will appear after a managed process or status ping records them.</small></span></div>}
+          {day.status === 'no-data' && <div className="history-status-note"><CalendarDays size={17} /><span><strong>No server samples saved</strong><small>This day has no retained measurements or parsed server events.</small></span></div>}
+          {day.summary && <>
+            {day.status === 'partial' && <div className="history-status-note partial-note"><Clock3 size={17} /><span><strong>Partial collection · {coverageLabel(day.summary.coveragePercent)} observed</strong><small>Polling is intermittent; missing readings are not filled in.</small></span></div>}
+            <div className="day-summary-grid server-day-summary">
+              <DayStat icon={Cpu} label="Process CPU average / max" value={`${formatPercent(day.summary.cpuAveragePercent)} / ${formatPercent(day.summary.cpuMaximumPercent)}`} detail="Owned child process only" />
+              <DayStat icon={MemoryStick} label="Peak process memory" value={formatBytes(day.summary.memoryPeakBytes)} detail="Verified owned process RSS" />
+              <DayStat icon={Wifi} label="Peak players online" value={day.summary.playersPeak === null ? 'Unavailable' : day.summary.playersPeak.toLocaleString()} detail="Status ping count, not identities" />
+              <DayStat icon={Clock3} label="Uptime in selected day" value={formatDuration(day.summary.uptimeSeconds)} detail={`${day.summary.sessionCount} recorded session${day.summary.sessionCount === 1 ? '' : 's'}`} />
+              <DayStat icon={CalendarDays} label="Samples" value={day.summary.sampleCount.toLocaleString()} detail={`${coverageLabel(day.summary.coveragePercent)} minute coverage`} />
+              <DayStat icon={Clock3} label="Coverage window" value={formatTimestamp(day.summary.firstSampleAt, day.timeZone)} detail={`through ${formatTimestamp(day.summary.lastSampleAt, day.timeZone)}`} />
+            </div>
+            <Card className="history-day-chart"><SectionHeading title="Owned process CPU" description="Minute-bucket average of measured child-process CPU. Dots show observed minutes; blank spans indicate no retained sample." /><ServerCpuChart points={day.points} window={day.window} /></Card>
+          </>}
+          <div className="history-events"><SectionHeading title="Server events" description="Conservative templates from owned output and verified process lifecycle." />{day.events.length ? day.events.map((event) => <div className="server-history-event" key={event.id}><span className={`activity-marker ${event.category === 'server' ? 'marker-good' : event.category === 'moderation' ? 'marker-warn' : ''}`} /><div><time>{formatTimestamp(event.occurredAt, day.timeZone)} · {event.serverName}</time><strong>{event.description}</strong><small>{event.category} · {event.confidence} confidence</small>{event.rawMessage && <details><summary>Original log line</summary><code>{event.rawMessage}</code></details>}</div></div>) : <p className="history-events-empty">No parsed server events recorded for this day.</p>}{day.eventsTruncated && <p className="history-events-empty">Showing the first 500 matching events; older entries remain in the bounded ledger.</p>}</div>
+          <div className="history-events"><SectionHeading title="Uptime sessions" description="Time overlapping this local calendar day." />{day.sessions.length ? day.sessions.map((session) => <div className="server-history-session" key={session.id}><span className={`activity-marker ${session.outcome === 'crashed' ? 'marker-warn' : 'marker-good'}`} /><div><strong>{session.serverName} · {session.outcome}</strong><small>{formatTimestamp(session.startedAt, day.timeZone)} → {session.endedAt ? formatTimestamp(session.endedAt, day.timeZone) : 'still running'}</small></div><Badge tone={session.outcome === 'crashed' ? 'danger' : 'neutral'}>{formatDuration(session.durationInDaySeconds)}</Badge></div>) : <p className="history-events-empty">No server sessions overlap this day.</p>}{day.sessionsTruncated && <p className="history-events-empty">Showing 200 session details; uptime and session totals include every overlapping session.</p>}</div>
+        </>}
+      </Card>
+    </div>
+    <div className="history-footnote"><span className="footnote-dot" /> Server history is separate from LIVE host telemetry. Player pings provide counts only; event parsing is limited to recognized owned-process lines.</div>
+  </div>
+}
+
+function HistoryEmpty({ icon, title, text }: { icon: ReactNode; title: string; text: string }) {
+  return <div className="history-day-empty"><span className="history-day-icon">{icon}</span><h2>{title}</h2><p>{text}</p></div>
+}
+
+function ServerCpuChart({ points, window }: { points: ServerHistoryDay['points']; window: ServerHistoryDay['window'] }) {
+  const measured = points.filter((point) => point.cpuAveragePercent !== null)
+  if (!measured.length) return <div className="server-history-chart-empty">CPU samples are unavailable for this interval.</div>
+  const duration = Date.parse(window.to) - Date.parse(window.from)
+  const minimum = Math.min(...measured.map((point) => point.cpuAveragePercent!))
+  const maximum = Math.max(...measured.map((point) => point.cpuAveragePercent!))
+  return <div className="server-history-chart"><div className="server-history-chart-label"><span>100%</span><span>50%</span><span>0%</span></div><svg viewBox="0 0 640 160" role="img" aria-label="Server child process CPU history"><title>Owned server process CPU by observed minute, with gaps left blank</title><path d="M20 20H620M20 80H620M20 140H620" />{measured.map((point) => {
+    const x = 20 + ((Date.parse(point.observedAt) - Date.parse(window.from)) / duration) * 600
+    const y = 140 - (Math.min(100, point.cpuAveragePercent!) / 100) * 120
+    return <circle key={point.observedAt} cx={x} cy={y} r="4" />
+  })}</svg><div className="server-history-chart-range"><span>{formatPercent(minimum)} min observed</span><strong>{formatPercent(maximum)} max observed</strong></div></div>
+}
+
+function formatDuration(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours) return `${hours}h ${minutes}m`
+  if (minutes) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
+function coverageLabel(percentage: number): string {
+  return percentage > 0 && percentage < 1 ? '<1%' : `${Math.round(percentage)}%`
 }
 
 function DayStat({ icon: Icon, label, value, detail }: { icon: typeof Cpu; label: string; value: string; detail: string }) {

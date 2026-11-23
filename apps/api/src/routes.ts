@@ -51,6 +51,11 @@ import {
   serverFileTrashListSchema,
   serverFileTrashRestoreSchema,
   serverFileWriteSchema,
+  serverWorldsResultSchema,
+  serverHistoryCalendarQuerySchema,
+  serverHistoryCalendarResultSchema,
+  serverHistoryDayQuerySchema,
+  serverHistoryDayResultSchema,
   javaProbeRequestSchema,
   javaRuntimeListSchema,
   javaRuntimeSchema,
@@ -85,6 +90,8 @@ import { ServerPropertiesError, ServerPropertiesManager } from './servers/proper
 import { ServerStatusError, ServerStatusService } from './servers/status.js'
 import { MAX_MOD_JAR_BYTES, ServerModsError, ServerModsService } from './servers/mods.js'
 import { MAX_SERVER_FILE_UPLOAD_BYTES, ServerFileService, ServerFilesError } from './servers/files.js'
+import { ServerWorldService, ServerWorldsError } from './servers/worlds.js'
+import { ServerHistoryService } from './servers/history.js'
 
 class InvalidRequestError extends Error {}
 
@@ -208,6 +215,8 @@ export async function createApiApp(options: {
   const serverStatus = new ServerStatusService(options.db, options.now)
   const mods = new ServerModsService(options.db, options.servers, processes, options.now)
   const files = new ServerFileService(options.db, options.servers, processes, options.now)
+  const worlds = new ServerWorldService(options.db, options.servers)
+  const serverHistory = new ServerHistoryService(options.db, options.timeZone, options.now)
   const webOrigin = options.webOrigin ?? WEB_ORIGIN
   const apiPort = options.apiPort ?? 4174
   const secureCookies = options.secureCookies ?? false
@@ -316,6 +325,11 @@ export async function createApiApp(options: {
         : error.code.includes('CONFLICT') || error.code.includes('ALREADY_EXISTS') || error.code.includes('BUSY') || error.code.includes('PROTECTED') || error.code.includes('UNSAFE') || error.code.includes('NOT_PANEL_MANAGED') ? 409
           : error.code.includes('TOO_LARGE') ? 413
             : error.code.includes('UNAVAILABLE') ? 503 : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
+    if (error instanceof ServerWorldsError) {
+      const status = error.code.endsWith('_NOT_FOUND') ? 404
+        : error.code.includes('UNSAFE') || error.code.includes('REJECTED') ? 409 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
     if (error instanceof ServerInstallError) {
@@ -680,6 +694,10 @@ export async function createApiApp(options: {
     const input = parse(serverFileRecoveryRestoreSchema, request.body)
     return serverFileReadSchema.parse(await files.restoreRecovery(params.serverId, request.principal!.userId, params.id, input.expectedCurrentSha256))
   })
+  app.get('/api/v1/admin/servers/:serverId/worlds', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverWorldsResultSchema.parse({ worlds: await worlds.get(params.serverId) })
+  })
   app.get('/api/v1/admin/java', { preHandler: requireAdmin }, async () => javaRuntimeListSchema.parse({
     runtimes: options.javaRuntimes.list(),
   }))
@@ -704,6 +722,14 @@ export async function createApiApp(options: {
     const params = parse(dateParamSchema, request.params)
     validateCalendarDate(params.date)
     return machineDaySchema.parse(history.getDay(params.date))
+  })
+  app.get('/api/v1/admin/server-history/calendar', { preHandler: requireAdmin }, async (request) => {
+    const query = parse(serverHistoryCalendarQuerySchema, request.query)
+    return serverHistoryCalendarResultSchema.parse({ calendar: serverHistory.getCalendar(query.scope, query.year, query.month) })
+  })
+  app.get('/api/v1/admin/server-history/day', { preHandler: requireAdmin }, async (request) => {
+    const query = parse(serverHistoryDayQuerySchema, request.query)
+    return serverHistoryDayResultSchema.parse({ day: serverHistory.getDay(query.scope, query.date) })
   })
 
   await app.ready()

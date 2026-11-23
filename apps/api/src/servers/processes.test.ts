@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { eq } from 'drizzle-orm'
-import { users, localServers, localServerRuntime, localServerEvents } from '../db/schema.js'
+import { users, localServers, localServerRuntime, localServerEvents, localServerStructuredEvents, localServerSessions, localServerResourceSamples } from '../db/schema.js'
 import { openDatabase } from '../db/client.js'
 import { ServerRegistry } from './registry.js'
 import { ServerProcessManager } from './processes.js'
@@ -37,9 +37,9 @@ describe('panel-owned local server processes', () => {
     await writeFile(javaPath, `#!/bin/sh
 if [ "$1" = "-version" ]; then printf 'openjdk version "21.0.4" 2024-07-16\\n' >&2; exit 0; fi
 printf '[Server thread/INFO]: Starting fixture\\n'
-( sleep 0.05; printf '[Server thread/INFO]: Done (0.1s)! For help, type "help"\\n' ) &
+( sleep 0.05; printf '[Server thread/INFO]: Done (0.1s)! For help, type "help"\\n'; printf '[Server thread/INFO]: MiraWoods joined the game\\n' ) &
 while IFS= read -r line; do
-  if [ "$line" = "stop" ]; then printf '[Server thread/INFO]: Stopping fixture\\n'; exit 0; fi
+  if [ "$line" = "stop" ]; then printf '[Server thread/INFO]: Stopping server.\\n'; exit 0; fi
   if [ "$line" = "list" ]; then printf '[Server thread/INFO]: There are 2 of a max of 20 players online: MiraWoods, Alex_123\\n'; continue; fi
   if [ "$line" = "kick MiraWoods" ]; then printf '[Server thread/INFO]: Kicked MiraWoods from the game\\n'; continue; fi
   if [ "$line" = "whitelist list" ]; then printf '[Server thread/INFO]: There are no whitelisted players.\\n'; continue; fi
@@ -133,6 +133,12 @@ done
     expect(beforeStop.entries.some((entry) => entry.source === 'stdout' && entry.message.includes('say fixture-console-check'))).toBe(true)
     expect((await manager.stop(managedId, userId)).status).toBe('stopping')
     expect((await waitForStatus('stopped')).lastExitCode).toBe(0)
+    const structuredTypes = new Set(opened.db.select({ eventType: localServerStructuredEvents.eventType }).from(localServerStructuredEvents).where(eq(localServerStructuredEvents.serverId, managedId)).all().map((entry) => entry.eventType))
+    expect(['server_ready', 'player_joined', 'player_kicked', 'server_shutdown_started', 'server_stopped'].every((eventType) => structuredTypes.has(eventType))).toBe(true)
+    expect(opened.db.select().from(localServerSessions).where(eq(localServerSessions.serverId, managedId)).all()).toEqual([
+      expect.objectContaining({ outcome: 'stopped', endedAt: expect.any(String), uptimeSeconds: expect.any(Number) }),
+    ])
+    expect(opened.db.select().from(localServerResourceSamples).where(eq(localServerResourceSamples.serverId, managedId)).all().length).toBeGreaterThan(0)
     const files = await readdir(join(temp, 'server-logs'))
     expect(files.some((file) => file.endsWith('-stdout-000.log'))).toBe(true)
     const stdoutLog = files.find((file) => file.endsWith('-stdout-000.log'))!

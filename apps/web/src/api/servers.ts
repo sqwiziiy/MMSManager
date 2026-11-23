@@ -22,8 +22,11 @@ import {
   serverFileRecoveryListSchema,
   serverPropertiesRestorePreviewResultSchema,
   serverPropertiesRestoreResultSchema,
+  serverWorldsResultSchema,
+  serverHistoryCalendarResultSchema,
+  serverHistoryDayResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope } from '@mmsmanager/shared'
 import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 
@@ -158,6 +161,20 @@ export async function previewServerPropertiesRestore(serverId: string, backupId:
 
 export async function restoreServerProperties(serverId: string, backupId: string, expectedCurrentSha256: string): Promise<{ properties: ServerPropertiesResponse; recoveryBackupId: string | null }> {
   return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/properties/backups/${encodeURIComponent(backupId)}/restore`, serverPropertiesRestoreResultSchema, { method: 'POST', body: JSON.stringify({ expectedCurrentSha256 }) })
+}
+
+export async function getServerWorlds(serverId: string, signal?: AbortSignal): Promise<ServerWorlds> {
+  return (await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/worlds`, serverWorldsResultSchema, { signal })).worlds
+}
+
+export async function getServerHistoryCalendar(scope: ServerHistoryScope, year: number, month: number, signal?: AbortSignal): Promise<ServerHistoryCalendar> {
+  const query = new URLSearchParams({ scope, year: String(year), month: String(month) })
+  return (await request('/api/v1/admin/server-history/calendar?' + query, serverHistoryCalendarResultSchema, { signal })).calendar
+}
+
+export async function getServerHistoryDay(scope: ServerHistoryScope, date: string, signal?: AbortSignal): Promise<ServerHistoryDay> {
+  const query = new URLSearchParams({ scope, date })
+  return (await request('/api/v1/admin/server-history/day?' + query, serverHistoryDayResultSchema, { signal })).day
 }
 
 export async function getServerFiles(serverId: string, path = '', signal?: AbortSignal): Promise<ServerFileList> {

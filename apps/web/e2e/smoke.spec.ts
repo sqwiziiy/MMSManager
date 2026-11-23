@@ -58,6 +58,13 @@ async function mockLocalServer(page: Page) {
   await page.route(`**/api/v1/servers/${serverId}/runtime`, (route) => route.fulfill({ json: { runtime: { serverId, status: 'running', startedAt: now, uptimeSeconds: 153, memoryRssBytes: 536870912, cpuPercent: null, ready: true, playersOnline: null, eula: 'accepted', restartRequired, lastExitCode: null, errorMessage: null } } }))
   await page.route(`**/api/v1/servers/${serverId}/status`, (route) => route.fulfill({ json: { status: { serverId, checkedAt: now, source: 'local-status-ping', state: 'reachable', playersOnline: 3, playersMax: 20, versionName: 'Paper 1.21.4', description: 'Local fixture', latencyMs: 4, errorCode: null, authoritativePlayerList: false } } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/players`, (route) => route.fulfill({ json: { players: { serverId, state: 'authoritative', source: 'owned-console-list', sampledAt: now, names: ['FixturePlayer'], reason: null } } }))
+  await page.route(`**/api/v1/admin/servers/${serverId}/worlds`, (route) => route.fulfill({ json: { worlds: {
+    serverId, status: 'available', levelName: 'maple-valley', levelNameSource: 'server.properties', reason: null,
+    entries: [
+      { name: 'maple-valley', path: 'maple-valley', dimension: 'overworld', state: 'available', sizeBytes: 7340032, sizeComplete: true, modifiedAt: now, backupAvailable: false, reason: null },
+      { name: 'maple-valley_nether', path: 'maple-valley_nether', dimension: 'nether', state: 'missing', sizeBytes: null, sizeComplete: false, modifiedAt: null, backupAvailable: false, reason: 'No directory exists at the configured server-relative world path.' },
+    ],
+  } } }))
   const modItems = [{ id: 'fixture-plugin.jar', fileName: 'fixture-plugin.jar', sizeBytes: 768, state: 'enabled', metadataKind: 'paper', metadataState: 'known', modId: 'FixturePlugin', name: 'Fixture Plugin', artifactVersion: '1.3.0', minecraftConstraint: '1.21', loaderConstraint: null, dependencies: ['LuckPerms'] }]
   const modsInventory = () => ({ serverId, supported: true, loader: 'paper', loadDirectory: 'plugins', items: modItems, truncated: false, restartRequired, runtimeStatus: 'running' })
   await page.route(`**/api/v1/servers/${serverId}/mods`, (route) => route.fulfill({ json: { mods: modsInventory() } }))
@@ -504,6 +511,69 @@ test('managed files edit with recovery, trash and restore at desktop and mobile 
   await page.goto(`/servers/${serverId}/files`)
   await expectNoHorizontalOverflow(page, 'managed file manager mobile')
   await page.screenshot({ path: resolve(screenshotDir, 'stage-05c-file-manager-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('managed worlds and server history use isolated real-data API fixtures', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  const { serverId } = await mockLocalServer(page)
+  const timeZone = 'Europe/Paris'
+  const first = '2026-03-29T00:05:00.000Z'
+  const last = '2026-03-29T21:55:00.000Z'
+  await page.route('**/api/v1/admin/server-history/calendar?*', (route) => {
+    const url = new URL(route.request().url())
+    const scope = url.searchParams.get('scope') ?? 'all'
+    const year = Number(url.searchParams.get('year'))
+    const month = Number(url.searchParams.get('month'))
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate()
+    const days = Array.from({ length: daysInMonth }, (_, index) => {
+      const day = (index + 1).toString().padStart(2, '0')
+      const date = `${year}-${month.toString().padStart(2, '0')}-${day}`
+      return { date, status: date === '2026-03-29' ? 'partial' : 'no-data', sampleCount: date === '2026-03-29' ? 2 : 0, eventCount: date === '2026-03-29' ? 1 : 0, firstSampleAt: date === '2026-03-29' ? first : null, lastSampleAt: date === '2026-03-29' ? last : null, coveragePercent: date === '2026-03-29' ? 0.15 : 0 }
+    })
+    return route.fulfill({ json: { calendar: { scope, year, month, timeZone, days } } })
+  })
+  await page.route('**/api/v1/admin/server-history/day?*', (route) => {
+    const scope = new URL(route.request().url()).searchParams.get('scope') ?? 'all'
+    return route.fulfill({ json: { day: {
+    scope, date: '2026-03-29', timeZone, status: 'partial', window: { from: '2026-03-28T23:00:00.000Z', to: '2026-03-29T22:00:00.000Z', durationMs: 82_800_000 },
+    summary: { sampleCount: 2, firstSampleAt: first, lastSampleAt: last, coveragePercent: 0.15, cpuAveragePercent: 14.2, cpuMaximumPercent: 38.7, memoryPeakBytes: 805306368, playersPeak: 4, uptimeSeconds: 82_800, sessionCount: 1 },
+    points: [{ observedAt: first, sampleCount: 1, serverCount: 1, cpuAveragePercent: 14.2, memoryPeakBytes: 805306368, playersPeak: 2, uptimePeakSeconds: 82000 }, { observedAt: last, sampleCount: 1, serverCount: 1, cpuAveragePercent: 38.7, memoryPeakBytes: 780000000, playersPeak: 4, uptimePeakSeconds: 82800 }],
+    events: [{ id: 5, serverId, serverName: 'Local Fixture', occurredAt: '2026-03-29T10:00:00.000Z', category: 'player', eventType: 'player_joined', description: 'MiraWoods joined the server.', rawMessage: '[Server thread/INFO]: MiraWoods joined the game', confidence: 'high', source: 'owned-log' }],
+    eventsTruncated: false,
+    sessions: [{ id: 'f03c1cf8-e2a1-4a4e-9de4-4536c7796091', serverId, serverName: 'Local Fixture', startedAt: '2026-03-28T22:00:00.000Z', endedAt: '2026-03-30T00:00:00.000Z', outcome: 'stopped', uptimeSeconds: 93600, durationInDaySeconds: 82_800 }],
+    sessionsTruncated: false,
+  } } })
+  })
+
+  await page.goto(`/servers/${serverId}/worlds`)
+  await expect(page.getByRole('heading', { name: 'World folders' })).toBeVisible()
+  await expect(page.getByText('maple-valley', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('7.0 MiB')).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05d-worlds-desktop.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'managed worlds mobile')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05d-worlds-mobile.png'), fullPage: true, animations: 'disabled' })
+
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto(`/machine/history?source=${serverId}&month=2026-03&date=2026-03-29`)
+  await expect(page.getByRole('heading', { name: 'Server history' })).toBeVisible()
+  await expect(page.getByText('Partial collection · <1% observed')).toBeVisible()
+  await expect(page.getByText('MiraWoods joined the server.')).toBeVisible()
+  await expect(page.getByText('Original log line')).toBeVisible()
+  await expect(page.getByText('Uptime in selected day')).toBeVisible()
+  await expect(page.getByText('<1% minute coverage')).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05d-server-history-desktop.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'server history mobile')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05d-server-history-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.getByLabel('History source').selectOption('all')
+  await expect(page.getByRole('heading', { name: 'Server history' })).toBeVisible()
+  await expect(page.getByLabel('History source')).toHaveValue('all')
+
+  await page.getByLabel('History source').selectOption('local')
+  await expect(page.getByRole('heading', { name: 'Machine history' })).toBeVisible()
+  await expect(page.getByText('No machine samples saved')).toBeVisible()
 })
 
 test('mobile dashboard, account screens and navigation fit a narrow viewport', async ({ page }) => {

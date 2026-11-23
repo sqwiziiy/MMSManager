@@ -8,6 +8,7 @@ import type { FastifyInstance } from 'fastify'
 import { API_HOST, WEB_ORIGIN } from './config.js'
 import { openDatabase } from './db/client.js'
 import { machineSamples, localServers } from './db/schema.js'
+import { recordServerResourceSample, recordStructuredServerEvent } from './servers/history.js'
 import { AuthService } from './auth/service.js'
 import { AvatarStore } from './auth/avatar-store.js'
 import { MachineCollector } from './machine/collector.js'
@@ -389,5 +390,50 @@ describe('authenticated local API', () => {
     const multipartResponse = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/mods`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': `multipart/form-data; boundary=${boundary}` }, payload: multipartBody })
     expect(multipartResponse.statusCode).toBe(409)
     expect(multipartResponse.json()).toMatchObject({ error: { code: 'MODS_UNSUPPORTED' } })
+  })
+
+  it('protects managed world and server-history endpoints and returns only scoped persisted records', async () => {
+    const serverId = randomUUID()
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/worlds` })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/server-history/day?scope=${serverId}&date=2026-11-23` })).statusCode).toBe(401)
+    const admin = await bootstrapAdmin()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader }
+    const directory = join(dataDirectory, 'servers', 'history-fixture')
+    await mkdir(join(directory, 'world'), { recursive: true })
+    await writeFile(join(directory, 'server.properties'), 'level-name=world\nserver-port=25565\n')
+    await writeFile(join(directory, 'world', 'level.dat'), 'fixture world bytes')
+    const at = '2026-11-23T11:30:00.000Z'
+    await opened.db.insert(localServers).values({
+      id: serverId, name: 'History Fixture', directory, source: 'created', software: 'vanilla', version: '1.21.4',
+      jarName: 'server.jar', javaPath: null, javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 2048,
+      port: 25565, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: null, createdAt: at, updatedAt: at,
+    }).run()
+    const fixedNow = () => Date.parse('2026-11-23T12:00:00.000Z')
+    recordServerResourceSample(opened.db, serverId, at, { cpuPercent: 12.5, memoryRssBytes: 4096, uptimeSeconds: 900 }, fixedNow)
+    recordStructuredServerEvent(opened.db, {
+      serverId, occurredAt: at, category: 'player', eventType: 'player_joined', description: 'MiraWoods joined the server.',
+      rawMessage: '[Server thread/INFO]: MiraWoods joined the game', confidence: 'high', source: 'owned-log',
+    }, fixedNow)
+
+    const worlds = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/worlds`, headers: adminHeaders })
+    expect(worlds.statusCode).toBe(200)
+    expect(worlds.json().worlds).toMatchObject({ status: 'available', levelName: 'world' })
+    expect(worlds.json().worlds.entries[0]).toMatchObject({ path: 'world', sizeBytes: 19, sizeComplete: true })
+    const calendar = await app.inject({ method: 'GET', url: `/api/v1/admin/server-history/calendar?scope=${serverId}&year=2026&month=11`, headers: adminHeaders })
+    expect(calendar.statusCode).toBe(200)
+    expect(calendar.json().calendar.days.find((item: { date: string }) => item.date === '2026-11-23')).toMatchObject({ status: 'partial', sampleCount: 1, eventCount: 1 })
+    const day = await app.inject({ method: 'GET', url: `/api/v1/admin/server-history/day?scope=${serverId}&date=2026-11-23`, headers: adminHeaders })
+    expect(day.statusCode).toBe(200)
+    expect(day.json().day).toMatchObject({ status: 'partial', summary: { sampleCount: 1, cpuAveragePercent: 12.5 }, events: [{ eventType: 'player_joined', rawMessage: expect.stringContaining('joined the game') }] })
+    expect(day.json().day).toMatchObject({ eventsTruncated: false, sessionsTruncated: false })
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/server-history/day?scope=${serverId}&date=2026-02-30`, headers: adminHeaders })).statusCode).toBe(400)
+
+    const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
+    await auth.createUser(principal, { username: 'history-member', displayName: 'History Member', password: 'synthetic member passphrase 4T!s8Cq2', role: 'member' })
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'history-member', password: 'synthetic member passphrase 4T!s8Cq2' } })
+    const cookies = login.headers['set-cookie']
+    const cookieHeader = (Array.isArray(cookies) ? cookies : [cookies]).filter((item): item is string => typeof item === 'string').map((item) => item.split(';')[0]).join('; ')
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/worlds`, headers: { ...requestHeaders, cookie: cookieHeader } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/server-history/day?scope=${serverId}&date=2026-11-23`, headers: { ...requestHeaders, cookie: cookieHeader } })).statusCode).toBe(403)
   })
 })

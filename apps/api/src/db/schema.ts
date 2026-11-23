@@ -235,6 +235,59 @@ export const localServerEvents = sqliteTable('local_server_events', {
   check('local_server_events_outcome_check', sql`${table.outcome} IN ('success', 'failure')`),
 ])
 
+export const localServerStructuredEvents = sqliteTable('local_server_structured_events', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  consoleEntryId: integer('console_entry_id'),
+  occurredAt: text('occurred_at').notNull(),
+  category: text('category', { enum: ['server', 'player', 'moderation'] }).notNull(),
+  eventType: text('event_type').notNull(),
+  description: text('description').notNull(),
+  rawMessage: text('raw_message'),
+  confidence: text('confidence', { enum: ['high', 'medium'] }).notNull(),
+  source: text('source', { enum: ['owned-log', 'panel-process'] }).notNull(),
+}, (table) => [
+  index('local_server_structured_events_server_time_idx').on(table.serverId, table.occurredAt),
+  index('local_server_structured_events_console_idx').on(table.consoleEntryId),
+  check('local_server_structured_events_category_check', sql`${table.category} IN ('server', 'player', 'moderation')`),
+  check('local_server_structured_events_confidence_check', sql`${table.confidence} IN ('high', 'medium')`),
+  check('local_server_structured_events_source_check', sql`${table.source} IN ('owned-log', 'panel-process')`),
+])
+
+export const localServerResourceSamples = sqliteTable('local_server_resource_samples', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  minuteStart: text('minute_start').notNull(),
+  sampledAt: text('sampled_at').notNull(),
+  cpuPercent: real('cpu_percent'),
+  memoryRssBytes: integer('memory_rss_bytes'),
+  playersOnline: integer('players_online'),
+  playersMax: integer('players_max'),
+  uptimeSeconds: integer('uptime_seconds'),
+}, (table) => [
+  uniqueIndex('local_server_resource_samples_server_minute_unique').on(table.serverId, table.minuteStart),
+  index('local_server_resource_samples_minute_idx').on(table.minuteStart),
+  check('local_server_resource_samples_cpu_check', sql`${table.cpuPercent} IS NULL OR (${table.cpuPercent} >= 0 AND ${table.cpuPercent} <= 100)`),
+  check('local_server_resource_samples_rss_check', sql`${table.memoryRssBytes} IS NULL OR ${table.memoryRssBytes} >= 0`),
+  check('local_server_resource_samples_players_check', sql`${table.playersOnline} IS NULL OR (${table.playersOnline} >= 0 AND (${table.playersMax} IS NULL OR ${table.playersMax} >= ${table.playersOnline}))`),
+  check('local_server_resource_samples_uptime_check', sql`${table.uptimeSeconds} IS NULL OR ${table.uptimeSeconds} >= 0`),
+])
+
+export const localServerSessions = sqliteTable('local_server_sessions', {
+  id: text('id').primaryKey(),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  startedAt: text('started_at').notNull(),
+  endedAt: text('ended_at'),
+  outcome: text('outcome', { enum: ['running', 'stopped', 'crashed', 'interrupted'] }).notNull(),
+  uptimeSeconds: integer('uptime_seconds'),
+}, (table) => [
+  index('local_server_sessions_server_start_idx').on(table.serverId, table.startedAt),
+  index('local_server_sessions_end_idx').on(table.serverId, table.endedAt),
+  uniqueIndex('local_server_sessions_active_unique').on(table.serverId).where(sql`${table.endedAt} IS NULL`),
+  check('local_server_sessions_outcome_check', sql`${table.outcome} IN ('running', 'stopped', 'crashed', 'interrupted')`),
+  check('local_server_sessions_uptime_check', sql`${table.uptimeSeconds} IS NULL OR ${table.uptimeSeconds} >= 0`),
+])
+
 export const serverInstallOperations = sqliteTable('server_install_operations', {
   id: text('id').primaryKey(),
   actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
