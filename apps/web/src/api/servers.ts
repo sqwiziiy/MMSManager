@@ -14,9 +14,11 @@ import {
   serverPlayerListResultSchema,
   serverPlayerActionResultSchema,
   serverPropertiesResultSchema,
+  serverModsInventoryResultSchema,
 } from '@mmsmanager/shared'
 import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesUpdate } from '@mmsmanager/shared'
 import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
+import type { ServerModsInventory } from '@mmsmanager/shared'
 
 async function request<T>(url: string, schema: { parse: (value: unknown) => T }, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
@@ -140,4 +142,61 @@ export async function getServerProperties(serverId: string, signal?: AbortSignal
 export async function updateServerProperties(serverId: string, update: ServerPropertiesUpdate): Promise<ServerPropertiesResponse> {
   const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/properties`, serverPropertiesResultSchema, { method: 'PATCH', body: JSON.stringify(update) })
   return response.properties
+}
+
+export async function getServerMods(serverId: string, signal?: AbortSignal): Promise<ServerModsInventory> {
+  const response = await request(`/api/v1/servers/${encodeURIComponent(serverId)}/mods`, serverModsInventoryResultSchema, { signal })
+  return response.mods
+}
+
+function csrfToken(): string | null {
+  const item = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith('mmsmanager_csrf='))
+  if (!item) return null
+  try { return decodeURIComponent(item.slice('mmsmanager_csrf='.length)) } catch { return null }
+}
+
+export function uploadServerMod(serverId: string, file: File, onProgress: (percent: number) => void): Promise<ServerModsInventory> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', `/api/v1/admin/servers/${encodeURIComponent(serverId)}/mods`)
+    request.withCredentials = true
+    request.setRequestHeader('accept', 'application/json')
+    const csrf = csrfToken()
+    if (csrf) request.setRequestHeader('x-mms-csrf', csrf)
+    request.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.min(99, Math.round(event.loaded / event.total * 100))) }
+    request.onerror = () => reject(new Error('The mod upload could not reach the local API.'))
+    request.onabort = () => reject(new Error('The mod upload was cancelled.'))
+    request.onload = () => {
+      if (request.status === 401) window.dispatchEvent(new Event('mmsmanager:session-expired'))
+      let raw: unknown = null
+      try { raw = JSON.parse(request.responseText) as unknown } catch { /* handled as a local API error */ }
+      if (request.status < 200 || request.status >= 300) {
+        const error = raw as { error?: { message?: unknown } } | null
+        reject(new Error(typeof error?.error?.message === 'string' ? error.error.message : 'The mod upload could not be completed.'))
+        return
+      }
+      try {
+        onProgress(100)
+        resolve(serverModsInventoryResultSchema.parse(raw).mods)
+      } catch { reject(new Error('The local API returned an invalid mod inventory.')) }
+    }
+    const body = new FormData()
+    body.append('file', file, file.name)
+    request.send(body)
+  })
+}
+
+async function modMutation(serverId: string, suffix: string): Promise<ServerModsInventory> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/mods/${suffix}`, serverModsInventoryResultSchema, { method: 'POST', body: JSON.stringify({}) })
+  return response.mods
+}
+
+export function setServerModEnabled(serverId: string, fileName: string, enabled: boolean): Promise<ServerModsInventory> {
+  return modMutation(serverId, `${encodeURIComponent(fileName)}/${enabled ? 'enable' : 'disable'}`)
+}
+export function quarantineServerMod(serverId: string, fileName: string): Promise<ServerModsInventory> {
+  return modMutation(serverId, `${encodeURIComponent(fileName)}/quarantine`)
+}
+export function restoreQuarantinedMod(serverId: string, id: string): Promise<ServerModsInventory> {
+  return modMutation(serverId, `quarantine/${encodeURIComponent(id)}/restore`)
 }

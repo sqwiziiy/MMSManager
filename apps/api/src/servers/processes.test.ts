@@ -5,11 +5,13 @@ import { join } from 'node:path'
 import { createServer } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { Readable } from 'node:stream'
 import { eq } from 'drizzle-orm'
 import { users, localServers, localServerRuntime, localServerEvents } from '../db/schema.js'
 import { openDatabase } from '../db/client.js'
 import { ServerRegistry } from './registry.js'
 import { ServerProcessManager } from './processes.js'
+import { ServerModsService } from './mods.js'
 
 describe('panel-owned local server processes', () => {
   let temp: string
@@ -144,6 +146,30 @@ done
     await expect(manager.start(managedId, userId)).rejects.toMatchObject({ code: 'SERVER_ALREADY_STARTING' })
     await firstStart
     await waitForStatus('running')
+    await manager.stop(managedId, userId)
+    await waitForStatus('stopped')
+  })
+
+  it('sets restart-required after changing Fabric files on a running owned process', async () => {
+    await opened.db.update(localServers).set({ software: 'fabric' }).where(eq(localServers.id, managedId)).run()
+    await manager.start(managedId, userId)
+    await waitForStatus('running')
+    const service = new ServerModsService(opened.db, registry, manager)
+    let releaseFileGate!: () => void
+    let announceGate!: () => void
+    const gateEntered = new Promise<void>((resolveGate) => { announceGate = resolveGate })
+    const gate = new Promise<void>((resolveGate) => { releaseFileGate = resolveGate })
+    const heldMutation = manager.withServerFileMutation(managedId, async () => { announceGate(); await gate })
+    await gateEntered
+    await expect(manager.stop(managedId, userId)).rejects.toMatchObject({ code: 'SERVER_FILE_BUSY' })
+    releaseFileGate()
+    await heldMutation
+    const emptyZip = Buffer.alloc(22)
+    emptyZip.writeUInt32LE(0x06054b50, 0)
+    const inventory = await service.upload(managedId, userId, 'fixture-plugin.jar', Readable.from([emptyZip]), () => false)
+    expect(inventory).toMatchObject({ restartRequired: true, items: [{ fileName: 'fixture-plugin.jar', state: 'enabled', metadataState: 'unknown' }] })
+    expect((await manager.get(managedId)).restartRequired).toBe(true)
+    expect((await manager.console(managedId, 0, 200)).entries.some((entry) => entry.source === 'command')).toBe(false)
     await manager.stop(managedId, userId)
     await waitForStatus('stopped')
   })

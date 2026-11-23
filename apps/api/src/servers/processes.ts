@@ -141,6 +141,7 @@ async function readProcessCpuSnapshot(pid: number): Promise<{ marker: string; pr
 export class ServerProcessManager {
   private readonly children = new Map<string, ManagedProcess>()
   private readonly starting = new Set<string>()
+  private readonly fileMutations = new Set<string>()
   private readonly cpuSnapshots = new Map<string, { pid: number; marker: string; processTicks: number; systemTicks: number }>()
   private readonly playerQueries = new Map<string, { promise: Promise<ServerPlayerList>; resolve: (value: ServerPlayerList) => void; timer: NodeJS.Timeout }>()
   private readonly playerActions = new Map<string, PendingPlayerAction[]>()
@@ -309,7 +310,24 @@ export class ServerProcessManager {
     return response
   }
 
+  /** Serializes safe server-file changes against start/stop and proves the running child is owned here. */
+  async withServerFileMutation<T>(serverId: string, operation: (running: boolean) => Promise<T>): Promise<T> {
+    if (this.starting.has(serverId) || this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'Another server start or file operation is already in progress.')
+    const server = this.serverRow(serverId)
+    this.requirePanelManaged(server)
+    const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+    const running = runtime?.status === 'running'
+    const owned = this.children.get(serverId)
+    if (running && (!owned || owned.stopRequested)) throw new ServerProcessError('PROCESS_NOT_OWNED', 'File changes require a stopped server or a ready process currently owned by MMSManager.')
+    if (!running && ![undefined, 'stopped', 'crashed', 'error'].includes(runtime?.status)) {
+      throw new ServerProcessError('SERVER_FILE_BUSY', `File changes are unavailable while the server is ${runtime?.status ?? 'unavailable'}.`)
+    }
+    this.fileMutations.add(serverId)
+    try { return await operation(running) } finally { this.fileMutations.delete(serverId) }
+  }
+
   async start(serverId: string, actorUserId: string): Promise<ServerRuntime> {
+    if (this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'A server file operation is in progress.')
     if (this.starting.has(serverId)) throw new ServerProcessError('SERVER_ALREADY_STARTING', 'A start request is already being processed for this server.')
     this.starting.add(serverId)
     try {
@@ -401,6 +419,7 @@ export class ServerProcessManager {
   }
 
   async stop(serverId: string, actorUserId: string): Promise<ServerRuntime> {
+    if (this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'A server file operation is in progress.')
     const server = this.serverRow(serverId)
     this.requirePanelManaged(server)
     const managed = this.children.get(serverId)

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
-  Activity, AlertTriangle, Archive, Check, ChevronRight, CircleCheck, Clock3, Cpu, FileText,
-  Folder, Globe, HardDrive, Layers3, LockKeyhole, Play, RefreshCw, ScrollText,
-  Send, Server, Settings2, Shield, Square, Terminal, Users, Wifi,
+  Activity, AlertTriangle, Archive, Ban, Check, ChevronRight, CircleCheck, Clock3, Cpu, FileText,
+  Folder, Globe, HardDrive, Layers3, LockKeyhole, Package, Play, RefreshCw, RotateCcw, ScrollText,
+  Search, Send, Server, Settings2, Shield, Square, Terminal, Trash2, Upload, Users, Wifi,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
-import type { LocalServerSummary, ServerConsoleEntry, ServerPropertiesResponse, ServerPropertySettings, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction } from '@mmsmanager/shared'
+import type { LocalServerSummary, ServerConsoleEntry, ServerModEntry, ServerModsInventory, ServerPropertiesResponse, ServerPropertySettings, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction } from '@mmsmanager/shared'
 import {
   confirmLocalServerStopped, getAuthoritativePlayers, getServerConsole, getServerProperties, getServerRuntime, getServerStatus, sendPlayerAction,
   sendLocalServerCommand, startLocalServer, stopLocalServer, updateServerProperties,
+  getServerMods, uploadServerMod, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod,
 } from '../api/servers'
 import { useAuth } from '../state/use-auth'
 import { Badge, Button, Card, ComingSoon, SectionHeading } from '../components/ui'
@@ -115,7 +116,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     </div>
     <div className="server-detail-tabs" role="navigation" aria-label={`${server.name} pages`}>
       {tabs.map(({ id, label, icon: Icon }) => <NavLink key={id} to={`/servers/${server.id}/${id}`} className={section === id ? 'active' : ''}>
-        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players'].includes(id) && <span className="tab-preview-dot" />}
+        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players', 'mods'].includes(id) && <span className="tab-preview-dot" />}
       </NavLink>)}
     </div>
     <div className="server-section-heading"><div><p className="eyebrow">{server.name} / {active.label}</p><h2>{sectionTitle(section)}</h2></div><Badge tone="good">Local registry</Badge></div>
@@ -124,11 +125,12 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     {runtime?.restartRequired && <div className="local-restart-banner" role="status"><RefreshCw size={16} /><span><strong>Restart required</strong><small>Server properties changed while this process was running. The new values take effect after the next start.</small></span></div>}
     {section === 'overview' && <LocalOverview server={server} runtime={runtime} statusSample={statusSample} isAdmin={isAdmin} />}
     {section === 'players' && <LocalPlayers serverId={server.id} isAdmin={isAdmin} canAct={Boolean(isManaged && runtime?.status === 'running')} statusSample={statusSample} error={statusError} />}
+    {section === 'mods' && <LocalMods serverId={server.id} software={server.software} managed={isManaged} isAdmin={isAdmin} runtimeStatus={status} />}
     {section === 'console' && <LocalConsole serverId={server.id} runtime={runtime} isAdmin={isAdmin} />}
     {section === 'logs' && <LocalLogs serverId={server.id} />}
     {section === 'properties' && isAdmin && <LocalProperties serverId={server.id} managed={isManaged} />}
     {section === 'properties' && !isAdmin && <LockedDetail title="Administrator access required" text="Server properties are visible only to workspace administrators." />}
-    {!['overview', 'console', 'logs', 'properties', 'players'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
+    {!['overview', 'console', 'logs', 'properties', 'players', 'mods'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
   </div>
 }
 
@@ -372,6 +374,108 @@ function LocalProperties({ serverId, managed }: { serverId: string; managed: boo
     <Card><SectionHeading title="Protected and preserved" description="Network and unrecognized properties are not editable here." /><div className="local-protected-setting"><LockKeyhole size={15} /><span><strong>Local network bind</strong><small>127.0.0.1 is preserved from the managed installation.</small></span></div><div className="local-unknown-setting"><strong>{properties.unknownKeys.length} other properties preserved</strong><span>{properties.unknownKeys.length ? properties.unknownKeys.slice(0, 12).join(' · ') : 'No additional keys found'}{properties.unknownKeys.length > 12 ? ' …' : ''}</span></div></Card>
     <Card><SectionHeading title="Recovery copies" description="A private copy is made before every change." /><div className="local-backup-list">{properties.backups.length ? properties.backups.map((backup) => <div key={backup.id}><span className="local-backup-icon"><Archive size={15} /></span><span><strong>{new Date(backup.createdAt).toLocaleString()}</strong><small>SHA-256 {backup.sha256.slice(0, 12)}…</small></span></div>) : <span className="local-no-backups">No property changes saved yet.</span>}</div><p className="data-note">Backup files are stored privately under the MMSManager data directory. Restore controls are planned for a later stage.</p></Card>
   </div></div>
+}
+
+function LocalMods({ serverId, software, managed, isAdmin, runtimeStatus }: { serverId: string; software: string; managed: boolean; isAdmin: boolean; runtimeStatus: string }) {
+  const [inventory, setInventory] = useState<ServerModsInventory | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<'all' | 'enabled' | 'disabled' | 'quarantined'>('all')
+
+  const reload = useCallback(async (signal?: AbortSignal) => {
+    setLoading(true)
+    try {
+      setInventory(await getServerMods(serverId, signal))
+      setError(null)
+    } catch (issue) {
+      if (!(issue instanceof DOMException && issue.name === 'AbortError')) setError(issue instanceof Error ? issue.message : 'The mod inventory is unavailable.')
+    } finally { setLoading(false) }
+  }, [serverId])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void reload(controller.signal)
+    return () => controller.abort()
+  }, [reload])
+
+  const canMutate = Boolean(isAdmin && managed && inventory?.supported && ['stopped', 'running', 'crashed', 'error'].includes(runtimeStatus))
+  const visibleItems = (inventory?.items ?? []).filter((item) => (filter === 'all' || item.state === filter)
+    && `${item.fileName} ${item.modId ?? ''} ${item.name ?? ''} ${item.artifactVersion ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))
+  const mutate = async (work: () => Promise<ServerModsInventory>, success: string) => {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const updated = await work()
+      setInventory(updated)
+      setNotice(updated.restartRequired ? `${success} Restart required before the change takes effect.` : `${success} The file will be used the next time this server starts.`)
+    } catch (issue) { setError(issue instanceof Error ? issue.message : 'The file operation could not be completed.') }
+    finally { setBusy(false) }
+  }
+  async function upload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const input = event.currentTarget.elements.namedItem('mod-file')
+    if (!(input instanceof HTMLInputElement) || !input.files?.[0]) return
+    const file = input.files[0]
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    setProgress(0)
+    try {
+      const updated = await uploadServerMod(serverId, file, setProgress)
+      setInventory(updated)
+      setNotice(updated.restartRequired ? 'JAR installed. Restart required before it is loaded.' : 'JAR installed. It will be loaded when the server starts.')
+    } catch (issue) { setError(issue instanceof Error ? issue.message : 'The upload could not be completed.') }
+    finally { setBusy(false); setProgress(null); input.value = ''; setSelectedFileName(null) }
+  }
+
+  const loaderLabel = software === 'fabric' ? 'Fabric mods' : software === 'paper' ? 'Paper plugins' : 'Mod and plugin files'
+  return <div className="local-mods-layout">
+    <Card className="local-mods-card">
+      <div className="local-mods-header"><div><div className="card-kicker"><Package size={15} /> File-backed inventory</div><h3>{loaderLabel}</h3><p>Reads JAR metadata from the registered server directory. Archives are never extracted.</p></div><div className="local-mods-header-actions"><Badge tone={inventory?.supported ? 'good' : 'warn'}>{inventory?.supported ? inventory.loader : software === 'vanilla' ? 'Not supported' : 'Unknown loader'}</Badge><Button icon={RefreshCw} disabled={loading || busy} onClick={() => void reload()}>Reload</Button></div></div>
+      {!managed && <div className="local-inline-note"><Shield size={15} /> Imported server folders are read only.</div>}
+      {inventory?.restartRequired && <div className="local-restart-banner"><RefreshCw size={16} /><span><strong>Restart required</strong><small>File changes are saved, but a running server does not hot-load or unload mods.</small></span></div>}
+      {error && <div className="local-inline-error" role="alert">{error}</div>}
+      {notice && <div className="local-saved-note" role="status"><Check size={15} />{notice}</div>}
+      {inventory?.supported && isAdmin && managed && <form className="local-mod-upload" onSubmit={(event) => void upload(event)}>
+        <label className="local-mod-file-picker"><Upload size={16} /><span>{selectedFileName ?? 'Choose JAR to install'}</span><input name="mod-file" aria-label="Choose mod or plugin JAR" type="file" accept=".jar,application/java-archive" disabled={busy || !canMutate} onChange={(event) => setSelectedFileName(event.target.files?.[0]?.name ?? null)} required /></label>
+        <Button kind="primary" icon={Upload} disabled={busy || !canMutate}>{progress === null ? 'Upload JAR' : `Uploading ${progress}%`}</Button>
+        <small>Maximum 128 MiB. Duplicate filenames are rejected.</small>
+        {progress !== null && <progress aria-label="JAR upload progress" max="100" value={progress} />}
+      </form>}
+      {loading && !inventory ? <div className="local-mods-state"><span className="loading-pulse" /> Reading the local mod directory…</div>
+        : error && !inventory ? <div className="local-mods-state"><AlertTriangle size={20} /><strong>Inventory unavailable</strong><Button icon={RefreshCw} onClick={() => void reload()}>Retry</Button></div>
+          : !inventory?.supported ? <div className="local-mods-state"><Package size={20} /><strong>This server type is not supported</strong><span>Stage 5B supports Fabric mods and Paper plugins. Vanilla and unknown loaders do not have a managed mod directory.</span></div>
+            : <>
+              <div className="local-mods-toolbar"><label className="local-mod-search"><Search size={15} /><input aria-label="Search mods and plugins" placeholder="Search files and metadata" value={query} onChange={(event) => setQuery(event.target.value)} /></label><div className="local-mod-filters" aria-label="Filter mod files">{(['all', 'enabled', 'disabled', 'quarantined'] as const).map((value) => <button type="button" key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{value === 'all' ? 'All' : value[0]!.toUpperCase() + value.slice(1)}</button>)}</div></div>
+              <div className="local-mod-counts"><span><strong>{inventory.items.filter((item) => item.state === 'enabled').length}</strong> enabled</span><span><strong>{inventory.items.filter((item) => item.state === 'disabled').length}</strong> disabled</span><span><strong>{inventory.items.filter((item) => item.state === 'quarantined').length}</strong> in quarantine</span><span className="local-mod-directory"><Folder size={13} /> {inventory.loadDirectory}/</span></div>
+              {inventory.truncated && <div className="local-inline-note">The inventory reached its safe scan limit. Some files may not be shown.</div>}
+              {visibleItems.length ? <div className="local-mod-list">{visibleItems.map((item) => <LocalModRow key={`${item.state}:${item.id}`} item={item} canMutate={canMutate} busy={busy} onEnable={() => void mutate(() => setServerModEnabled(serverId, item.fileName, true), 'Mod enabled.')} onDisable={() => void mutate(() => setServerModEnabled(serverId, item.fileName, false), 'Mod disabled.')} onQuarantine={() => { if (window.confirm(`Move ${item.fileName} to recoverable quarantine? The file will be preserved outside the loader directory.`)) void mutate(() => quarantineServerMod(serverId, item.fileName), 'File moved to quarantine.') }} onRestore={() => void mutate(() => restoreQuarantinedMod(serverId, item.id), 'File restored to the loader directory.')} />)}</div>
+                : <div className="local-mods-state"><Package size={20} /><strong>{query ? 'No matching files' : filter === 'all' ? 'No mod or plugin JARs found' : `No ${filter} files`}</strong><span>{query ? 'Try a different search.' : `The ${inventory.loadDirectory}/ directory contains no recognized JAR files.`}</span></div>}
+            </>}
+      <div className="local-detail-callout"><Shield size={15} /><span>Disabled JARs and quarantined files are stored under this managed server's private .mmsmanager directory. Changes never delete file contents or hot-unload a running artifact.</span></div>
+    </Card>
+  </div>
+}
+
+function LocalModRow({ item, canMutate, busy, onEnable, onDisable, onQuarantine, onRestore }: { item: ServerModEntry; canMutate: boolean; busy: boolean; onEnable: () => void; onDisable: () => void; onQuarantine: () => void; onRestore: () => void }) {
+  const stateTone = item.state === 'enabled' ? 'good' : item.state === 'quarantined' ? 'warn' : 'neutral'
+  return <article className="local-mod-row"><span className={`local-mod-file-icon state-${item.state}`}><Package size={17} /></span><div className="local-mod-info"><div className="local-mod-title"><strong>{item.name ?? item.fileName}</strong><Badge tone={stateTone}>{item.state}</Badge>{item.metadataState === 'unknown' && <Badge>Metadata unknown</Badge>}</div><p><span>{item.fileName}</span>{item.modId && <span> · ID {item.modId}</span>}{item.artifactVersion && <span> · Version {item.artifactVersion}</span>}</p><small>{item.metadataKind === 'fabric' ? 'Fabric metadata' : item.metadataKind === 'paper' ? 'Paper plugin metadata' : 'No recognized metadata'}{item.minecraftConstraint ? ` · Minecraft ${item.minecraftConstraint}` : ''}{item.loaderConstraint ? ` · Loader ${item.loaderConstraint}` : ''}{item.dependencies === null ? ' · Dependencies unknown' : item.dependencies.length ? ` · Dependencies ${item.dependencies.join(', ')}` : ''} · {formatBytes(item.sizeBytes)}</small></div><div className="local-mod-actions">
+    {item.state === 'enabled' && <Button disabled={!canMutate || busy} icon={Ban} onClick={onDisable}>Disable</Button>}
+    {item.state === 'disabled' && <Button disabled={!canMutate || busy} icon={Check} onClick={onEnable}>Enable</Button>}
+    {item.state === 'quarantined' ? <Button disabled={!canMutate || busy} icon={RotateCcw} onClick={onRestore}>Restore</Button> : <Button kind="quiet" disabled={!canMutate || busy} icon={Trash2} onClick={onQuarantine}>Quarantine</Button>}
+  </div></article>
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`
+  if (value < 1_048_576) return `${(value / 1024).toFixed(1)} KiB`
+  return `${(value / 1_048_576).toFixed(1)} MiB`
 }
 
 function LockedDetail({ title, text }: { title: string; text: string }) {

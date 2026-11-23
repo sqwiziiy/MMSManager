@@ -411,6 +411,32 @@ export const serverPlayerActionResultSchema = z.object({
   submittedAt: z.string().datetime({ offset: true }),
   confirmedAt: z.string().datetime({ offset: true }).nullable(),
 }).strict()
+export const serverModEntrySchema = z.object({
+  id: z.string().min(1).max(180),
+  fileName: z.string().min(1).max(180),
+  sizeBytes: z.number().int().nonnegative(),
+  state: z.enum(['enabled', 'disabled', 'quarantined']),
+  metadataKind: z.enum(['fabric', 'paper', 'unknown']),
+  metadataState: z.enum(['known', 'unknown']),
+  modId: z.string().max(128).nullable(),
+  name: z.string().max(160).nullable(),
+  artifactVersion: z.string().max(120).nullable(),
+  minecraftConstraint: z.string().max(120).nullable(),
+  loaderConstraint: z.string().max(120).nullable(),
+  dependencies: z.array(z.string().max(128)).max(64).nullable(),
+}).strict()
+export const serverModsInventorySchema = z.object({
+  serverId: z.string().uuid(),
+  supported: z.boolean(),
+  loader: z.enum(['fabric', 'paper', 'unsupported']),
+  loadDirectory: z.string().max(16).nullable(),
+  items: z.array(serverModEntrySchema).max(300),
+  truncated: z.boolean(),
+  restartRequired: z.boolean(),
+  runtimeStatus: z.enum(['stopped', 'starting', 'running', 'stopping', 'crashed', 'error', 'external/unmanaged', 'unavailable']),
+}).strict()
+export const serverModsInventoryResultSchema = z.object({ mods: serverModsInventorySchema }).strict()
+export const serverModMutationResultSchema = z.object({ ok: z.literal(true), restartRequired: z.boolean() }).strict()
 export const serverConsoleEntrySchema = z.object({
   id: z.number().int().positive(),
   occurredAt: z.string().datetime({ offset: true }),
@@ -500,6 +526,8 @@ export type ServerStatus = z.infer<typeof serverStatusSchema>
 export type ServerPlayerList = z.infer<typeof serverPlayerListSchema>
 export type ServerPlayerAction = z.infer<typeof serverPlayerActionSchema>
 export type ServerPlayerActionResult = z.infer<typeof serverPlayerActionResultSchema>
+export type ServerModEntry = z.infer<typeof serverModEntrySchema>
+export type ServerModsInventory = z.infer<typeof serverModsInventorySchema>
 export type ServerConsoleEntry = z.infer<typeof serverConsoleEntrySchema>
 export type ServerPropertySettings = z.infer<typeof serverPropertySettingsSchema>
 export type ServerPropertiesUpdate = z.infer<typeof serverPropertiesUpdateSchema>

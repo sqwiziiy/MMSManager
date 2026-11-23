@@ -70,6 +70,6 @@ pnpm build
 
 - Machine metrics and history are real, read-only measurements from this local Linux host when available. The app does not inspect other machines.
 - The local server registry, Java version checks, Vanilla/Fabric/Paper installation, panel-owned start/stop, basic process console/logs and managed `server.properties` editing are local-only features. Existing folder imports do not modify files and remain unmanaged.
-- Per-server CPU comes only from the verified owned process; status-ping player counts and process console identities show their own source and freshness. Fixed player actions are Admin-only and use response verification. Mods/plugins, files, worlds, backups, backup restore, automation, RCON and orchestrated restart remain `Coming soon` or disabled previews.
+- Per-server CPU comes only from the verified owned process; status-ping player counts and process console identities show their own source and freshness. Fixed player actions are Admin-only and use response verification. Fabric mods and Paper plugins now use the local file-backed manager; Vanilla and unknown loaders show unsupported. Files, worlds, backups, backup restore, automation, RCON and orchestrated restart remain `Coming soon` or disabled previews.
 - User creation, roles, profile, password, avatar and workspace/personal settings are backed by the local SQLite workspace. They do not control Minecraft permissions or server access.
 - No RCON, SSH, remote host, LAN API or arbitrary OS shell endpoint is included. The API and Vite remain loopback-only.

@@ -32,6 +32,7 @@ import {
   serverPlayerListResultSchema,
   serverPlayerActionRequestSchema,
   serverPlayerActionResultSchema,
+  serverModsInventoryResultSchema,
   serverPropertiesResultSchema,
   serverPropertiesUpdateSchema,
   javaProbeRequestSchema,
@@ -66,6 +67,7 @@ import { ServerInstallError, ServerInstallService } from './servers/install.js'
 import { ServerProcessError, ServerProcessManager } from './servers/processes.js'
 import { ServerPropertiesError, ServerPropertiesManager } from './servers/properties.js'
 import { ServerStatusError, ServerStatusService } from './servers/status.js'
+import { MAX_MOD_JAR_BYTES, ServerModsError, ServerModsService } from './servers/mods.js'
 
 class InvalidRequestError extends Error {}
 
@@ -187,6 +189,7 @@ export async function createApiApp(options: {
   await processes.prepare()
   const properties = new ServerPropertiesManager(options.db, options.servers, options.now)
   const serverStatus = new ServerStatusService(options.db, options.now)
+  const mods = new ServerModsService(options.db, options.servers, processes, options.now)
   const webOrigin = options.webOrigin ?? WEB_ORIGIN
   const apiPort = options.apiPort ?? 4174
   const secureCookies = options.secureCookies ?? false
@@ -204,7 +207,7 @@ export async function createApiApp(options: {
     errorResponseBuilder: () => ({ error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again shortly.' } }),
   })
   await app.register(multipart, {
-    limits: { fields: 0, files: 1, parts: 1, fileSize: MAX_AVATAR_BYTES, headerPairs: 100 },
+    limits: { fields: 0, files: 1, parts: 1, fileSize: MAX_MOD_JAR_BYTES, headerPairs: 100 },
   })
 
   app.decorateRequest('principal', null)
@@ -222,7 +225,9 @@ export async function createApiApp(options: {
       if (fetchSite && fetchSite !== 'same-origin') return reply.code(403).send({ error: { code: 'CROSS_SITE', message: 'Cross-site requests are not allowed.' } })
       const contentType = request.headers['content-type']?.toLowerCase() ?? ''
       const isAvatarUpload = request.url === '/api/v1/profile/avatar' && request.method === 'POST'
-      if (isAvatarUpload ? !contentType.startsWith('multipart/form-data;') : request.method !== 'DELETE' && !contentType.startsWith('application/json')) {
+      const isModUpload = /^\/api\/v1\/admin\/servers\/[0-9a-f-]{36}\/mods$/.test(request.url) && request.method === 'POST'
+      const expectsMultipart = isAvatarUpload || isModUpload
+      if (expectsMultipart ? !contentType.startsWith('multipart/form-data;') : request.method !== 'DELETE' && !contentType.startsWith('application/json')) {
         return reply.code(415).send({ error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'The request content type is not supported.' } })
       }
     }
@@ -271,7 +276,7 @@ export async function createApiApp(options: {
     if (error instanceof ServerStatusError) return reply.code(404).send({ error: { code: error.code, message: error.message } })
     if (error instanceof ServerProcessError) {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
-        : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') || error.code.endsWith('_NOT_RUNNING') || error.code === 'SERVER_NOT_PANEL_MANAGED' ? 409
+        : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') || error.code.endsWith('_NOT_RUNNING') || error.code.endsWith('_BUSY') || error.code === 'PROCESS_NOT_OWNED' || error.code === 'SERVER_NOT_PANEL_MANAGED' ? 409
           : error.code.includes('UNAVAILABLE') ? 503 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
@@ -279,6 +284,13 @@ export async function createApiApp(options: {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
         : error.code.endsWith('_BUSY') ? 409
           : error.code.endsWith('_UNAVAILABLE') ? 503 : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
+    if (error instanceof ServerModsError) {
+      const status = error.code.endsWith('_NOT_FOUND') ? 404
+        : error.code.includes('DUPLICATE') || error.code.endsWith('_BUSY') || error.code === 'SERVER_NOT_PANEL_MANAGED' || error.code === 'MODS_UNSUPPORTED' || error.code === 'PROCESS_NOT_OWNED' ? 409
+          : error.code.includes('TOO_LARGE') ? 413
+            : error.code.includes('UNAVAILABLE') ? 503 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
     if (error instanceof ServerInstallError) {
@@ -488,6 +500,45 @@ export async function createApiApp(options: {
   app.get('/api/v1/admin/servers/:serverId/players', { preHandler: requireAdmin }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverPlayerListResultSchema.parse({ players: await processes.players(params.serverId) })
+  })
+  app.get('/api/v1/servers/:serverId/mods', { preHandler: requireAuth }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverModsInventoryResultSchema.parse({ mods: await mods.list(params.serverId) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/mods', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(localServerIdSchema, request.params)
+    const part = await request.file({ limits: { files: 1, fields: 0, parts: 1, fileSize: MAX_MOD_JAR_BYTES } })
+    if (!part) throw new InvalidRequestError('A JAR file is required.')
+    const inventory = await mods.upload(params.serverId, request.principal!.userId, part.filename, part.file, () => part.file.truncated)
+    return reply.code(201).send(serverModsInventoryResultSchema.parse({ mods: inventory }))
+  })
+  app.post('/api/v1/admin/servers/:serverId/mods/:fileName/enable', { preHandler: requireAdminMutation }, async (request) => {
+    const rawParams = request.params as { serverId?: unknown; fileName?: unknown }
+    const params = parse(localServerIdSchema, { serverId: rawParams.serverId })
+    const fileName = rawParams.fileName
+    if (typeof fileName !== 'string') throw new InvalidRequestError('A mod filename is required.')
+    return serverModsInventoryResultSchema.parse({ mods: await mods.setEnabled(params.serverId, request.principal!.userId, fileName, true) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/mods/:fileName/disable', { preHandler: requireAdminMutation }, async (request) => {
+    const rawParams = request.params as { serverId?: unknown; fileName?: unknown }
+    const params = parse(localServerIdSchema, { serverId: rawParams.serverId })
+    const fileName = rawParams.fileName
+    if (typeof fileName !== 'string') throw new InvalidRequestError('A mod filename is required.')
+    return serverModsInventoryResultSchema.parse({ mods: await mods.setEnabled(params.serverId, request.principal!.userId, fileName, false) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/mods/:fileName/quarantine', { preHandler: requireAdminMutation }, async (request) => {
+    const rawParams = request.params as { serverId?: unknown; fileName?: unknown }
+    const params = parse(localServerIdSchema, { serverId: rawParams.serverId })
+    const fileName = rawParams.fileName
+    if (typeof fileName !== 'string') throw new InvalidRequestError('A mod filename is required.')
+    return serverModsInventoryResultSchema.parse({ mods: await mods.quarantine(params.serverId, request.principal!.userId, fileName) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/mods/quarantine/:id/restore', { preHandler: requireAdminMutation }, async (request) => {
+    const rawParams = request.params as { serverId?: unknown; id?: unknown }
+    const params = parse(localServerIdSchema, { serverId: rawParams.serverId })
+    const quarantineId = rawParams.id
+    if (typeof quarantineId !== 'string') throw new InvalidRequestError('A quarantine id is required.')
+    return serverModsInventoryResultSchema.parse({ mods: await mods.restoreQuarantine(params.serverId, request.principal!.userId, quarantineId) })
   })
   app.post('/api/v1/admin/servers/:serverId/player-actions', { preHandler: requireAdminMutation }, async (request) => {
     const params = parse(localServerIdSchema, request.params)

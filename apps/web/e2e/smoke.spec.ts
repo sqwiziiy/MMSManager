@@ -58,6 +58,34 @@ async function mockLocalServer(page: Page) {
   await page.route(`**/api/v1/servers/${serverId}/runtime`, (route) => route.fulfill({ json: { runtime: { serverId, status: 'running', startedAt: now, uptimeSeconds: 153, memoryRssBytes: 536870912, cpuPercent: null, ready: true, playersOnline: null, eula: 'accepted', restartRequired, lastExitCode: null, errorMessage: null } } }))
   await page.route(`**/api/v1/servers/${serverId}/status`, (route) => route.fulfill({ json: { status: { serverId, checkedAt: now, source: 'local-status-ping', state: 'reachable', playersOnline: 3, playersMax: 20, versionName: 'Paper 1.21.4', description: 'Local fixture', latencyMs: 4, errorCode: null, authoritativePlayerList: false } } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/players`, (route) => route.fulfill({ json: { players: { serverId, state: 'authoritative', source: 'owned-console-list', sampledAt: now, names: ['FixturePlayer'], reason: null } } }))
+  const modItems = [{ id: 'fixture-plugin.jar', fileName: 'fixture-plugin.jar', sizeBytes: 768, state: 'enabled', metadataKind: 'paper', metadataState: 'known', modId: 'FixturePlugin', name: 'Fixture Plugin', artifactVersion: '1.3.0', minecraftConstraint: '1.21', loaderConstraint: null, dependencies: ['LuckPerms'] }]
+  const modsInventory = () => ({ serverId, supported: true, loader: 'paper', loadDirectory: 'plugins', items: modItems, truncated: false, restartRequired, runtimeStatus: 'running' })
+  await page.route(`**/api/v1/servers/${serverId}/mods`, (route) => route.fulfill({ json: { mods: modsInventory() } }))
+  await page.route(`**/api/v1/admin/servers/${serverId}/mods**`, async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/mods')) {
+      const body = route.request().postDataBuffer()?.toString('latin1') ?? ''
+      const fileName = /filename="([^"]+)"/.exec(body)?.[1] ?? 'uploaded-fixture.jar'
+      modItems.push({ id: fileName, fileName, sizeBytes: 512, state: 'enabled', metadataKind: 'unknown', metadataState: 'unknown', modId: null, name: null, artifactVersion: null, minecraftConstraint: null, loaderConstraint: null, dependencies: [] })
+      restartRequired = true
+      return route.fulfill({ status: 201, json: { mods: modsInventory() } })
+    }
+    const restore = /\/quarantine\/([0-9a-f-]{36})\/restore$/.exec(path)
+    if (restore) {
+      const item = modItems.find((candidate) => candidate.id === restore[1])
+      if (item) item.state = 'enabled'
+    } else {
+      const fileName = decodeURIComponent(path.split('/').at(-2) ?? '')
+      const item = modItems.find((candidate) => candidate.fileName === fileName)
+      if (item) {
+        if (path.endsWith('/disable')) item.state = 'disabled'
+        else if (path.endsWith('/enable')) item.state = 'enabled'
+        else if (path.endsWith('/quarantine')) { item.state = 'quarantined'; item.id = 'c03c1cf8-e2a1-4a4e-9de4-4536c7796091' }
+      }
+    }
+    restartRequired = true
+    return route.fulfill({ json: { mods: modsInventory() } })
+  })
   await page.route(`**/api/v1/servers/${serverId}/console?*`, (route) => {
     const after = Number(new URL(route.request().url()).searchParams.get('after') ?? 0)
     return route.fulfill({ json: { entries: consoleResponse.entries.filter((entry) => entry.id > after), nextAfter: null } })
@@ -333,6 +361,28 @@ test('local server detail and property controls fit a mobile viewport', async ({
   await expect(page.getByRole('heading', { name: 'Online identities' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'local server mobile players')
   await page.screenshot({ path: resolve(screenshotDir, 'stage-05a-local-players-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('local Paper plugin inventory uploads and disables only acknowledged files', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  const { serverId } = await mockLocalServer(page)
+  await page.goto(`/servers/${serverId}/mods`)
+  await expect(page.getByRole('heading', { name: 'Paper plugins' })).toBeVisible()
+  await expect(page.getByText('Fixture Plugin')).toBeVisible()
+  await expect(page.getByText('LuckPerms')).toBeVisible()
+  await page.locator('input[name="mod-file"]').setInputFiles({ name: 'new-addon.jar', mimeType: 'application/java-archive', buffer: Buffer.from('mock archive fixture') })
+  await page.getByRole('button', { name: 'Upload JAR' }).click()
+  await expect(page.locator('.local-mod-row').filter({ hasText: 'new-addon.jar' })).toBeVisible()
+  await expect(page.getByText('JAR installed. Restart required before it is loaded.')).toBeVisible()
+  const fixtureRow = page.locator('.local-mod-row').filter({ hasText: 'Fixture Plugin' })
+  await fixtureRow.getByRole('button', { name: 'Disable' }).click()
+  await expect(fixtureRow.getByText('disabled', { exact: true })).toBeVisible()
+  await expect(page.getByText('Restart required').first()).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05b-paper-plugins-desktop.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'local Paper plugins mobile')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05b-paper-plugins-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('mobile dashboard, account screens and navigation fit a narrow viewport', async ({ page }) => {
