@@ -279,6 +279,7 @@ export const localServerSummarySchema = z.object({
   managed: z.boolean(),
   worldFolders: z.array(z.string()),
   createdAt: z.string().datetime({ offset: true }),
+  runtimeStatus: z.enum(['stopped', 'starting', 'running', 'stopping', 'crashed', 'error', 'external/unmanaged']).optional(),
 })
 export const localServerListSchema = z.object({ servers: z.array(localServerSummarySchema) })
 export const serverImportResultSchema = z.object({ server: localServerSummarySchema })
@@ -356,6 +357,54 @@ export const installOperationSchema = z.object({
 export const installOperationResultSchema = z.object({ operation: installOperationSchema }).strict()
 export const installOperationListSchema = z.object({ operations: z.array(installOperationSchema) }).strict()
 export const installOperationIdSchema = z.object({ operationId: z.string().uuid() }).strict()
+export const localServerIdSchema = z.object({ serverId: z.string().uuid() }).strict()
+export const serverRuntimeStatusSchema = z.enum(['stopped', 'starting', 'running', 'stopping', 'crashed', 'error', 'external/unmanaged', 'unavailable'])
+export const serverRuntimeSchema = z.object({
+  serverId: z.string().uuid(),
+  status: serverRuntimeStatusSchema,
+  startedAt: z.string().datetime({ offset: true }).nullable(),
+  uptimeSeconds: z.number().finite().nonnegative().nullable(),
+  memoryRssBytes: z.number().int().nonnegative().nullable(),
+  cpuPercent: z.number().finite().min(0).max(100).nullable(),
+  ready: z.boolean(),
+  playersOnline: z.null(),
+  eula: serverEulaSchema,
+  restartRequired: z.boolean(),
+  lastExitCode: z.number().int().nullable(),
+  errorMessage: z.string().nullable(),
+}).strict()
+export const serverRuntimeResultSchema = z.object({ runtime: serverRuntimeSchema }).strict()
+export const serverConsoleEntrySchema = z.object({
+  id: z.number().int().positive(),
+  occurredAt: z.string().datetime({ offset: true }),
+  source: z.enum(['stdout', 'stderr', 'system', 'command']),
+  severity: z.enum(['info', 'warn', 'error', 'debug']),
+  message: z.string().max(8192),
+}).strict()
+export const serverConsoleResponseSchema = z.object({ entries: z.array(serverConsoleEntrySchema), nextAfter: z.number().int().nonnegative().nullable() }).strict()
+export const serverConsoleQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().default(0), limit: z.coerce.number().int().min(1).max(500).default(200) }).strict()
+export const serverCommandSchema = z.object({ command: z.string().min(1).max(256).refine((value) => value.trim().length > 0 && !/[\u0000-\u001f\u007f]/.test(value)) }).strict()
+export const serverPropertySettingsSchema = z.object({
+  motd: z.string().max(120).refine((value) => !/[\u0000-\u001f\u007f]/.test(value), 'MOTD cannot contain control characters.'),
+  gameMode: z.enum(['survival', 'creative', 'adventure', 'spectator']),
+  difficulty: z.enum(['peaceful', 'easy', 'normal', 'hard']),
+  maxPlayers: z.number().int().min(1).max(500),
+  viewDistance: z.number().int().min(2).max(32),
+  simulationDistance: z.number().int().min(2).max(32),
+  spawnProtection: z.number().int().min(0).max(128),
+  pvp: z.boolean(),
+  whiteList: z.boolean(),
+  allowNether: z.boolean(),
+}).strict()
+export const serverPropertiesUpdateSchema = serverPropertySettingsSchema.partial().strict().refine((value) => Object.keys(value).length > 0, 'At least one property change is required.')
+export const serverPropertiesBackupSchema = z.object({ id: z.string().uuid(), createdAt: z.string().datetime({ offset: true }), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
+export const serverPropertiesResponseSchema = z.object({
+  settings: serverPropertySettingsSchema,
+  unknownKeys: z.array(z.string()).max(256),
+  backups: z.array(serverPropertiesBackupSchema).max(20),
+  restartRequired: z.boolean(),
+}).strict()
+export const serverPropertiesResultSchema = z.object({ properties: serverPropertiesResponseSchema }).strict()
 export const javaRuntimeSchema = z.object({
   path: z.string(),
   version: z.string(),
@@ -409,3 +458,8 @@ export type InstallSoftware = z.infer<typeof installSoftwareSchema>
 export type InstallCatalog = z.infer<typeof installCatalogSchema>
 export type ServerInstallRequest = z.infer<typeof serverInstallRequestSchema>
 export type InstallOperation = z.infer<typeof installOperationSchema>
+export type ServerRuntime = z.infer<typeof serverRuntimeSchema>
+export type ServerConsoleEntry = z.infer<typeof serverConsoleEntrySchema>
+export type ServerPropertySettings = z.infer<typeof serverPropertySettingsSchema>
+export type ServerPropertiesUpdate = z.infer<typeof serverPropertiesUpdateSchema>
+export type ServerPropertiesResponse = z.infer<typeof serverPropertiesResponseSchema>

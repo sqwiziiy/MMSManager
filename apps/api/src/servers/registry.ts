@@ -87,6 +87,7 @@ function detectJar(names: string[]): { jarName: string | null; software: ImportP
 export class ServerRegistry {
   readonly managedRoot: string
   readonly importRoots: string[]
+  readonly dataDirectory: string
   private readonly appOwnedRoot: boolean
 
   constructor(
@@ -95,6 +96,7 @@ export class ServerRegistry {
     env: NodeJS.ProcessEnv = process.env,
     private readonly now: () => number = Date.now,
   ) {
+    this.dataDirectory = resolve(dataDirectory)
     this.managedRoot = resolve(env['MMSMANAGER_SERVER_ROOT'] || join(dataDirectory, 'servers'))
     this.appOwnedRoot = !env['MMSMANAGER_SERVER_ROOT']
     const configuredRoots = env['MMSMANAGER_IMPORT_ROOTS']

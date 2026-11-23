@@ -1,6 +1,6 @@
 # MMSManager
 
-MMSManager is a local-first workspace for Minecraft server operators. It includes real, read-only metrics from the Linux host, persistent machine history, an authenticated local server-folder inventory, and an explicit Java version scan. Fictional server cards and sample data remain clearly marked; an imported folder remains read only and unmanaged.
+MMSManager is a local-first workspace for Minecraft server operators. It includes real, read-only metrics from the Linux host, persistent machine history, an authenticated local server-folder inventory, an official-provider installer, and lifecycle controls for processes created by MMSManager. Fictional server cards and sample data remain clearly marked; an imported folder remains read only and unmanaged.
 
 ## Run locally
 
@@ -45,7 +45,15 @@ Administrators can open **Create server** from the dashboard or Servers page. Th
 
 The wizard checks Minecraft's declared Java major against a runtime that an administrator has explicitly scanned or probed. It checks the loopback game port, caps downloads at 256 MiB, validates the archive header/size and verifies Mojang SHA-1 or Paper SHA-256 when the provider publishes one. Fabric Meta's generated jar endpoint does not publish an artifact checksum; MMSManager records a local SHA-256 for provenance but cannot compare it with an upstream digest. Failed downloads are preserved in their new panel-created directory and are never registered as healthy. Existing directories are never overwritten or cleaned.
 
-The EULA checkbox starts unchecked. The installer writes `eula=true` only after explicit administrator acceptance; otherwise it writes `eula=false`. New `server.properties` bind to `127.0.0.1`. A readable `start.sh` is generated but is not executed; lifecycle controls invoke the chosen Java executable directly with arguments.
+The EULA checkbox starts unchecked. The installer writes `eula=true` only after explicit administrator acceptance; otherwise it writes `eula=false`. New `server.properties` bind to `127.0.0.1`. A readable `start.sh` is generated but is not executed; the Start control invokes the chosen Java executable directly with an argument array and `shell: false`.
+
+## Starting and managing a local server
+
+Only an administrator can control a new, panel-managed server with an accepted EULA, a configured Java runtime and its managed JAR. Imported folders remain read only. Start waits for Minecraft's readiness line. Stop writes Minecraft's graceful `stop` command to the owned process; MMSManager does not signal or kill a process. If the API restarts while a child is still alive, its state becomes **Unmanaged** and the panel will not adopt it. An administrator can confirm it stopped only after the stored PID/start identity check shows that exact process is gone.
+
+The local Console shows output from the owned process and sends bounded Minecraft commands to its stdin; browser input is never passed to a shell. Console history retains the most recent 5,000 entries. Raw stdout/stderr logs rotate into 16 MiB files with a 256 MiB total cap, stored privately under the MMSManager data directory. New raw capture pauses at the cap; existing logs are not deleted.
+
+The visual Properties editor changes a supported set of `server.properties` options for managed folders only. It preserves comments and unknown keys, creates a private recovery copy before each atomic replacement, and flags changes made while running as restart required. Network binding stays fixed at `127.0.0.1`. Backup restoration controls, players, mods, worlds, files, automation and rich runtime telemetry are not currently available.
 
 ## Checks
 
@@ -59,6 +67,7 @@ pnpm build
 ## Current boundaries
 
 - Machine metrics and history are real, read-only measurements from this local Linux host when available. The app does not inspect other machines.
-- The local server registry, Java version checks and new server installations are real, local-only features. Existing folder imports do not modify files and remain unmanaged. Server runtime state, players, mods, backups, worlds and performance are still `DEMO` or `Preview`.
+- The local server registry, Java version checks, Vanilla/Fabric/Paper installation, panel-owned start/stop, basic process console/logs and managed `server.properties` editing are local-only features. Existing folder imports do not modify files and remain unmanaged.
+- Player counts and CPU usage per server remain unavailable. Player management, mods, backups, worlds, files, automation, restore UI, RCON and restart controls are still `Coming soon` or disabled previews.
 - User creation, roles, profile, password, avatar and workspace/personal settings are backed by the local SQLite workspace. They do not control Minecraft permissions or server access.
-- No Minecraft process control, RCON, SSH, remote host, LAN API or arbitrary shell endpoint is included. The API and Vite remain loopback-only.
+- No RCON, SSH, remote host, LAN API or arbitrary OS shell endpoint is included. The API and Vite remain loopback-only.

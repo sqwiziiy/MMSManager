@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Activity, ArrowDownToLine, ArrowRight, Box, Braces, Check, ChevronRight, Clock3, Command,
   Cpu, FileText, Folder, Globe, HardDrive, KeyRound, Layers3, MoreHorizontal, Radio,
@@ -8,6 +8,9 @@ import { Link, NavLink, useLocation, useParams } from 'react-router-dom'
 import { formatMemory, mockLogs, mockMods, servers } from '../data'
 import { ResourceTimeline, WorldBlocks } from '../components/charts'
 import { Badge, Button, Card, ComingSoon, DisabledButton, Field, PageHeading, PreviewFlag, SectionHeading, StatusDot, SwitchPreview } from '../components/ui'
+import { getLocalServers } from '../api/servers'
+import type { LocalServerSummary } from '@mmsmanager/shared'
+import { LocalServerDetail } from './local-server-detail'
 
 const tabs = [
   { id: 'overview', label: 'Overview', icon: Activity },
@@ -27,6 +30,28 @@ const tabs = [
 export function ServerDetailPage() {
   const { serverId } = useParams()
   const location = useLocation()
+  const [localServer, setLocalServer] = useState<LocalServerSummary | null>(null)
+  const [localLoading, setLocalLoading] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
+  const isLocalId = Boolean(serverId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(serverId))
+  useEffect(() => {
+    if (!isLocalId || !serverId) return
+    const controller = new AbortController()
+    setLocalServer(null)
+    setLocalLoading(true)
+    void getLocalServers(controller.signal).then((items) => {
+      setLocalServer(items.find((item) => item.id === serverId) ?? null)
+      setLocalError(null)
+    }).catch((error: unknown) => {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setLocalError(error instanceof Error ? error.message : 'The local server could not be loaded.')
+    }).finally(() => setLocalLoading(false))
+    return () => controller.abort()
+  }, [isLocalId, serverId])
+  if (isLocalId) {
+    if (localLoading || (!localServer && !localError)) return <div className="page-stack"><PageHeading title="Loading local server" description="Reading the authenticated local registry." /></div>
+    if (localServer) return <LocalServerDetail server={localServer} />
+    return <div className="page-stack"><PageHeading title="Local server unavailable" description={localError ?? 'This server is not registered in the local inventory.'} /><Link className="text-link" to="/servers">Return to servers <ArrowRight size={14} /></Link></div>
+  }
   const server = servers.find((item) => item.id === serverId)
   if (!server) return <div className="page-stack"><PageHeading title="Unknown server" description="This sample server is not in the preview data." /><Link className="text-link" to="/servers">Return to servers <ArrowRight size={14} /></Link></div>
   const section = location.pathname.split('/')[3] || 'overview'

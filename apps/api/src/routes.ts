@@ -23,6 +23,13 @@ import {
   installOperationListSchema,
   installOperationResultSchema,
   localServerListSchema,
+  localServerIdSchema,
+  serverCommandSchema,
+  serverConsoleQuerySchema,
+  serverConsoleResponseSchema,
+  serverRuntimeResultSchema,
+  serverPropertiesResultSchema,
+  serverPropertiesUpdateSchema,
   javaProbeRequestSchema,
   javaRuntimeListSchema,
   javaRuntimeSchema,
@@ -52,6 +59,8 @@ import { AvatarStore, InvalidAvatarError, MAX_AVATAR_BYTES } from './auth/avatar
 import { JavaRuntimeError, JavaRuntimeRegistry } from './servers/java.js'
 import { ServerInventoryError, ServerRegistry } from './servers/registry.js'
 import { ServerInstallError, ServerInstallService } from './servers/install.js'
+import { ServerProcessError, ServerProcessManager } from './servers/processes.js'
+import { ServerPropertiesError, ServerPropertiesManager } from './servers/properties.js'
 
 class InvalidRequestError extends Error {}
 
@@ -159,6 +168,7 @@ export async function createApiApp(options: {
   avatars: AvatarStore
   servers: ServerRegistry
   javaRuntimes: JavaRuntimeRegistry
+  processes?: ServerProcessManager
   webOrigin?: string
   apiPort?: number
   secureCookies?: boolean
@@ -168,6 +178,9 @@ export async function createApiApp(options: {
   const history = new MachineHistoryService(options.db, options.timeZone, options.now)
   const installs = new ServerInstallService(options.db, options.servers, options.javaRuntimes)
   await installs.prepare()
+  const processes = options.processes ?? new ServerProcessManager(options.db, options.servers, options.now)
+  await processes.prepare()
+  const properties = new ServerPropertiesManager(options.db, options.servers, options.now)
   const webOrigin = options.webOrigin ?? WEB_ORIGIN
   const apiPort = options.apiPort ?? 4174
   const secureCookies = options.secureCookies ?? false
@@ -249,6 +262,18 @@ export async function createApiApp(options: {
   }
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ServerProcessError) {
+      const status = error.code.endsWith('_NOT_FOUND') ? 404
+        : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') ? 409
+          : error.code.includes('UNAVAILABLE') ? 503 : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
+    if (error instanceof ServerPropertiesError) {
+      const status = error.code.endsWith('_NOT_FOUND') ? 404
+        : error.code.endsWith('_BUSY') ? 409
+          : error.code.endsWith('_UNAVAILABLE') ? 503 : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
     if (error instanceof ServerInstallError) {
       const status = error.code === 'INSTALL_LIMIT' ? 409 : error.code.endsWith('_UNAVAILABLE') || error.code === 'PROVIDER_UNAVAILABLE' ? 502 : error.code === 'PAPER_CONTACT_REQUIRED' ? 503 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
@@ -414,9 +439,12 @@ export async function createApiApp(options: {
     managedRoot: options.servers.managedRoot,
     importRoots: options.servers.importRoots,
   }))
-  app.get('/api/v1/servers', { preHandler: requireAuth }, async () => localServerListSchema.parse({
-    servers: await options.servers.listPublic(),
-  }))
+  app.get('/api/v1/servers', { preHandler: requireAuth }, async () => {
+    const statuses = processes.listPublicStatuses()
+    return localServerListSchema.parse({
+      servers: (await options.servers.listPublic()).map((server) => ({ ...server, runtimeStatus: statuses.get(server.id) ?? 'unavailable' })),
+    })
+  })
   app.post('/api/v1/admin/servers/import/inspect', { preHandler: requireAdminMutation }, async (request) => {
     const input = parse(serverImportRequestSchema, request.body)
     return serverImportPreviewSchema.parse(await options.servers.inspect(input.path))
@@ -441,6 +469,42 @@ export async function createApiApp(options: {
     const input = parse(serverInstallRequestSchema, request.body)
     const operation = await installs.create(input, request.principal!.userId)
     return reply.code(202).send(installOperationResultSchema.parse({ operation }))
+  })
+  app.get('/api/v1/servers/:serverId/runtime', { preHandler: requireAuth }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverRuntimeResultSchema.parse({ runtime: await processes.get(params.serverId) })
+  })
+  app.get('/api/v1/servers/:serverId/console', { preHandler: requireAuth }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const query = parse(serverConsoleQuerySchema, request.query)
+    return serverConsoleResponseSchema.parse(await processes.console(params.serverId, query.after, query.limit))
+  })
+  app.post('/api/v1/admin/servers/:serverId/start', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(localServerIdSchema, request.params)
+    return reply.code(202).send(serverRuntimeResultSchema.parse({ runtime: await processes.start(params.serverId, request.principal!.userId) }))
+  })
+  app.post('/api/v1/admin/servers/:serverId/stop', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverRuntimeResultSchema.parse({ runtime: await processes.stop(params.serverId, request.principal!.userId) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/confirm-stopped', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverRuntimeResultSchema.parse({ runtime: await processes.confirmStopped(params.serverId, request.principal!.userId) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/console', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverCommandSchema, request.body)
+    await processes.sendCommand(params.serverId, request.principal!.userId, input.command)
+    return reply.code(202).send({ ok: true })
+  })
+  app.get('/api/v1/admin/servers/:serverId/properties', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverPropertiesResultSchema.parse({ properties: await properties.get(params.serverId) })
+  })
+  app.patch('/api/v1/admin/servers/:serverId/properties', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const update = parse(serverPropertiesUpdateSchema, request.body)
+    return serverPropertiesResultSchema.parse({ properties: await properties.update(params.serverId, request.principal!.userId, update) })
   })
   app.get('/api/v1/admin/java', { preHandler: requireAdmin }, async () => javaRuntimeListSchema.parse({
     runtimes: options.javaRuntimes.list(),

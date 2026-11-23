@@ -262,3 +262,44 @@ export const serverInstallOperations = sqliteTable('server_install_operations', 
   check('server_install_operations_status_check', sql`${table.status} IN ('pending', 'downloading', 'validating', 'completed', 'failed')`),
   check('server_install_operations_progress_check', sql`${table.progress} >= 0 AND ${table.progress} <= 100`),
 ])
+
+export const localServerRuntime = sqliteTable('local_server_runtime', {
+  serverId: text('server_id').primaryKey().references(() => localServers.id, { onDelete: 'cascade' }),
+  status: text('status', { enum: ['stopped', 'starting', 'running', 'stopping', 'crashed', 'error', 'external/unmanaged'] }).notNull(),
+  processPid: integer('process_pid'),
+  processStartMarker: text('process_start_marker'),
+  processBootId: text('process_boot_id'),
+  startedAt: text('started_at'),
+  updatedAt: text('updated_at').notNull(),
+  lastExitCode: integer('last_exit_code'),
+  errorMessage: text('error_message'),
+  restartRequired: integer('restart_required', { mode: 'boolean' }).notNull().default(false),
+}, (table) => [
+  index('local_server_runtime_status_idx').on(table.status, table.updatedAt),
+  check('local_server_runtime_status_check', sql`${table.status} IN ('stopped', 'starting', 'running', 'stopping', 'crashed', 'error', 'external/unmanaged')`),
+  check('local_server_runtime_restart_check', sql`${table.restartRequired} IN (0, 1)`),
+])
+
+export const localServerConsoleEntries = sqliteTable('local_server_console_entries', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  occurredAt: text('occurred_at').notNull(),
+  source: text('source', { enum: ['stdout', 'stderr', 'system', 'command'] }).notNull(),
+  severity: text('severity', { enum: ['info', 'warn', 'error', 'debug'] }).notNull(),
+  message: text('message').notNull(),
+}, (table) => [
+  index('local_server_console_entries_order_idx').on(table.serverId, table.id),
+  check('local_server_console_entries_source_check', sql`${table.source} IN ('stdout', 'stderr', 'system', 'command')`),
+  check('local_server_console_entries_severity_check', sql`${table.severity} IN ('info', 'warn', 'error', 'debug')`),
+])
+
+export const localServerPropertiesBackups = sqliteTable('local_server_properties_backups', {
+  id: text('id').primaryKey(),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  fileName: text('file_name').notNull(),
+  sha256: text('sha256').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('local_server_properties_backups_server_time_idx').on(table.serverId, table.createdAt),
+])

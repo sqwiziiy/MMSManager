@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { API_HOST, WEB_ORIGIN } from './config.js'
 import { openDatabase } from './db/client.js'
-import { machineSamples } from './db/schema.js'
+import { machineSamples, localServers } from './db/schema.js'
 import { AuthService } from './auth/service.js'
 import { AvatarStore } from './auth/avatar-store.js'
 import { MachineCollector } from './machine/collector.js'
@@ -286,5 +287,50 @@ describe('authenticated local API', () => {
       headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: installInput,
     })
     expect(installMissingCsrf.statusCode).toBe(403)
+  })
+
+  it('enforces administrator and CSRF checks for lifecycle controls and managed properties', async () => {
+    const admin = await bootstrapAdmin()
+    const managedDirectory = join(dataDirectory, 'servers', 'route-managed')
+    await mkdir(managedDirectory, { recursive: true })
+    const original = '# preserve me\nserver-ip=127.0.0.1\nmotd=Before\ngamemode=survival\ndifficulty=normal\nmax-players=20\nview-distance=10\nsimulation-distance=10\nspawn-protection=16\npvp=true\nwhite-list=false\nallow-nether=true\nunknown-option=preserve\n'
+    await writeFile(join(managedDirectory, 'server.properties'), original, { mode: 0o600 })
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    await opened.db.insert(localServers).values({
+      id, name: 'Route Managed', directory: managedDirectory, source: 'created', software: 'vanilla', version: '1.21.4',
+      jarName: 'server.jar', javaPath: '/test/java-21/bin/java', javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024,
+      port: 25568, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!.userId,
+      createdAt: now, updatedAt: now,
+    }).run()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
+    const properties = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders })
+    expect(properties.statusCode).toBe(200)
+    expect(properties.json().properties.settings.motd).toBe('Before')
+    expect(properties.json().properties.unknownKeys).toContain('server-ip')
+    expect(properties.json().properties.unknownKeys).toContain('unknown-option')
+
+    const missingCsrf = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: { motd: 'Blocked' } })
+    expect(missingCsrf.statusCode).toBe(403)
+    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { motd: 'After', maxPlayers: 32 } })
+    expect(updated.statusCode).toBe(200)
+    expect(updated.json().properties.settings).toMatchObject({ motd: 'After', maxPlayers: 32 })
+    expect(updated.json().properties.backups).toHaveLength(1)
+    expect(await readFile(join(managedDirectory, 'server.properties'), 'utf8')).toContain('server-ip=127.0.0.1')
+
+    const unauthenticated = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/start`, headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: {} })
+    expect(unauthenticated.statusCode).toBe(401)
+    const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
+    await auth.createUser(principal, { username: 'server-member', displayName: 'Server Member', password: 'synthetic member passphrase 6R!d2Hk8', role: 'member' })
+    const memberLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'server-member', password: 'synthetic member passphrase 6R!d2Hk8' } })
+    const memberCookies = memberLogin.headers['set-cookie']
+    const memberCookieList = (Array.isArray(memberCookies) ? memberCookies : [memberCookies]).filter((item): item is string => typeof item === 'string')
+    const memberCookieHeader = memberCookieList.map((item) => item.split(';')[0]).join('; ')
+    const memberCsrf = memberCookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const memberHeaders = { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }
+    expect(memberLogin.statusCode).toBe(200)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/start`, headers: memberHeaders, payload: {} })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: memberHeaders, payload: { motd: 'Blocked' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${id}/console`, headers: memberHeaders })).statusCode).toBe(200)
   })
 })

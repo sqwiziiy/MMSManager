@@ -8,6 +8,7 @@ import { AuthService } from './auth/service.js'
 import { AvatarStore } from './auth/avatar-store.js'
 import { ServerRegistry } from './servers/registry.js'
 import { JavaRuntimeRegistry } from './servers/java.js'
+import { ServerProcessManager } from './servers/processes.js'
 
 async function main(): Promise<void> {
   if (process.platform !== 'linux') {
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
   const servers = new ServerRegistry(database.db, dataDirectory)
   await servers.prepare()
   const javaRuntimes = new JavaRuntimeRegistry()
+  const processes = new ServerProcessManager(database.db, servers)
   const collector = new MachineCollector(database.db, new SystemInformationReader(), timeZone)
   const app = await createApiApp({
     db: database.db,
@@ -34,6 +36,7 @@ async function main(): Promise<void> {
     avatars,
     servers,
     javaRuntimes,
+    processes,
     webOrigin: getWebOrigin(),
     apiPort,
     secureCookies: secureCookiesEnabled(),
@@ -47,6 +50,7 @@ async function main(): Promise<void> {
   const close = async () => {
     if (closing) return
     closing = true
+    await processes.shutdown()
     await collector.stop()
     await app.close()
     database.native.close()

@@ -8,8 +8,11 @@ import {
   serverImportPreviewSchema,
   serverImportResultSchema,
   serverInventorySchema,
+  serverConsoleResponseSchema,
+  serverRuntimeResultSchema,
+  serverPropertiesResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerPropertiesResponse, ServerPropertiesUpdate } from '@mmsmanager/shared'
 import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 
 async function request<T>(url: string, schema: { parse: (value: unknown) => T }, init: RequestInit = {}): Promise<T> {
@@ -81,4 +84,43 @@ export async function createServerInstall(input: ServerInstallRequest): Promise<
 export async function getServerInstall(operationId: string, signal?: AbortSignal): Promise<InstallOperation> {
   const response = await request(`/api/v1/admin/server-installs/${encodeURIComponent(operationId)}`, installOperationResultSchema, { signal })
   return response.operation
+}
+
+export async function getServerRuntime(serverId: string, signal?: AbortSignal): Promise<ServerRuntime> {
+  const response = await request(`/api/v1/servers/${encodeURIComponent(serverId)}/runtime`, serverRuntimeResultSchema, { signal })
+  return response.runtime
+}
+
+export async function getServerConsole(serverId: string, after = 0, signal?: AbortSignal): Promise<{ entries: ServerConsoleEntry[]; nextAfter: number | null }> {
+  const query = new URLSearchParams({ after: String(after), limit: '200' })
+  return request(`/api/v1/servers/${encodeURIComponent(serverId)}/console?${query}`, serverConsoleResponseSchema, { signal })
+}
+
+export async function startLocalServer(serverId: string): Promise<ServerRuntime> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/start`, serverRuntimeResultSchema, { method: 'POST', body: JSON.stringify({}) })
+  return response.runtime
+}
+
+export async function stopLocalServer(serverId: string): Promise<ServerRuntime> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/stop`, serverRuntimeResultSchema, { method: 'POST', body: JSON.stringify({}) })
+  return response.runtime
+}
+
+export async function confirmLocalServerStopped(serverId: string): Promise<ServerRuntime> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/confirm-stopped`, serverRuntimeResultSchema, { method: 'POST', body: JSON.stringify({}) })
+  return response.runtime
+}
+
+export async function sendLocalServerCommand(serverId: string, command: string): Promise<void> {
+  await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/console`, { parse: () => undefined }, { method: 'POST', body: JSON.stringify({ command }) })
+}
+
+export async function getServerProperties(serverId: string, signal?: AbortSignal): Promise<ServerPropertiesResponse> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/properties`, serverPropertiesResultSchema, { signal })
+  return response.properties
+}
+
+export async function updateServerProperties(serverId: string, update: ServerPropertiesUpdate): Promise<ServerPropertiesResponse> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/properties`, serverPropertiesResultSchema, { method: 'PATCH', body: JSON.stringify(update) })
+  return response.properties
 }

@@ -101,7 +101,7 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
           <div className="topbar-left"><IconButton icon={Menu} label="Open navigation" className="menu-mobile" onClick={() => setMobileOpen(true)} /><span className="topbar-page">{pageTitle}</span><span className="breadcrumb-divider">/</span><span className="breadcrumb-current">Workspace</span></div>
           <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd>Ctrl K</kbd></button><span className="topbar-separator" /><span className={`top-demo ${machineLive ? 'machine-live' : ''}`}><span />{machineLive ? 'Local machine · Live' : 'Local machine · Offline'}</span><Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button></div>
         </header>
-        <div className="global-demo-bar"><span className="demo-bar-mark"><Info size={10} aria-hidden="true" /></span><span><strong>{workspaceName}</strong><span className="demo-bar-divider">·</span> Server records are DEMO; machine metrics are LIVE when connected</span><span className="demo-bar-right">Loopback only</span></div>
+        <div className="global-demo-bar"><span className="demo-bar-mark"><Info size={10} aria-hidden="true" /></span><span><strong>{workspaceName}</strong><span className="demo-bar-divider">·</span> Sample fleet is DEMO; local server controls are connected</span><span className="demo-bar-right">Loopback only</span></div>
         <div className="page-content" key={location.pathname}>{children}</div>
       </main>
       {searchOpen && <QuickSearch onClose={() => setSearchOpen(false)} includeUsers={user.role === 'administrator'} />}
