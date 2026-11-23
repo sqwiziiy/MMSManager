@@ -468,6 +468,71 @@ export const serverPropertiesResponseSchema = z.object({
   restartRequired: z.boolean(),
 }).strict()
 export const serverPropertiesResultSchema = z.object({ properties: serverPropertiesResponseSchema }).strict()
+export const serverPropertiesRestorePreviewSchema = z.object({
+  backupId: z.string().uuid(),
+  createdAt: z.string().datetime({ offset: true }),
+  checksumValid: z.boolean(),
+  backupSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  currentSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  running: z.boolean(),
+  restartRequiredAfterRestore: z.boolean(),
+  otherContentDiffers: z.boolean(),
+  changedSettings: z.array(z.object({ key: z.string().max(80), current: z.string().max(160), restored: z.string().max(160) }).strict()).max(32),
+}).strict()
+export const serverPropertiesRestorePreviewResultSchema = z.object({ preview: serverPropertiesRestorePreviewSchema }).strict()
+export const serverPropertiesRestoreRequestSchema = z.object({ expectedCurrentSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
+export const serverPropertiesRestoreResultSchema = z.object({ properties: serverPropertiesResponseSchema, recoveryBackupId: z.string().uuid().nullable() }).strict()
+export const serverPropertiesBackupIdParamSchema = z.object({ serverId: z.string().uuid(), backupId: z.string().uuid() }).strict()
+export const serverFileEntrySchema = z.object({
+  name: z.string().min(1).max(255),
+  path: z.string().max(2048),
+  kind: z.enum(['folder', 'file', 'symlink', 'unsupported']),
+  sizeBytes: z.number().int().nonnegative().nullable(),
+  modifiedAt: z.string().datetime({ offset: true }).nullable(),
+  contentState: z.enum(['editable', 'read-only', 'binary', 'oversized', 'protected', 'unsafe']),
+  reason: z.string().max(180).nullable(),
+  canDownload: z.boolean(),
+  canEdit: z.boolean(),
+  canRename: z.boolean(),
+  canTrash: z.boolean(),
+}).strict()
+export const serverFileListSchema = z.object({
+  serverId: z.string().uuid(),
+  path: z.string().max(2048),
+  breadcrumbs: z.array(z.object({ name: z.string().max(255), path: z.string().max(2048) }).strict()).max(64),
+  entries: z.array(serverFileEntrySchema).max(500),
+  truncated: z.boolean(),
+  trashCount: z.number().int().nonnegative(),
+}).strict()
+export const serverFileReadSchema = z.object({
+  path: z.string().max(2048),
+  sizeBytes: z.number().int().nonnegative(),
+  modifiedAt: z.string().datetime({ offset: true }),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  text: z.string().max(524288).nullable(),
+  contentState: z.enum(['editable', 'read-only', 'binary', 'oversized', 'protected', 'unsafe']),
+  reason: z.string().max(180).nullable(),
+}).strict()
+export const serverFileWriteSchema = z.object({ path: z.string().min(1).max(2048), text: z.string().max(524288), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
+export const serverFileCreateSchema = z.object({ path: z.string().min(1).max(2048), kind: z.enum(['file', 'folder']), text: z.string().max(524288).optional() }).strict().refine((value) => value.kind === 'file' || value.text === undefined)
+export const serverFileMoveSchema = z.object({ sourcePath: z.string().min(1).max(2048), destinationPath: z.string().min(1).max(2048) }).strict()
+export const serverFileTrashSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().max(255),
+  originalPath: z.string().max(2048),
+  kind: z.enum(['file', 'folder']),
+  sizeBytes: z.number().int().nonnegative().nullable(),
+  deletedAt: z.string().datetime({ offset: true }),
+}).strict()
+export const serverFileTrashListSchema = z.object({ items: z.array(serverFileTrashSchema).max(500) }).strict()
+export const serverFileTrashResultSchema = z.object({ item: serverFileTrashSchema, inventory: serverFileListSchema }).strict()
+export const serverFileTrashRestoreSchema = z.object({ id: z.string().uuid() }).strict()
+export const serverFileRecoverySchema = z.object({ id: z.string().uuid(), path: z.string().max(2048), sizeBytes: z.number().int().nonnegative(), sha256: z.string().regex(/^[a-f0-9]{64}$/), createdAt: z.string().datetime({ offset: true }) }).strict()
+export const serverFileRecoveryListSchema = z.object({ items: z.array(serverFileRecoverySchema).max(100) }).strict()
+export const serverFileRecoveryRestoreSchema = z.object({ expectedCurrentSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
+export const serverFilePathQuerySchema = z.object({ path: z.string().max(2048).default('') }).strict()
+export const serverFileReadQuerySchema = z.object({ path: z.string().min(1).max(2048) }).strict()
+export const serverFileIdParamSchema = z.object({ serverId: z.string().uuid(), id: z.string().uuid() }).strict()
 export const javaRuntimeSchema = z.object({
   path: z.string(),
   version: z.string(),
@@ -532,3 +597,9 @@ export type ServerConsoleEntry = z.infer<typeof serverConsoleEntrySchema>
 export type ServerPropertySettings = z.infer<typeof serverPropertySettingsSchema>
 export type ServerPropertiesUpdate = z.infer<typeof serverPropertiesUpdateSchema>
 export type ServerPropertiesResponse = z.infer<typeof serverPropertiesResponseSchema>
+export type ServerPropertiesRestorePreview = z.infer<typeof serverPropertiesRestorePreviewSchema>
+export type ServerFileEntry = z.infer<typeof serverFileEntrySchema>
+export type ServerFileList = z.infer<typeof serverFileListSchema>
+export type ServerFileRead = z.infer<typeof serverFileReadSchema>
+export type ServerFileTrash = z.infer<typeof serverFileTrashSchema>
+export type ServerFileRecovery = z.infer<typeof serverFileRecoverySchema>

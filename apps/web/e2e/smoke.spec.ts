@@ -97,6 +97,80 @@ async function mockLocalServer(page: Page) {
     }
     return route.fulfill({ json: { properties: properties() } })
   })
+  await page.route(`**/api/v1/admin/servers/${serverId}/properties/backups/${backupId}/preview`, (route) => route.fulfill({ json: { preview: {
+    backupId, createdAt: now, checksumValid: true, backupSha256: 'a'.repeat(64), currentSha256: 'c'.repeat(64), running: true, restartRequiredAfterRestore: true, otherContentDiffers: false,
+    changedSettings: [{ key: 'motd', current: settings.motd, restored: 'A previous fixture message' }],
+  } } }))
+  await page.route(`**/api/v1/admin/servers/${serverId}/properties/backups/${backupId}/restore`, async (route) => {
+    settings = { ...settings, motd: 'A previous fixture message' }
+    restartRequired = true
+    return route.fulfill({ json: { properties: properties(), recoveryBackupId: 'd03c1cf8-e2a1-4a4e-9de4-4536c7796091' } })
+  })
+
+  const filePath = 'config/server-note.txt'
+  let fileText = 'Fixture notes from the managed server.\n'
+  let fileHash = 'b'.repeat(64)
+  let fileRecoveryText = 'Earlier fixture notes.\n'
+  let filePresent = true
+  let folderCreated = false
+  let fileRecoveries: Array<{ id: string; path: string; sizeBytes: number; sha256: string; createdAt: string }> = []
+  let fileTrash: Array<{ id: string; name: string; originalPath: string; kind: 'file' | 'folder'; sizeBytes: number | null; deletedAt: string }> = []
+  const safeFileEntry = (name: string, path: string) => ({ name, path, kind: 'file' as const, sizeBytes: fileText.length, modifiedAt: now, contentState: 'editable' as const, reason: null, canDownload: true, canEdit: true, canRename: true, canTrash: true })
+  const fileInventory = (path: string) => ({
+    serverId, path, breadcrumbs: path.split('/').filter(Boolean).map((name, index, parts) => ({ name, path: parts.slice(0, index + 1).join('/') })),
+    entries: path === '' ? [
+      { name: 'config', path: 'config', kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'read-only', reason: null, canDownload: false, canEdit: false, canRename: true, canTrash: true },
+      { name: 'server.properties', path: 'server.properties', kind: 'file', sizeBytes: 180, modifiedAt: now, contentState: 'protected', reason: 'Use the typed Properties editor for this configuration file.', canDownload: false, canEdit: false, canRename: false, canTrash: false },
+    ] : path === 'config' ? [
+      ...(filePresent ? [safeFileEntry('server-note.txt', filePath)] : []),
+      ...(folderCreated ? [{ name: 'notes', path: 'config/notes', kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'read-only', reason: null, canDownload: false, canEdit: false, canRename: true, canTrash: true }] : []),
+    ] : [],
+    truncated: false, trashCount: fileTrash.length,
+  })
+  await page.route(`**/api/v1/admin/servers/${serverId}/files**`, async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const pathname = url.pathname
+    const method = request.method()
+    if (method === 'GET' && pathname.endsWith('/files/read')) return route.fulfill({ json: { path: filePath, sizeBytes: fileText.length, modifiedAt: now, sha256: fileHash, text: fileText, contentState: 'editable', reason: null } })
+    if (method === 'GET' && pathname.endsWith('/files/recoveries')) return route.fulfill({ json: { items: fileRecoveries } })
+    if (method === 'GET' && pathname.endsWith('/files/trash')) return route.fulfill({ json: { items: fileTrash } })
+    if (method === 'GET' && pathname.endsWith('/files/download')) return route.fulfill({ status: 200, headers: { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename*=UTF-8''server-note.txt` }, body: Buffer.from(fileText) })
+    if (method === 'GET') return route.fulfill({ json: fileInventory(url.searchParams.get('path') ?? '') })
+    if (method === 'PUT') {
+      fileRecoveryText = fileText
+      fileRecoveries = [{ id: 'f03c1cf8-e2a1-4a4e-9de4-4536c7796091', path: filePath, sizeBytes: fileText.length, sha256: fileHash, createdAt: now }, ...fileRecoveries]
+      fileText = (request.postDataJSON() as { text: string }).text
+      fileHash = 'd'.repeat(64)
+      return route.fulfill({ json: { path: filePath, sizeBytes: fileText.length, modifiedAt: now, sha256: fileHash, text: fileText, contentState: 'editable', reason: null } })
+    }
+    if (method === 'POST' && pathname.endsWith('/files/recoveries/f03c1cf8-e2a1-4a4e-9de4-4536c7796091/restore')) {
+      const previous = fileText
+      fileText = fileRecoveryText
+      fileRecoveryText = previous
+      fileHash = 'e'.repeat(64)
+      return route.fulfill({ json: { path: filePath, sizeBytes: fileText.length, modifiedAt: now, sha256: fileHash, text: fileText, contentState: 'editable', reason: null } })
+    }
+    if (method === 'POST' && pathname.endsWith('/files/trash/f03c1cf8-e2a1-4a4e-9de4-4536c7796091/restore')) {
+      fileTrash = []
+      filePresent = true
+      return route.fulfill({ json: fileInventory('config') })
+    }
+    if (method === 'POST' && pathname.endsWith('/files/create')) {
+      const input = request.postDataJSON() as { path: string; kind: 'file' | 'folder' }
+      if (input.path.endsWith('/notes') && input.kind === 'folder') folderCreated = true
+      return route.fulfill({ status: 201, json: fileInventory(input.path.includes('/') ? input.path.split('/').slice(0, -1).join('/') : '') })
+    }
+    if (method === 'POST' && pathname.endsWith('/files/move')) return route.fulfill({ json: fileInventory('config') })
+    if (method === 'POST' && pathname.endsWith('/files/upload')) return route.fulfill({ status: 201, json: fileInventory(url.searchParams.get('path') ?? '') })
+    if (method === 'DELETE') {
+      const input = request.postDataJSON() as { path: string }
+      filePresent = false
+      fileTrash = [{ id: 'f03c1cf8-e2a1-4a4e-9de4-4536c7796091', name: 'server-note.txt', originalPath: input.path, kind: 'file', sizeBytes: fileText.length, deletedAt: now }]
+      return route.fulfill({ json: { item: fileTrash[0], inventory: fileInventory('config') } })
+    }
+    return route.fulfill({ status: 404, json: { error: { code: 'NOT_FOUND', message: 'Unmapped file fixture.' } } })
+  })
   let submittedCommand: string | undefined
   let submittedPlayerAction: { action?: string; username?: string } | undefined
   await page.route(`**/api/v1/admin/servers/${serverId}/player-actions`, async (route) => {
@@ -338,6 +412,12 @@ test('local server overview, console and visual properties use mocked API data',
   await page.getByRole('button', { name: 'Save properties' }).click()
   await expect(page.getByText('Saved with a recovery copy.')).toBeVisible()
   await expect(page.getByText('Restart required').first()).toBeVisible()
+  await page.getByRole('button', { name: 'Preview restore' }).click()
+  const propertyRestore = page.getByRole('dialog', { name: 'Restore properties' })
+  await expect(propertyRestore.getByText('A previous fixture message')).toBeVisible()
+  await expect(propertyRestore.getByText('The server is running. Restored values apply after its next restart.')).toBeVisible()
+  await propertyRestore.getByRole('button', { name: 'Restore this version' }).click()
+  await expect(page.getByLabel('Message of the day')).toHaveValue('A previous fixture message')
   await page.screenshot({ path: resolve(screenshotDir, 'stage-04d-properties-desktop.png'), fullPage: true })
 })
 
@@ -383,6 +463,47 @@ test('local Paper plugin inventory uploads and disables only acknowledged files'
   await page.setViewportSize({ width: 390, height: 844 })
   await expectNoHorizontalOverflow(page, 'local Paper plugins mobile')
   await page.screenshot({ path: resolve(screenshotDir, 'stage-05b-paper-plugins-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('managed files edit with recovery, trash and restore at desktop and mobile widths', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  const { serverId } = await mockLocalServer(page)
+  await page.goto(`/servers/${serverId}/files`)
+  await expect(page.locator('.local-files-card h3', { hasText: 'File browser' })).toBeVisible()
+  await expect(page.getByText('server.properties')).toBeVisible()
+  await expect(page.getByText('Protected', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'config', exact: true }).click()
+  await page.getByRole('button', { name: 'server-note.txt', exact: true }).click()
+  const editor = page.getByRole('dialog', { name: 'Edit config/server-note.txt' })
+  await editor.getByRole('textbox', { name: 'Text file contents' }).fill('Edited through the local file manager.\n')
+  await editor.getByRole('button', { name: 'Save text' }).click()
+  await expect(editor.getByText('Private recovery copies')).toBeVisible()
+  await page.once('dialog', (confirm) => void confirm.accept())
+  await editor.getByRole('button', { name: 'Restore', exact: true }).click()
+  await expect(editor.getByRole('textbox', { name: 'Text file contents' })).toHaveValue('Fixture notes from the managed server.\n')
+  await editor.getByRole('button', { name: 'Close' }).click()
+
+  await page.once('dialog', (confirm) => void confirm.accept())
+  await page.getByRole('button', { name: 'Move server-note.txt to trash' }).click()
+  const trashToggle = page.locator('.local-files-header-actions').getByRole('button', { name: /Trash/ })
+  await trashToggle.click()
+  await expect(page.getByText('config/server-note.txt')).toBeVisible()
+  await page.once('dialog', (confirm) => void confirm.accept())
+  await page.locator('.local-file-trash-row').getByRole('button', { name: 'Restore' }).click()
+  await expect(page.getByRole('button', { name: 'server-note.txt', exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: 'New folder' }).click()
+  const createFolder = page.getByRole('dialog', { name: 'Create folder' })
+  await createFolder.getByLabel('Name').fill('notes')
+  await createFolder.getByRole('button', { name: 'Create folder' }).click()
+  await expect(page.getByRole('button', { name: 'notes', exact: true })).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05c-file-manager-desktop.png'), fullPage: true })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/servers/${serverId}/files`)
+  await expectNoHorizontalOverflow(page, 'managed file manager mobile')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05c-file-manager-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('mobile dashboard, account screens and navigation fit a narrow viewport', async ({ page }) => {

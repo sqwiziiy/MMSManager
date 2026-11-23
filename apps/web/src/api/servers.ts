@@ -15,8 +15,15 @@ import {
   serverPlayerActionResultSchema,
   serverPropertiesResultSchema,
   serverModsInventoryResultSchema,
+  serverFileListSchema,
+  serverFileReadSchema,
+  serverFileTrashListSchema,
+  serverFileTrashResultSchema,
+  serverFileRecoveryListSchema,
+  serverPropertiesRestorePreviewResultSchema,
+  serverPropertiesRestoreResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesUpdate } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash } from '@mmsmanager/shared'
 import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 
@@ -144,6 +151,60 @@ export async function updateServerProperties(serverId: string, update: ServerPro
   return response.properties
 }
 
+export async function previewServerPropertiesRestore(serverId: string, backupId: string): Promise<ServerPropertiesRestorePreview> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/properties/backups/${encodeURIComponent(backupId)}/preview`, serverPropertiesRestorePreviewResultSchema)
+  return response.preview
+}
+
+export async function restoreServerProperties(serverId: string, backupId: string, expectedCurrentSha256: string): Promise<{ properties: ServerPropertiesResponse; recoveryBackupId: string | null }> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/properties/backups/${encodeURIComponent(backupId)}/restore`, serverPropertiesRestoreResultSchema, { method: 'POST', body: JSON.stringify({ expectedCurrentSha256 }) })
+}
+
+export async function getServerFiles(serverId: string, path = '', signal?: AbortSignal): Promise<ServerFileList> {
+  const query = new URLSearchParams({ path })
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files?${query}`, serverFileListSchema, { signal })
+}
+
+export async function readServerFile(serverId: string, path: string): Promise<ServerFileRead> {
+  const query = new URLSearchParams({ path })
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/read?${query}`, serverFileReadSchema)
+}
+
+export async function createServerFile(serverId: string, path: string, kind: 'file' | 'folder', text?: string): Promise<ServerFileList> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/create`, serverFileListSchema, { method: 'POST', body: JSON.stringify(text === undefined ? { path, kind } : { path, kind, text }) })
+}
+
+export async function moveServerFile(serverId: string, sourcePath: string, destinationPath: string): Promise<ServerFileList> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/move`, serverFileListSchema, { method: 'POST', body: JSON.stringify({ sourcePath, destinationPath }) })
+}
+
+export async function trashServerFile(serverId: string, path: string): Promise<{ item: ServerFileTrash; inventory: ServerFileList }> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files`, serverFileTrashResultSchema, { method: 'DELETE', body: JSON.stringify({ path }) })
+}
+
+export async function getServerFileTrash(serverId: string): Promise<ServerFileTrash[]> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/trash`, serverFileTrashListSchema)
+  return response.items
+}
+
+export async function restoreTrashedServerFile(serverId: string, id: string): Promise<ServerFileList> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/trash/${encodeURIComponent(id)}/restore`, serverFileListSchema, { method: 'POST', body: JSON.stringify({ id }) })
+}
+
+export async function saveServerFileText(serverId: string, path: string, text: string, expectedSha256: string): Promise<ServerFileRead> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files`, serverFileReadSchema, { method: 'PUT', body: JSON.stringify({ path, text, expectedSha256 }) })
+}
+
+export async function getServerFileRecoveries(serverId: string, path: string): Promise<ServerFileRecovery[]> {
+  const query = new URLSearchParams({ path })
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/recoveries?${query}`, serverFileRecoveryListSchema)
+  return response.items
+}
+
+export async function restoreServerFileRecovery(serverId: string, id: string, expectedCurrentSha256: string): Promise<ServerFileRead> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/recoveries/${encodeURIComponent(id)}/restore`, serverFileReadSchema, { method: 'POST', body: JSON.stringify({ expectedCurrentSha256 }) })
+}
+
 export async function getServerMods(serverId: string, signal?: AbortSignal): Promise<ServerModsInventory> {
   const response = await request(`/api/v1/servers/${encodeURIComponent(serverId)}/mods`, serverModsInventoryResultSchema, { signal })
   return response.mods
@@ -153,6 +214,55 @@ function csrfToken(): string | null {
   const item = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith('mmsmanager_csrf='))
   if (!item) return null
   try { return decodeURIComponent(item.slice('mmsmanager_csrf='.length)) } catch { return null }
+}
+
+export function uploadServerFile(serverId: string, directory: string, file: File, onProgress: (percent: number) => void): Promise<ServerFileList> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    const query = new URLSearchParams({ path: directory })
+    xhr.open('POST', `/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/upload?${query}`)
+    xhr.withCredentials = true
+    xhr.setRequestHeader('accept', 'application/json')
+    const csrf = csrfToken()
+    if (csrf) xhr.setRequestHeader('x-mms-csrf', csrf)
+    xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.min(99, Math.round(event.loaded / event.total * 100))) }
+    xhr.onerror = () => reject(new Error('The file upload could not reach the local API.'))
+    xhr.onabort = () => reject(new Error('The file upload was cancelled.'))
+    xhr.onload = () => {
+      if (xhr.status === 401) window.dispatchEvent(new Event('mmsmanager:session-expired'))
+      let raw: unknown = null
+      try { raw = JSON.parse(xhr.responseText) as unknown } catch { /* handled as a local API error */ }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const body = raw as { error?: { message?: unknown } } | null
+        reject(new Error(typeof body?.error?.message === 'string' ? body.error.message : 'The file upload could not be completed.'))
+        return
+      }
+      try { onProgress(100); resolve(serverFileListSchema.parse(raw)) }
+      catch { reject(new Error('The local API returned an invalid server file inventory.')) }
+    }
+    const body = new FormData()
+    body.append('file', file, file.name)
+    xhr.send(body)
+  })
+}
+
+export async function downloadServerFile(serverId: string, path: string): Promise<void> {
+  const query = new URLSearchParams({ path })
+  const response = await fetch(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/download?${query}`, { credentials: 'same-origin', headers: { accept: 'application/octet-stream' } })
+  if (response.status === 401) window.dispatchEvent(new Event('mmsmanager:session-expired'))
+  if (!response.ok) {
+    const raw = await response.json().catch(() => null) as { error?: { message?: unknown } } | null
+    throw new Error(typeof raw?.error?.message === 'string' ? raw.error.message : 'The file download could not be completed.')
+  }
+  const fileName = decodeURIComponent(response.headers.get('content-disposition')?.match(/filename\*=UTF-8''([^;]+)/i)?.[1] ?? 'server-file')
+  const objectUrl = URL.createObjectURL(await response.blob())
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = fileName
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
 }
 
 export function uploadServerMod(serverId: string, file: File, onProgress: (percent: number) => void): Promise<ServerModsInventory> {

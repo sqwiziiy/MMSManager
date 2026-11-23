@@ -87,4 +87,41 @@ describe('managed server.properties editor', () => {
     expect(opened.db.select().from(localServerPropertiesBackups).all()).toHaveLength(0)
     expect(opened.db.select().from(localServerRuntime).all()).toHaveLength(0)
   })
+
+  it('previews a checksum-verified restore, preserves a new recovery point, and marks a running server for restart', async () => {
+    await manager.update(managedId, userId, { motd: 'First saved version' })
+    const selected = opened.db.select().from(localServerPropertiesBackups).where(eq(localServerPropertiesBackups.serverId, managedId)).get()!
+    await manager.update(managedId, userId, { motd: 'Current value' })
+    const currentBytes = await readFile(join(managedDirectory, 'server.properties'))
+    await opened.db.update(localServerRuntime).set({ status: 'running', updatedAt: new Date().toISOString(), restartRequired: false }).where(eq(localServerRuntime.serverId, managedId)).run()
+
+    const preview = await manager.previewRestore(managedId, selected.id)
+    expect(preview).toMatchObject({ checksumValid: true, running: true, restartRequiredAfterRestore: true })
+    expect(preview.changedSettings).toContainEqual({ key: 'motd', current: 'Current value', restored: 'Old' })
+    expect(JSON.stringify(preview)).not.toContain('do-not-show')
+    const result = await manager.restore(managedId, userId, selected.id, preview.currentSha256)
+    expect(result.properties.settings.motd).toBe('Old')
+    expect(result.properties.restartRequired).toBe(true)
+    expect(result.recoveryBackupId).toBeTruthy()
+    const newRecovery = opened.db.select().from(localServerPropertiesBackups).where(eq(localServerPropertiesBackups.id, result.recoveryBackupId!)).get()!
+    expect(await readFile(join(temp, 'properties-backups', managedId, newRecovery.fileName))).toEqual(currentBytes)
+    expect(await readFile(join(managedDirectory, 'server.properties'), 'utf8')).toBe(original)
+    expect(opened.db.select().from(localServerEvents).where(eq(localServerEvents.action, 'server-properties-restored')).get()?.actorUserId).toBe(userId)
+  })
+
+  it('rejects a stale preview and refuses a recovery copy with a checksum mismatch', async () => {
+    await manager.update(managedId, userId, { motd: 'Saved state' })
+    const selected = opened.db.select().from(localServerPropertiesBackups).where(eq(localServerPropertiesBackups.serverId, managedId)).get()!
+    const preview = await manager.previewRestore(managedId, selected.id)
+    await writeFile(join(managedDirectory, 'server.properties'), original.replace('motd=Old', 'motd=Changed externally'))
+    await expect(manager.restore(managedId, userId, selected.id, preview.currentSha256)).rejects.toMatchObject({ code: 'PROPERTY_RESTORE_CONFLICT' })
+
+    const current = await readFile(join(managedDirectory, 'server.properties'), 'utf8')
+    const backupPath = join(temp, 'properties-backups', managedId, selected.fileName)
+    await writeFile(backupPath, 'tampered copy')
+    const invalid = await manager.previewRestore(managedId, selected.id)
+    expect(invalid.checksumValid).toBe(false)
+    await expect(manager.restore(managedId, userId, selected.id, invalid.currentSha256)).rejects.toMatchObject({ code: 'PROPERTY_BACKUP_CHECKSUM_FAILED' })
+    expect(await readFile(join(managedDirectory, 'server.properties'), 'utf8')).toBe(current)
+  })
 })

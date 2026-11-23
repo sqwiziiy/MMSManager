@@ -328,6 +328,32 @@ describe('authenticated local API', () => {
     expect(updated.json().properties.backups).toHaveLength(1)
     expect(await readFile(join(managedDirectory, 'server.properties'), 'utf8')).toContain('server-ip=127.0.0.1')
 
+    const fileInventory = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files`, headers: adminHeaders })
+    expect(fileInventory.statusCode).toBe(200)
+    const propertyEntry = fileInventory.json().entries.find((entry: { name: string }) => entry.name === 'server.properties')
+    expect(propertyEntry).toMatchObject({ contentState: 'protected', canEdit: false, canDownload: false })
+    await writeFile(join(managedDirectory, 'notes.txt'), 'route file original\n')
+    const openedText = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files/read?path=notes.txt`, headers: adminHeaders })
+    expect(openedText.statusCode).toBe(200)
+    expect(openedText.json()).toMatchObject({ contentState: 'editable', text: 'route file original\n' })
+    const noCsrfWrite = await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/files`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: { path: 'notes.txt', text: 'blocked', expectedSha256: openedText.json().sha256 } })
+    expect(noCsrfWrite.statusCode).toBe(403)
+    const savedText = await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/files`, headers: adminHeaders, payload: { path: 'notes.txt', text: 'route file edited\n', expectedSha256: openedText.json().sha256 } })
+    expect(savedText.statusCode).toBe(200)
+    expect(await readFile(join(managedDirectory, 'notes.txt'), 'utf8')).toBe('route file edited\n')
+    const createFolder = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/files/create`, headers: adminHeaders, payload: { path: 'route-folder', kind: 'folder' } })
+    expect(createFolder.statusCode).toBe(201)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files`, headers: adminHeaders })).json().entries.some((entry: { name: string }) => entry.name === 'route-folder')).toBe(true)
+
+    const backupId = updated.json().properties.backups[0].id as string
+    const restorePreview = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/properties/backups/${backupId}/preview`, headers: adminHeaders })
+    expect(restorePreview.statusCode).toBe(200)
+    expect(restorePreview.json().preview).toMatchObject({ checksumValid: true })
+    expect(restorePreview.json().preview.changedSettings).toContainEqual({ key: 'motd', current: 'After', restored: 'Before' })
+    const restoredProperties = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/properties/backups/${backupId}/restore`, headers: adminHeaders, payload: { expectedCurrentSha256: restorePreview.json().preview.currentSha256 } })
+    expect(restoredProperties.statusCode).toBe(200)
+    expect(restoredProperties.json()).toMatchObject({ properties: { settings: { motd: 'Before' } }, recoveryBackupId: expect.any(String) })
+
     const unauthenticated = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/start`, headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: {} })
     expect(unauthenticated.statusCode).toBe(401)
     const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
@@ -339,6 +365,9 @@ describe('authenticated local API', () => {
     const memberCsrf = memberCookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
     const memberHeaders = { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }
     expect(memberLogin.statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files`, headers: memberHeaders })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files/read?path=notes.txt`, headers: memberHeaders })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/files`, headers: memberHeaders, payload: { path: 'notes.txt', text: 'blocked', expectedSha256: savedText.json().sha256 } })).statusCode).toBe(403)
     expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/start`, headers: memberHeaders, payload: {} })).statusCode).toBe(403)
     expect((await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: memberHeaders, payload: { motd: 'Blocked' } })).statusCode).toBe(403)
     expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/player-actions`, headers: memberHeaders, payload: { action: 'ban', username: 'Alex_123' } })).statusCode).toBe(403)

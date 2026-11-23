@@ -35,6 +35,22 @@ import {
   serverModsInventoryResultSchema,
   serverPropertiesResultSchema,
   serverPropertiesUpdateSchema,
+  serverPropertiesBackupIdParamSchema,
+  serverPropertiesRestorePreviewResultSchema,
+  serverPropertiesRestoreRequestSchema,
+  serverPropertiesRestoreResultSchema,
+  serverFileCreateSchema,
+  serverFileIdParamSchema,
+  serverFileListSchema,
+  serverFileMoveSchema,
+  serverFilePathQuerySchema,
+  serverFileReadQuerySchema,
+  serverFileReadSchema,
+  serverFileRecoveryListSchema,
+  serverFileRecoveryRestoreSchema,
+  serverFileTrashListSchema,
+  serverFileTrashRestoreSchema,
+  serverFileWriteSchema,
   javaProbeRequestSchema,
   javaRuntimeListSchema,
   javaRuntimeSchema,
@@ -68,6 +84,7 @@ import { ServerProcessError, ServerProcessManager } from './servers/processes.js
 import { ServerPropertiesError, ServerPropertiesManager } from './servers/properties.js'
 import { ServerStatusError, ServerStatusService } from './servers/status.js'
 import { MAX_MOD_JAR_BYTES, ServerModsError, ServerModsService } from './servers/mods.js'
+import { MAX_SERVER_FILE_UPLOAD_BYTES, ServerFileService, ServerFilesError } from './servers/files.js'
 
 class InvalidRequestError extends Error {}
 
@@ -190,12 +207,13 @@ export async function createApiApp(options: {
   const properties = new ServerPropertiesManager(options.db, options.servers, options.now)
   const serverStatus = new ServerStatusService(options.db, options.now)
   const mods = new ServerModsService(options.db, options.servers, processes, options.now)
+  const files = new ServerFileService(options.db, options.servers, processes, options.now)
   const webOrigin = options.webOrigin ?? WEB_ORIGIN
   const apiPort = options.apiPort ?? 4174
   const secureCookies = options.secureCookies ?? false
   await app.register(cors, {
     origin: (origin, callback) => callback(null, origin === webOrigin),
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['content-type', 'x-mms-csrf'],
     credentials: true,
     maxAge: 600,
@@ -282,13 +300,20 @@ export async function createApiApp(options: {
     }
     if (error instanceof ServerPropertiesError) {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
-        : error.code.endsWith('_BUSY') ? 409
+        : error.code.endsWith('_BUSY') || error.code.includes('_CONFLICT') || error.code.includes('_CHECKSUM_FAILED') || error.code.includes('_ROLLBACK_FAILED') ? 409
           : error.code.endsWith('_UNAVAILABLE') ? 503 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
     if (error instanceof ServerModsError) {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
         : error.code.includes('DUPLICATE') || error.code.endsWith('_BUSY') || error.code === 'SERVER_NOT_PANEL_MANAGED' || error.code === 'MODS_UNSUPPORTED' || error.code === 'PROCESS_NOT_OWNED' ? 409
+          : error.code.includes('TOO_LARGE') ? 413
+            : error.code.includes('UNAVAILABLE') ? 503 : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
+    if (error instanceof ServerFilesError) {
+      const status = error.code.endsWith('_NOT_FOUND') ? 404
+        : error.code.includes('CONFLICT') || error.code.includes('ALREADY_EXISTS') || error.code.includes('BUSY') || error.code.includes('PROTECTED') || error.code.includes('UNSAFE') || error.code.includes('NOT_PANEL_MANAGED') ? 409
           : error.code.includes('TOO_LARGE') ? 413
             : error.code.includes('UNAVAILABLE') ? 503 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
@@ -576,6 +601,84 @@ export async function createApiApp(options: {
     const params = parse(localServerIdSchema, request.params)
     const update = parse(serverPropertiesUpdateSchema, request.body)
     return serverPropertiesResultSchema.parse({ properties: await properties.update(params.serverId, request.principal!.userId, update) })
+  })
+  app.get('/api/v1/admin/servers/:serverId/properties/backups/:backupId/preview', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(serverPropertiesBackupIdParamSchema, request.params)
+    return serverPropertiesRestorePreviewResultSchema.parse({ preview: await properties.previewRestore(params.serverId, params.backupId) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/properties/backups/:backupId/restore', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(serverPropertiesBackupIdParamSchema, request.params)
+    const input = parse(serverPropertiesRestoreRequestSchema, request.body)
+    return serverPropertiesRestoreResultSchema.parse(await properties.restore(params.serverId, request.principal!.userId, params.backupId, input.expectedCurrentSha256))
+  })
+  app.get('/api/v1/admin/servers/:serverId/files', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const query = parse(serverFilePathQuerySchema, request.query)
+    return serverFileListSchema.parse(await files.list(params.serverId, query.path))
+  })
+  app.get('/api/v1/admin/servers/:serverId/files/read', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const query = parse(serverFileReadQuerySchema, request.query)
+    return serverFileReadSchema.parse(await files.read(params.serverId, query.path))
+  })
+  app.get('/api/v1/admin/servers/:serverId/files/download', { preHandler: requireAdmin }, async (request, reply) => {
+    const params = parse(localServerIdSchema, request.params)
+    const query = parse(serverFileReadQuerySchema, request.query)
+    const download = await files.download(params.serverId, query.path)
+    reply.header('content-type', 'application/octet-stream')
+    reply.header('content-length', String(download.bytes.byteLength))
+    reply.header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(download.name)}`)
+    reply.header('cache-control', 'private, no-store')
+    reply.header('x-content-type-options', 'nosniff')
+    return reply.send(download.bytes)
+  })
+  app.post('/api/v1/admin/servers/:serverId/files/upload', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(localServerIdSchema, request.params)
+    const query = parse(serverFilePathQuerySchema, request.query)
+    const part = await request.file({ limits: { files: 1, fields: 0, parts: 1, fileSize: MAX_SERVER_FILE_UPLOAD_BYTES } })
+    if (!part) throw new InvalidRequestError('A file is required.')
+    const inventory = await files.upload(params.serverId, request.principal!.userId, query.path, part.filename, part.file, () => part.file.truncated)
+    return reply.code(201).send(serverFileListSchema.parse(inventory))
+  })
+  app.post('/api/v1/admin/servers/:serverId/files/create', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverFileCreateSchema, request.body)
+    return reply.code(201).send(serverFileListSchema.parse(await files.create(params.serverId, request.principal!.userId, input.path, input.kind, input.text ?? '')))
+  })
+  app.post('/api/v1/admin/servers/:serverId/files/move', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverFileMoveSchema, request.body)
+    return serverFileListSchema.parse(await files.move(params.serverId, request.principal!.userId, input.sourcePath, input.destinationPath))
+  })
+  app.delete('/api/v1/admin/servers/:serverId/files', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverFileReadQuerySchema, request.body)
+    const result = await files.trash(params.serverId, request.principal!.userId, input.path)
+    return { item: result.item, inventory: serverFileListSchema.parse(result.inventory) }
+  })
+  app.get('/api/v1/admin/servers/:serverId/files/trash', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverFileTrashListSchema.parse({ items: files.listTrash(params.serverId) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/files/trash/:id/restore', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(serverFileIdParamSchema, request.params)
+    parse(serverFileTrashRestoreSchema, { id: params.id })
+    return serverFileListSchema.parse(await files.restoreTrash(params.serverId, request.principal!.userId, params.id))
+  })
+  app.put('/api/v1/admin/servers/:serverId/files', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverFileWriteSchema, request.body)
+    return serverFileReadSchema.parse(await files.writeText(params.serverId, request.principal!.userId, input.path, input.text, input.expectedSha256))
+  })
+  app.get('/api/v1/admin/servers/:serverId/files/recoveries', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const query = parse(serverFileReadQuerySchema, request.query)
+    return serverFileRecoveryListSchema.parse({ items: await files.listRecoveries(params.serverId, query.path) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/files/recoveries/:id/restore', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(serverFileIdParamSchema, request.params)
+    const input = parse(serverFileRecoveryRestoreSchema, request.body)
+    return serverFileReadSchema.parse(await files.restoreRecovery(params.serverId, request.principal!.userId, params.id, input.expectedCurrentSha256))
   })
   app.get('/api/v1/admin/java', { preHandler: requireAdmin }, async () => javaRuntimeListSchema.parse({
     runtimes: options.javaRuntimes.list(),

@@ -304,6 +304,35 @@ export const localServerPropertiesBackups = sqliteTable('local_server_properties
   index('local_server_properties_backups_server_time_idx').on(table.serverId, table.createdAt),
 ])
 
+export const localServerFileTrash = sqliteTable('local_server_file_trash', {
+  id: text('id').primaryKey(),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  name: text('name').notNull(),
+  originalPath: text('original_path').notNull(),
+  storedName: text('stored_name').notNull(),
+  kind: text('kind', { enum: ['file', 'folder'] }).notNull(),
+  sizeBytes: integer('size_bytes'),
+  deletedAt: text('deleted_at').notNull(),
+  restoredAt: text('restored_at'),
+}, (table) => [
+  index('local_server_file_trash_server_time_idx').on(table.serverId, table.deletedAt),
+  check('local_server_file_trash_kind_check', sql`${table.kind} IN ('file', 'folder')`),
+])
+
+export const localServerFileRecoveries = sqliteTable('local_server_file_recoveries', {
+  id: text('id').primaryKey(),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  originalPath: text('original_path').notNull(),
+  fileName: text('file_name').notNull(),
+  sha256: text('sha256').notNull(),
+  sizeBytes: integer('size_bytes').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  index('local_server_file_recoveries_server_time_idx').on(table.serverId, table.createdAt),
+])
+
 export const localServerStatusSamples = sqliteTable('local_server_status_samples', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
