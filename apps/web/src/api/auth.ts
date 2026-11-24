@@ -2,6 +2,7 @@ import {
   adminUsersSchema,
   adminUserResultSchema,
   apiAckSchema,
+  userDeleteResultSchema,
   auditRecordsSchema,
   authMeSchema,
   publicHealthSchema,
@@ -68,6 +69,10 @@ export function createAdminUser(input: { username: string; displayName: string; 
 
 export function updateAdminUser(userId: string, input: { role: UserRole; enabled: boolean }) {
   return readResponse(`/api/v1/admin/users/${encodeURIComponent(userId)}`, adminUserResultSchema, { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export function deleteAdminUser(userId: string, confirmation: string) {
+  return readResponse(`/api/v1/admin/users/${encodeURIComponent(userId)}`, userDeleteResultSchema, { method: 'DELETE', body: JSON.stringify({ confirmation }) })
 }
 
 export function resetAdminUserPassword(userId: string, password: string) {

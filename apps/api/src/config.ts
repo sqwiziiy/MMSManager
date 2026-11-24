@@ -48,6 +48,18 @@ export function getWebPort(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 export function getWebOrigin(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env['MMSMANAGER_WEB_ORIGIN']
+  if (configured) {
+    let origin: URL
+    try { origin = new URL(configured) } catch { throw new Error('MMSMANAGER_WEB_ORIGIN must be an exact HTTP or HTTPS origin') }
+    if (!['http:', 'https:'].includes(origin.protocol) || origin.hostname.includes('*') || origin.origin !== configured || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
+      throw new Error('MMSMANAGER_WEB_ORIGIN must be an exact HTTP or HTTPS origin without credentials, path, query or fragment')
+    }
+    if (origin.protocol === 'http:' && !['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname)) {
+      throw new Error('Non-loopback MMSMANAGER_WEB_ORIGIN must use HTTPS')
+    }
+    return origin.origin
+  }
   return `http://127.0.0.1:${getWebPort(env)}`
 }
 

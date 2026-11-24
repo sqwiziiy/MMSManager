@@ -3,6 +3,7 @@ import { AlertTriangle, Check, Cpu, LoaderCircle, RefreshCw, Save, ShieldCheck }
 import type { JvmOptions, JavaRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate } from '@mmsmanager/shared'
 import { getJavaRuntimes, scanJavaRuntimes, getServerRuntimeSettings, updateServerRuntimeSettings } from '../api/servers'
 import { Badge, Button, Card, SectionHeading } from '../components/ui'
+import { javaRuntimeLabel } from '../lib/java-runtime'
 
 const defaultOptions: JvmOptions = { collector: 'default', maxGCPauseMs: null, parallelGcThreads: null, alwaysPreTouch: false, disableExplicitGc: false }
 
@@ -99,7 +100,7 @@ export function LocalServerRuntime({ serverId, managed, isAdmin }: { serverId: s
         <SectionHeading title="Java runtime" description="Choose a locally checked executable for this panel-managed server." action={<Badge tone={settings?.runtimeStatus === 'running' ? 'warn' : 'neutral'}>{settings?.runtimeStatus ?? 'Unavailable'}</Badge>} />
         <label className="local-runtime-field"><span>Selected Java executable</span><select aria-label="Selected Java executable" value={javaPath} onChange={(event) => setJavaPath(event.target.value)}>
           {!runtimes.some((item) => item.path === settings?.javaPath) && settings?.javaPath && <option value={settings.javaPath}>Saved Java {settings.javaMajor ?? 'version unknown'} · recheck on save</option>}
-          {runtimes.map((runtime) => <option key={runtime.path} value={runtime.path}>Java {runtime.major} · {runtime.vendor ?? 'Runtime'} · {runtime.path}</option>)}
+          {runtimes.map((runtime) => <option key={runtime.path} value={runtime.path}>{javaRuntimeLabel(runtime, runtimes)}</option>)}
         </select></label>
         <div className="local-runtime-inline-facts"><div><span>Selected version</span><strong>{selectedMajor ? `Java ${selectedMajor}` : 'Not verified'}</strong></div><div><span>Minimum recorded at install</span><strong>{settings?.requiredJavaMajor ? `Java ${settings.requiredJavaMajor}+` : 'Unknown'}</strong></div></div>
         {compatibility === 'incompatible' && <p className="local-inline-error" role="status">This runtime is below the minimum Java version recorded for this installation. Choose Java {settings?.requiredJavaMajor}+.</p>}

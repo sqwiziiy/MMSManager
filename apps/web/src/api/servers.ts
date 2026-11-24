@@ -14,6 +14,7 @@ import {
   serverRuntimeSettingsResultSchema,
   serverAutomationResultSchema,
   serverStatusResultSchema,
+  dashboardPlayerSummaryResultSchema,
   serverPlayerListResultSchema,
   serverPlayerActionResultSchema,
   serverPropertiesResultSchema,
@@ -34,7 +35,7 @@ import {
   serverHistoryDayResultSchema,
 } from '@mmsmanager/shared'
 import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate } from '@mmsmanager/shared'
-import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
+import type { DashboardPlayerSummary, InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestResponse, reportSessionExpiry } from './client'
 
@@ -50,6 +51,11 @@ export async function getLocalServers(signal?: AbortSignal): Promise<LocalServer
 export async function getServerStatus(serverId: string, signal?: AbortSignal): Promise<ServerStatus> {
   const response = await request('/api/v1/servers/' + encodeURIComponent(serverId) + '/status', serverStatusResultSchema, { signal })
   return response.status
+}
+
+export async function getDashboardPlayerSummary(signal?: AbortSignal): Promise<DashboardPlayerSummary> {
+  const response = await request('/api/v1/dashboard/players', dashboardPlayerSummaryResultSchema, { signal })
+  return response.summary
 }
 
 export async function getAuthoritativePlayers(serverId: string, signal?: AbortSignal): Promise<ServerPlayerList> {

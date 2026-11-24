@@ -5,19 +5,21 @@ import {
   RefreshCw, Search, Server, Shield, Users, Wifi,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import type { LocalServerSummary, ServerBackup } from '@mmsmanager/shared'
+import type { LocalServerSummary, MachineHistory, ServerBackup } from '@mmsmanager/shared'
 import type { ActivityCategory, ActivityItem } from '@mmsmanager/shared'
 import { MetricTrack } from '../components/charts'
 import { Badge, Button, Card, EmptyNote, PageHeading, SectionHeading } from '../components/ui'
 import { useMachineMonitor } from '../state/use-machine-monitor'
 import { LiveResourceChart } from '../components/live-chart'
+import { mergeResourcePoints } from '../lib/resource-points'
 import { formatBytes, formatPercent, formatRate, formatTimestamp } from '../lib/format'
 import { getLocalServers, getServerBackups, getServerInventory } from '../api/servers'
+import { getMachineHistory } from '../api/machine'
 import type { ServerInventory } from '@mmsmanager/shared'
 import { useAuth } from '../state/use-auth'
 import { ImportServerDialog } from '../components/import-server-dialog'
 import { JavaInventoryCard } from '../components/java-inventory'
-import { apiErrorMessage } from '../api/client'
+import { ApiRequestError, apiErrorMessage } from '../api/client'
 import { getActivity } from '../api/activity'
 
 type ServerFilter = 'All servers' | 'Running' | 'Other'
@@ -60,18 +62,16 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
     return matchesStatus && `${server.name} ${server.software} ${server.version ?? ''} ${server.port ?? ''}`.toLowerCase().includes(query.toLowerCase())
   }), [localServers, filter, query])
   return <div className="page-stack">
-    <PageHeading title="Servers" description="Registered server folders on this computer." actions={isAdmin ? <><Button icon={Plus} onClick={onCreate}>Create server</Button><Button kind="primary" icon={FolderSearch} onClick={() => setImportOpen(true)}>Import existing</Button></> : undefined} />
+    <PageHeading title="Servers" description="Registered server folders." actions={isAdmin ? <div className="servers-page-actions"><Button icon={Plus} onClick={onCreate}>Create server</Button><Button kind="primary" icon={FolderSearch} disabled title="ZIP import is coming soon">Import from ZIP · Coming soon</Button><Button kind="secondary" icon={FolderSearch} onClick={() => setImportOpen(true)}>Register host folder</Button></div> : undefined} />
     {localError && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Local server inventory unavailable</strong><small>{localError}</small></span><Button icon={RefreshCw} onClick={() => void loadLocal()}>Retry</Button></div>}
     <div className="list-toolbar"><div className="filter-tabs" role="tablist" aria-label="Filter servers">{(['All servers', 'Running', 'Other'] as const).map((item) => <button key={item} role="tab" aria-selected={filter === item} className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item}<span>{item === 'All servers' ? localServers.length : item === 'Running' ? localServers.filter((server) => server.runtimeStatus === 'running').length : localServers.filter((server) => server.runtimeStatus !== 'running').length}</span></button>)}</div>
       <label className="inline-search"><Search size={15} /><input aria-label="Search servers" placeholder="Search servers" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div>
     <section className="local-server-section" aria-labelledby="local-servers-title">
-      <div className="section-heading"><div><div className="card-kicker"><Server size={14} /> Local registry</div><h2 id="local-servers-title">This computer</h2><p>Panel-created instances can be controlled here. Imported folders stay read only.</p></div><Badge tone={localServers.length ? 'good' : 'neutral'}>{loadingLocal ? 'Loading' : `${localServers.length} registered`}</Badge></div>
-      {isAdmin && inventory && <div className="server-root-note"><span>Managed root <code>{inventory.managedRoot}</code></span><span>Import roots {inventory.importRoots.length ? inventory.importRoots.map((root) => <code key={root}>{root}</code>) : 'none configured'}</span></div>}
+      <div className="section-heading"><div><h2 id="local-servers-title">Registered servers</h2></div><Badge tone={localServers.length ? 'good' : 'neutral'}>{loadingLocal ? 'Loading' : `${localServers.length} registered`}</Badge></div>
       {loadingLocal && !localServers.length ? <div className="local-server-empty"><span className="loading-pulse" /><span>Reading the local registry…</span></div> : localError ? null : localFiltered.length ? <div className="local-server-grid">{localFiltered.map((server) => {
-        const details = inventory?.servers.find((item) => item.id === server.id)
         const runtimeStatus = server.runtimeStatus ?? 'stopped'
         const tone = runtimeStatus === 'running' ? 'good' : runtimeStatus === 'crashed' || runtimeStatus === 'error' ? 'danger' : runtimeStatus === 'external/unmanaged' ? 'warn' : 'neutral'
-        return <Link className="local-server-card-link" to={`/servers/${server.id}/overview`} key={server.id}><Card className="local-server-card"><div className="local-server-card-header"><span className="local-server-icon"><Server size={17} /></span><div><strong>{server.name}</strong><small>{server.source === 'imported' ? 'Imported folder' : 'Created by MMSManager'}</small></div><Badge tone={tone}>{runtimeStatus === 'external/unmanaged' ? 'Unmanaged' : runtimeStatus[0]!.toUpperCase() + runtimeStatus.slice(1)}</Badge></div><div className="local-server-facts"><div><span>Software</span><strong>{server.software === 'unknown' ? 'Unknown' : `${server.software[0]!.toUpperCase()}${server.software.slice(1)}${server.version ? ` ${server.version}` : ''}`}</strong></div><div><span>Game port</span><strong>{server.port ?? 'Not detected'}</strong></div><div><span>Memory</span><strong>{server.minMemoryMb}–{server.maxMemoryMb} MB</strong></div><div><span>EULA</span><strong>{server.eula === 'accepted' ? 'Accepted' : server.eula === 'not-accepted' ? 'Not accepted' : 'Not found'}</strong></div></div>{server.worldFolders.length > 0 && <div className="local-server-worlds">Detected folders {server.worldFolders.join(' · ')}</div>}{isAdmin && details && <code className="local-server-path">{details.directory}</code>}<div className="local-server-card-footer"><span>{server.managed ? 'Local process controls available' : 'Imported · read only'}</span><span>Open details <ChevronRight size={13} /></span></div></Card></Link>
+        return <Link className="local-server-card-link" to={`/servers/${server.id}/overview`} key={server.id}><Card className="local-server-card"><div className="local-server-card-header"><span className="local-server-icon"><Server size={17} /></span><div><strong>{server.name}</strong><small>{server.source === 'imported' ? 'Imported folder' : 'Created by MMSManager'}</small></div><Badge tone={tone}>{runtimeStatus === 'external/unmanaged' ? 'Unmanaged' : runtimeStatus[0]!.toUpperCase() + runtimeStatus.slice(1)}</Badge></div><div className="local-server-facts"><div><span>Software</span><strong>{server.software === 'unknown' ? 'Unknown' : `${server.software[0]!.toUpperCase()}${server.software.slice(1)}${server.version ? ` ${server.version}` : ''}`}</strong></div><div><span>Game port</span><strong>{server.port ?? 'Not detected'}</strong></div><div><span>Memory</span><strong>{server.minMemoryMb}–{server.maxMemoryMb} MB</strong></div><div><span>EULA</span><strong>{server.eula === 'accepted' ? 'Accepted' : server.eula === 'not-accepted' ? 'Not accepted' : 'Not found'}</strong></div></div>{server.worldFolders.length > 0 && <div className="local-server-worlds">Detected folders {server.worldFolders.join(' · ')}</div>}<div className="local-server-card-footer"><span>{server.managed ? 'Process controls available' : 'Imported · read only'}</span><span>Open details <ChevronRight size={13} /></span></div></Card></Link>
       })}</div> : <Card className="local-server-empty-card"><div className="empty-list"><FolderSearch size={20} /><strong>{localServers.length ? 'No servers match this filter' : 'No local servers registered'}</strong><span>{localServers.length ? 'Try another name or state.' : isAdmin ? 'Create a managed server or import a folder inside an allowed root.' : 'An administrator has not added a local server yet.'}</span></div></Card>}
     </section>
     {importOpen && inventory && <ImportServerDialog roots={inventory.importRoots} onClose={() => setImportOpen(false)} onImported={() => loadLocal()} />}
@@ -80,34 +80,69 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
 
 export function MachinePage() {
   const monitor = useMachineMonitor()
+  const [historyRange, setHistoryRange] = useState<'15m' | '1h' | '24h' | '7d'>(() => {
+    const saved = window.localStorage.getItem('mmsmanager.machineHistoryRange')
+    return saved === '15m' || saved === '1h' || saved === '7d' ? saved : '24h'
+  })
+  const [selectedHistory, setSelectedHistory] = useState<MachineHistory | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  useEffect(() => { window.localStorage.setItem('mmsmanager.machineHistoryRange', historyRange) }, [historyRange])
+  useEffect(() => {
+    if (historyRange === '24h') { setSelectedHistory(null); setHistoryError(null); return }
+    let active = true
+    let inFlight = false
+    const refresh = async () => {
+      if (inFlight) return
+      inFlight = true
+      setHistoryLoading(true)
+      const now = Date.now()
+      const duration = historyRange === '15m' ? 15 * 60_000 : historyRange === '1h' ? 60 * 60_000 : 7 * 24 * 60 * 60_000
+      try {
+        const result = await getMachineHistory(new Date(now - duration), new Date(now), 500)
+        if (active) { setSelectedHistory(result); setHistoryError(null) }
+      } catch {
+        if (active) setHistoryError('This history range could not be refreshed. Showing the last saved readings.')
+      } finally {
+        inFlight = false
+        if (active) setHistoryLoading(false)
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => { void refresh() }, 60_000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [historyRange])
   const current = monitor.current
   const sample = current?.sample ?? null
   const host = current?.host ?? null
   const timeZone = current?.timeZone ?? monitor.history?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
   const connected = monitor.apiStatus === 'online' && current?.status === 'live'
+  const chartHistory = historyRange === '24h' ? monitor.history : selectedHistory ?? monitor.history
+  const selectedRangeMs = historyRange === '15m' ? 15 * 60_000 : historyRange === '1h' ? 60 * 60_000 : historyRange === '24h' ? 24 * 60 * 60_000 : 7 * 24 * 60 * 60_000
+  const chartPoints = mergeResourcePoints(chartHistory?.points ?? [], monitor.livePoints, selectedRangeMs)
 
   return <div className="page-stack">
-    <PageHeading eyebrow={connected ? 'LIVE local telemetry' : current?.status === 'stale' ? 'Stale local telemetry' : 'Local telemetry unavailable'} title="Machine" description="Read-only metrics from the Linux computer running this backend." actions={<Link className="button button-secondary" to="/machine/history"><CalendarDays size={15} /> Machine history</Link>} />
+    <PageHeading eyebrow={!connected ? current?.status === 'stale' ? 'Stale measurements' : 'Monitoring unavailable' : undefined} title="Machine" description="Host resources and recent measurements." actions={<Link className="button button-secondary" to="/machine/history"><CalendarDays size={15} /> Machine history</Link>} />
     {monitor.apiStatus === 'offline' && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Local monitoring API is offline</strong><small>Previously saved values remain labeled stale; unavailable metrics are not replaced with samples.</small></span><Button icon={RefreshCw} onClick={monitor.refreshNow}>Retry connection</Button></div>}
-    <div className="machine-hero"><div className="machine-hero-icon"><Monitor size={24} /></div><div className="machine-hero-copy"><div><h2>{host?.hostname ?? 'Waiting for local host details'}</h2><Badge tone={connected ? 'good' : current?.status === 'stale' ? 'warn' : 'neutral'}>{connected ? 'Live local machine' : current?.status === 'stale' ? 'Stale sample' : 'Collecting'}</Badge></div><p>{host ? `${host.distro ?? host.platform} ${host.release ?? ''} · ${host.architecture} · ${host.coreCount ?? '—'} logical cores` : monitor.error ?? 'The API will show host details after its first sample.'}</p></div><div className="machine-hero-state"><span>Last successful sample</span><strong>{formatTimestamp(current?.lastSuccessfulAt ?? null, timeZone)}</strong></div></div>
+    <div className="machine-hero"><div className="machine-hero-icon"><Monitor size={24} /></div><div className="machine-hero-copy"><div><h2>{host?.hostname ?? 'Waiting for host details'}</h2>{!connected && <Badge tone={current?.status === 'stale' ? 'warn' : 'neutral'}>{current?.status === 'stale' ? 'Stale sample' : 'Collecting'}</Badge>}</div><p>{host ? `${host.distro ?? host.platform} ${host.release ?? ''} · ${host.architecture} · ${host.coreCount ?? '—'} logical cores` : monitor.error ?? 'Host details will appear after the first reading.'}</p></div><div className="machine-hero-state"><span>Last successful sample</span><strong>{formatTimestamp(current?.lastSuccessfulAt ?? null, timeZone)}</strong></div></div>
     <div className="overview-strip machine-overview-strip">
       <MachineOverviewNumber icon={Cpu} label="CPU utilization" value={formatPercent(sample?.cpuPercent ?? null)} detail={sample?.coreCount ? `${sample.coreCount} logical cores` : 'No CPU sample'} />
       <MachineOverviewNumber icon={MemoryStick} label="Memory used" value={formatBytes(sample?.memory.usedBytes ?? null)} detail={sample ? `${formatBytes(sample.memory.availableBytes)} available · ${formatBytes(sample.memory.totalBytes)} total` : 'No memory sample'} />
-      <MachineOverviewNumber icon={HardDrive} label="Root filesystem" value={formatBytes(sample?.storage?.usedBytes ?? null)} detail={sample?.storage ? `${sample.storage.mount} · ${formatBytes(sample.storage.availableBytes)} available` : 'No root mount sample'} />
+      <MachineOverviewNumber icon={HardDrive} label="Primary storage" value={formatBytes(sample?.storage?.usedBytes ?? null)} detail={sample?.storage ? `${formatBytes(sample.storage.availableBytes)} available` : 'No storage sample'} />
       <MachineOverviewNumber icon={Wifi} label="Network receive" value={formatRate(sample?.network.rxBytesPerSecond ?? null)} detail={sample?.network.interface ?? 'Default interface unavailable'} />
     </div>
-    <div className="machine-page-grid"><Card className="machine-chart-card"><div className="card-heading-row"><div><div className="card-kicker"><Activity size={15} /> Persisted CPU samples</div><h2>Processor activity</h2></div><Badge tone={monitor.apiStatus === 'online' ? 'good' : 'warn'}>{monitor.apiStatus === 'online' ? 'Local API connected' : 'Offline'}</Badge></div><LiveResourceChart points={monitor.history?.points ?? []} metric="cpuPercent" label="CPU utilization" timeZone={timeZone} /></Card>
-      <Card className="machine-resource-card"><div className="card-heading-row"><div><div className="card-kicker"><MemoryStick size={15} /> Memory and load</div><h2>Host resources</h2></div><Badge tone={connected ? 'good' : 'warn'}>{connected ? 'LIVE' : 'Unavailable'}</Badge></div><div className="resource-breakdown full">
+    <div className="machine-page-grid"><Card className="machine-chart-card"><div className="card-heading-row"><div><div className="card-kicker"><Activity size={15} /> Saved measurements</div><h2>Processor activity</h2></div><div className="history-chart-actions"><div className="history-range-controls" role="group" aria-label="History range">{(['15m', '1h', '24h', '7d'] as const).map((range) => <button key={range} type="button" aria-pressed={historyRange === range} className={historyRange === range ? 'selected' : ''} onClick={() => setHistoryRange(range)}>{range}</button>)}</div>{historyLoading && <span className="history-range-loading" role="status">Updating</span>}{monitor.apiStatus !== 'online' && <Badge tone="warn">Offline</Badge>}</div></div>{historyError && <div className="history-range-error" role="status">{historyError}</div>}<LiveResourceChart points={chartPoints} metric="cpuPercent" label="CPU utilization" timeZone={timeZone} bucketSeconds={chartHistory?.bucketSeconds} coveragePercent={chartHistory?.coveragePercent} rangeLabel={historyRange} /></Card>
+      <Card className="machine-resource-card"><div className="card-heading-row"><div><div className="card-kicker"><MemoryStick size={15} /> Memory and load</div><h2>Host resources</h2></div>{!connected && <Badge tone="warn">Unavailable</Badge>}</div><div className="resource-breakdown full">
         <MachineMetricTrack label="CPU" value={sample?.cpuPercent ?? null} detail={host?.cpuModel ?? 'CPU model unavailable'} tone="accent" />
         <MachineMetricTrack label="Memory" value={sample?.memory.usedPercent ?? null} detail={`${formatBytes(sample?.memory.usedBytes ?? null)} used · ${formatBytes(sample?.memory.availableBytes ?? null)} available`} tone="blue" />
-        <MachineMetricTrack label="Storage" value={sample?.storage?.usedPercent ?? null} detail={sample?.storage ? `${sample.storage.device ?? sample.storage.mount} · ${formatBytes(sample.storage.totalBytes)}` : 'Root filesystem unavailable'} tone="amber" />
+        <MachineMetricTrack label="Storage" value={sample?.storage?.usedPercent ?? null} detail={sample?.storage ? `${formatBytes(sample.storage.usedBytes)} of ${formatBytes(sample.storage.totalBytes)}` : 'Storage unavailable'} tone="amber" />
       </div><p className="data-note"><CircleHelp size={14} /> Linux memory used is total minus MemAvailable; reclaimable cache stays in available memory.</p>
       <div className="load-average-row"><span>System load average</span><strong>{sample?.loadAverage ? `${sample.loadAverage.one.toFixed(2)} · ${sample.loadAverage.five.toFixed(2)} · ${sample.loadAverage.fifteen.toFixed(2)}` : 'Unavailable'}</strong><small>1, 5 and 15 minutes; not a CPU percentage</small></div></Card></div>
     <div className="machine-page-grid lower">
-      <Card><SectionHeading title="Root filesystem" description="One local mount is sampled to avoid counting volumes twice." /><div className="volume-row"><div className="volume-heading"><span className="volume-icon"><Database size={17} /></span><div><strong>{sample?.storage?.device ?? 'Root mount unavailable'}</strong><small>{sample?.storage?.mount ?? 'No root filesystem sample'} · local host</small></div><span className="volume-space">{formatBytes(sample?.storage?.usedBytes ?? null)} <small>of {formatBytes(sample?.storage?.totalBytes ?? null)}</small></span></div>{sample?.storage && <><div className="volume-track"><span style={{ width: `${Math.round(sample.storage.usedPercent ?? 0)}%` }} /></div><div className="volume-footer"><span>{formatPercent(sample.storage.usedPercent)} used</span><span>{formatBytes(sample.storage.availableBytes)} available</span></div></>}</div></Card>
+      <Card><SectionHeading title="Storage" description="Available space on the machine running MMSManager." /><div className="volume-row"><div className="volume-heading"><span className="volume-icon"><Database size={17} /></span><div><strong>{sample?.storage?.device ? 'Primary volume' : 'Storage unavailable'}</strong><small>{sample?.storage ? 'System volume' : 'No current volume reading'}</small></div><span className="volume-space">{formatBytes(sample?.storage?.usedBytes ?? null)} <small>of {formatBytes(sample?.storage?.totalBytes ?? null)}</small></span></div>{sample?.storage && <><div className="volume-track"><span style={{ width: `${Math.round(sample.storage.usedPercent ?? 0)}%` }} /></div><div className="volume-footer"><span>{formatPercent(sample.storage.usedPercent)} used</span><span>{formatBytes(sample.storage.availableBytes)} available</span></div></>}</div></Card>
       <Card><SectionHeading title="Network interface" description="Rates use sampled counters from the default interface." /><div className="network-detail-grid"><div><span>Interface</span><strong>{sample?.network.interface ?? 'Unavailable'}</strong></div><div><span>Receive</span><strong>{formatRate(sample?.network.rxBytesPerSecond ?? null)}</strong></div><div><span>Transmit</span><strong>{formatRate(sample?.network.txBytesPerSecond ?? null)}</strong></div><div><span>Sampled</span><strong>{formatTimestamp(sample?.collectedAt ?? null, timeZone)}</strong></div></div></Card>
     </div>
-    <div className="machine-page-grid lower"><Card><SectionHeading title="Host summary" description="Collected from this local machine only." /><div className="machine-host-details"><div><span>Hostname</span><strong>{host?.hostname ?? 'Unavailable'}</strong></div><div><span>Operating system</span><strong>{host ? `${host.distro ?? host.platform} ${host.release ?? ''}` : 'Unavailable'}</strong></div><div><span>Architecture</span><strong>{host?.architecture ?? 'Unavailable'}</strong></div><div><span>CPU cores</span><strong>{host?.coreCount ?? 'Unavailable'}</strong></div><div><span>Uptime</span><strong>{host?.uptimeSeconds === null || host?.uptimeSeconds === undefined ? 'Unavailable' : `${Math.floor(host.uptimeSeconds / 3600)} h`}</strong></div><div><span>Data source</span><strong>Local system information</strong></div></div></Card>
+    <div className="machine-page-grid lower"><Card><SectionHeading title="Host summary" /><div className="machine-host-details"><div><span>Hostname</span><strong>{host?.hostname ?? 'Unavailable'}</strong></div><div><span>Operating system</span><strong>{host ? `${host.distro ?? host.platform} ${host.release ?? ''}` : 'Unavailable'}</strong></div><div><span>Architecture</span><strong>{host?.architecture ?? 'Unavailable'}</strong></div><div><span>CPU cores</span><strong>{host?.coreCount ?? 'Unavailable'}</strong></div><div><span>Uptime</span><strong>{host?.uptimeSeconds === null || host?.uptimeSeconds === undefined ? 'Unavailable' : `${Math.floor(host.uptimeSeconds / 3600)} h`}</strong></div></div></Card>
       <JavaInventoryCard /></div>
   </div>
 }
@@ -203,6 +238,7 @@ export function BackupsPage() {
   const isAdmin = snapshot?.user.role === 'administrator'
   const [servers, setServers] = useState<LocalServerSummary[]>([])
   const [items, setItems] = useState<{ server: LocalServerSummary; backup: ServerBackup }[]>([])
+  const [failedServers, setFailedServers] = useState<{ server: LocalServerSummary; message: string; code: string | null; requestId: string | null }[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
@@ -212,12 +248,37 @@ export function BackupsPage() {
     try {
       const registered = await getLocalServers(signal)
       const eligible = registered.filter((server) => server.source === 'created' && server.managed)
-      const inventories = await Promise.all(eligible.map(async (server) => ({ server, inventory: await getServerBackups(server.id, signal) })))
       setServers(eligible)
-      setItems(inventories.flatMap(({ server, inventory }) => inventory.items.map((backup) => ({ server, backup }))).sort((a, b) => b.backup.createdAt.localeCompare(a.backup.createdAt)))
+      const inventories: { server: LocalServerSummary; items: ServerBackup[] }[] = []
+      const failures: { server: LocalServerSummary; message: string; code: string | null; requestId: string | null }[] = []
+      let next = 0
+      const workers = Array.from({ length: Math.min(4, eligible.length) }, async () => {
+        while (next < eligible.length) {
+          const server = eligible[next++]!
+          try {
+            const inventory = await getServerBackups(server.id, signal)
+            inventories.push({ server, items: inventory.items })
+          } catch (issue) {
+            if (issue instanceof DOMException && issue.name === 'AbortError') throw issue
+            failures.push({
+              server,
+              message: apiErrorMessage(issue, 'This server’s backup inventory could not be loaded.'),
+              code: issue instanceof ApiRequestError ? issue.code : null,
+              requestId: issue instanceof ApiRequestError ? issue.requestId : null,
+            })
+          }
+        }
+      })
+      await Promise.all(workers)
+      setItems(inventories.flatMap(({ server, items: backups }) => backups.map((backup) => ({ server, backup }))).sort((a, b) => b.backup.createdAt.localeCompare(a.backup.createdAt)))
+      setFailedServers(failures)
       setError(null)
     } catch (issue) {
-      if (!(issue instanceof DOMException && issue.name === 'AbortError')) setError(apiErrorMessage(issue, 'The local backup inventory could not be loaded.'))
+      if (!(issue instanceof DOMException && issue.name === 'AbortError')) {
+        setError(apiErrorMessage(issue, 'The local server list could not be loaded.'))
+        setItems([])
+        setFailedServers([])
+      }
     } finally { setLoading(false) }
   }, [isAdmin])
   useEffect(() => {
@@ -228,12 +289,14 @@ export function BackupsPage() {
 
   return <div className="page-stack"><PageHeading title="Backups" description="Verified snapshots from MMSManager-managed local servers." />
     {!isAdmin ? <Card><EmptyNote icon={Archive} title="Administrator access required" detail="Backup inventory is restricted because snapshots can contain private server data." /></Card>
-      : error ? <div className="monitor-offline-banner" role="alert"><span><HardDrive size={16} /><strong>Local backup inventory unavailable</strong><small>{error}</small></span><Button icon={RefreshCw} onClick={() => setReloadKey((key) => key + 1)}>Retry</Button></div>
-        : loading ? <Card><div className="local-server-empty"><span className="loading-pulse" /><span>Loading local backup inventory…</span></div></Card>
+      : <>
+        {(error || failedServers.length > 0) && <div className="monitor-offline-banner" role="alert"><span><HardDrive size={16} /><strong>{error ? 'Backup inventory could not be loaded' : `${failedServers.length} server ${failedServers.length === 1 ? 'inventory is' : 'inventories are'} unavailable`}</strong>{error ? <small>{error}</small> : <small>Available server inventories are still shown below.</small>}{failedServers.map(({ server, message, code, requestId }) => <small className="backup-inventory-error" key={server.id}>{server.name}: {message}{code ? ` · ${code}` : ''}{requestId ? ` · Request ${requestId}` : ''}</small>)}</span><Button icon={RefreshCw} onClick={() => setReloadKey((key) => key + 1)}>Retry</Button></div>}
+        {loading ? <Card><div className="local-server-empty"><span className="loading-pulse" /><span>Loading backup inventory…</span></div></Card>
           : items.length === 0 ? <Card><EmptyNote icon={Archive} title={servers.length ? 'No backups saved yet' : 'No managed servers available'} detail={servers.length ? 'Create a verified snapshot from a managed server’s Backups tab. Imported folders are read only.' : 'Only servers created by MMSManager can be backed up. No sample records are shown here.'} />{servers[0] && <div className="empty-state-actions"><Link className="button button-secondary" to={`/servers/${servers[0].id}/backups`}>Open {servers[0].name} backups <ArrowRight size={14} /></Link></div>}</Card>
-            : <Card className="data-table-card"><div className="table-title-row"><div><h2>Recent snapshots</h2><p>{items.length} retained records shown · backup inventory is local to this computer</p></div><Badge>{servers.length} managed {servers.length === 1 ? 'server' : 'servers'}</Badge></div><div className="local-backup-list">{items.map(({ server, backup }) => <article className="workspace-backup-row" key={`${server.id}-${backup.id}`}>
+            : <Card className="data-table-card"><div className="table-title-row"><div><h2>Recent snapshots</h2><p>{items.length} retained records shown</p></div><Badge>{servers.length} managed {servers.length === 1 ? 'server' : 'servers'}</Badge></div><div className="local-backup-list">{items.map(({ server, backup }) => <article className="workspace-backup-row" key={`${server.id}-${backup.id}`}>
               <div className="local-backup-icon"><Archive size={15} /></div><div className="local-backup-row-main"><strong>{server.name} · {new Date(backup.createdAt).toLocaleString()}</strong><span>{formatBytes(backup.archiveSizeBytes)} archive · {backup.fileCount.toLocaleString()} files · {formatBytes(backup.totalFileBytes)} content</span><small>SHA-256 {backup.archiveSha256.slice(0, 16)}… · {backup.excludedCount ? `${backup.excludedCount} excluded paths` : 'no excluded paths'}</small></div><Badge tone={backup.origin === 'manual' ? 'good' : 'neutral'}>{backup.origin === 'scheduled' ? 'Scheduled' : backup.origin === 'system' ? 'Safety snapshot' : 'Manual'}</Badge><Link className="button button-secondary" to={`/servers/${server.id}/backups`}>Open server backups</Link>
             </article>)}</div></Card>}
+      </>}
   </div>
 }
 

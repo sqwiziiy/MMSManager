@@ -2,16 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { AlertCircle, ArrowDownToLine, Check, CircleUserRound, Clock3, KeyRound, LoaderCircle, LockKeyhole, Plus, Save, ShieldCheck, Trash2, UserRoundPlus, Users, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import type { AdminUser, AuditRecord, LandingPage, UserRole } from '@mmsmanager/shared'
+import type { AdminUser, AuditRecord, LandingPage, MonitoringSettings, UserRole } from '@mmsmanager/shared'
 import {
-  changePassword, createAdminUser, getAuditEvents, getWorkspacePreferences, listAdminUsers, removeAvatar,
+  changePassword, createAdminUser, deleteAdminUser, getAuditEvents, getWorkspacePreferences, listAdminUsers, removeAvatar,
   resetAdminUserPassword, updateAdminUser, updateProfile, updateUserPreferences, updateWorkspacePreferences, uploadAvatar,
 } from '../api/auth'
 import { ApiRequestError } from '../api/auth'
 import { Badge, Button, Card, Field, PageHeading, SectionHeading } from '../components/ui'
 import { useAuth } from '../state/use-auth'
-import { useMachineMonitor } from '../state/use-machine-monitor'
+import { useMachineHistory } from '../state/use-machine-monitor'
 import { NotificationsPanel } from '../components/notifications'
+import { getMonitoringSettings, updateMonitoringSettings } from '../api/monitoring'
+import { DEFAULT_MONITORING_SETTINGS } from '@mmsmanager/shared'
 
 type Notice = { tone: 'ok' | 'error'; message: string }
 
@@ -68,6 +70,7 @@ export function UsersPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [resetTarget, setResetTarget] = useState<AdminUser | null>(null)
   const [toggleTarget, setToggleTarget] = useState<AdminUser | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -113,9 +116,8 @@ export function UsersPage() {
   return <div className="page-stack">
     <PageHeading title="Users" description="Manage local workspace accounts, roles and access." actions={<Button kind="primary" icon={UserRoundPlus} onClick={() => setCreateOpen(true)}>Add user</Button>} />
     <NoticeBar notice={notice} />
-    <Card className="account-scope-banner"><span><ShieldCheck size={17} /></span><div><strong>Local workspace access</strong><p>Administrator and Member permissions are checked by the local API. Disabling an account revokes its active sessions.</p></div><Badge tone="good">Protected</Badge></Card>
     <Card className="data-table-card account-table-card">
-      <div className="table-title-row"><div><h2>Accounts</h2><p>Only local MMSManager users are listed here.</p></div><span className="table-count">{users.length} {users.length === 1 ? 'account' : 'accounts'}</span></div>
+      <div className="table-title-row"><div><h2>Accounts</h2></div><span className="table-count">{users.length} {users.length === 1 ? 'account' : 'accounts'}</span></div>
       <div className="account-toolbar"><label className="inline-search"><Users size={15} /><input aria-label="Search users" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Find an account" /></label><span className="field-hint">Changes are recorded in the security audit.</span></div>
       {loading ? <div className="account-loading"><LoaderCircle className="auth-spinner" size={17} />Loading accounts</div> : users.length === 0 ? <div className="account-empty">No accounts are available.</div> : <>
         <div className="data-table account-users-table"><div className="data-table-head"><span>User</span><span>Role</span><span>Last sign in</span><span>Sessions</span><span>Access</span><span>Actions</span></div>
@@ -125,13 +127,13 @@ export function UsersPage() {
             <select id={`role-${user.id}`} className="account-role-select" value={user.role} disabled={savingId === user.id} onChange={(event) => void saveRole(user, event.target.value as UserRole)}><option value="administrator">Administrator</option><option value="member">Member</option></select>
             <span className="account-last-seen">{shortDate(user.lastLoginAt)}</span><span className="account-session-count">{user.activeSessionCount}</span>
             <Badge tone={user.enabled ? 'good' : 'neutral'}>{user.enabled ? 'Enabled' : 'Disabled'}</Badge>
-            <span className="account-row-actions"><Button kind="quiet" icon={KeyRound} className="account-icon-action" aria-label={`Reset password for ${user.username}`} onClick={() => setResetTarget(user)}>Reset</Button><Button kind={user.enabled ? 'danger' : 'secondary'} icon={user.enabled ? LockKeyhole : ShieldCheck} className="account-icon-action" disabled={savingId === user.id} onClick={() => setToggleTarget(user)}>{user.enabled ? 'Disable' : 'Enable'}</Button></span>
+            <span className="account-row-actions"><Button kind="quiet" icon={KeyRound} className="account-icon-action" aria-label={`Reset password for ${user.username}`} onClick={() => setResetTarget(user)}>Reset</Button><Button kind={user.enabled ? 'danger' : 'secondary'} icon={user.enabled ? LockKeyhole : ShieldCheck} className="account-icon-action" disabled={savingId === user.id} onClick={() => setToggleTarget(user)}>{user.enabled ? 'Disable' : 'Enable'}</Button><Button kind="quiet" icon={Trash2} className="account-icon-action" aria-label={`Delete ${user.username}`} title={user.id === auth.snapshot?.user.id ? 'You cannot delete the account you are using.' : undefined} disabled={savingId === user.id || user.id === auth.snapshot?.user.id} onClick={() => setDeleteTarget(user)}>Delete</Button></span>
           </div>)}
         </div>
         <div className="account-users-mobile">{visibleUsers.map((user) => <article className="account-mobile-user" key={`${user.id}-mobile`}>
           <div className="account-mobile-header"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} /><div><strong>{user.displayName}</strong><small>@{user.username}</small></div><Badge tone={user.enabled ? 'good' : 'neutral'}>{user.enabled ? 'Enabled' : 'Disabled'}</Badge></div>
           <div className="account-mobile-fields"><label>Role<select value={user.role} disabled={savingId === user.id} onChange={(event) => void saveRole(user, event.target.value as UserRole)}><option value="administrator">Administrator</option><option value="member">Member</option></select></label><span><small>Last sign in</small><strong>{shortDate(user.lastLoginAt)}</strong></span><span><small>Active sessions</small><strong>{user.activeSessionCount}</strong></span></div>
-          <div className="account-mobile-actions"><Button kind="secondary" icon={KeyRound} onClick={() => setResetTarget(user)}>Reset password</Button><Button kind={user.enabled ? 'danger' : 'secondary'} icon={user.enabled ? LockKeyhole : ShieldCheck} onClick={() => setToggleTarget(user)}>{user.enabled ? 'Disable account' : 'Enable account'}</Button></div>
+          <div className="account-mobile-actions"><Button kind="secondary" icon={KeyRound} onClick={() => setResetTarget(user)}>Reset password</Button><Button kind={user.enabled ? 'danger' : 'secondary'} icon={user.enabled ? LockKeyhole : ShieldCheck} disabled={savingId === user.id} onClick={() => setToggleTarget(user)}>{user.enabled ? 'Disable account' : 'Enable account'}</Button><Button kind="quiet" icon={Trash2} title={user.id === auth.snapshot?.user.id ? 'You cannot delete the account you are using.' : undefined} disabled={savingId === user.id || user.id === auth.snapshot?.user.id} onClick={() => setDeleteTarget(user)}>Delete account</Button></div>
         </article>)}</div>
       </>}
     </Card>
@@ -140,7 +142,33 @@ export function UsersPage() {
     {createOpen && <CreateUserDialog onClose={() => setCreateOpen(false)} onCreated={async (name) => { setCreateOpen(false); setNotice({ tone: 'ok', message: `${name} was created. Share their initial password outside this app.` }); await load() }} />}
     {resetTarget && <ResetPasswordDialog user={resetTarget} onClose={() => setResetTarget(null)} onReset={async (name) => { setResetTarget(null); setNotice({ tone: 'ok', message: `Password reset for ${name}; previous sessions were revoked.` }); await load() }} />}
     {toggleTarget && <Dialog title={`${toggleTarget.enabled ? 'Disable' : 'Enable'} ${toggleTarget.displayName}?`} description={toggleTarget.enabled ? 'This account will lose access immediately and all sessions will be revoked.' : 'This account will be able to sign in again.'} onClose={() => setToggleTarget(null)} className="account-confirm-dialog"><div className="account-dialog-footer"><Button kind="secondary" onClick={() => setToggleTarget(null)}>Cancel</Button><Button kind={toggleTarget.enabled ? 'danger' : 'primary'} onClick={() => void confirmToggle()}>{toggleTarget.enabled ? 'Disable account' : 'Enable account'}</Button></div></Dialog>}
+    {deleteTarget && <DeleteUserDialog user={deleteTarget} onClose={() => setDeleteTarget(null)} onDelete={async (user, avatarCleanup) => { setDeleteTarget(null); setNotice({ tone: avatarCleanup === 'done' ? 'ok' : 'error', message: avatarCleanup === 'done' ? `${user.displayName} was deleted. Their sessions were revoked; past activity remains anonymous.` : `${user.displayName} was deleted, but the profile image could not be cleaned up.` }); await load() }} />}
   </div>
+}
+
+function DeleteUserDialog({ user, onClose, onDelete }: { user: AdminUser; onClose: () => void; onDelete: (user: AdminUser, avatarCleanup: 'done' | 'pending') => Promise<void> }) {
+  const [confirmation, setConfirmation] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (confirmation !== user.username) return
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await deleteAdminUser(user.id, confirmation)
+      await onDelete(user, result.avatarCleanup)
+    } catch (failure) { setError(requestMessage(failure)) }
+    finally { setBusy(false) }
+  }
+  return <Dialog title={`Delete ${user.displayName}?`} description="This removes the account, sessions, profile image and personal preferences. Past activity remains without a user link." onClose={onClose} className="account-confirm-dialog">
+    <form className="account-dialog-form" onSubmit={(event) => void submit(event)}>
+      <p className="delete-warning">This cannot be undone. Deleting the last enabled administrator is blocked.</p>
+      <Field label={`Type ${user.username} to confirm`}><input autoComplete="off" required value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></Field>
+      {error && <div className="auth-error" role="alert"><AlertCircle size={15} />{error}</div>}
+      <div className="account-dialog-footer"><Button type="button" kind="secondary" disabled={busy} onClick={onClose}>Cancel</Button><Button kind="danger" icon={busy ? LoaderCircle : Trash2} disabled={busy || confirmation !== user.username}>{busy ? 'Deleting account' : 'Delete account'}</Button></div>
+    </form>
+  </Dialog>
 }
 
 function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (name: string) => Promise<void> }) {
@@ -270,11 +298,10 @@ export function ProfilePage() {
       <div className="profile-card-cover" />
       <div className="profile-card-main"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} size="large" /><div className="profile-card-identity"><h2>{user.displayName}</h2><p>@{user.username}</p><Badge tone="accent">{user.role === 'administrator' ? 'Administrator' : 'Member'}</Badge></div><span className="profile-created"><Clock3 size={14} />Joined {shortDate(user.createdAt)}</span></div>
       <div className="profile-details-grid"><div><span>Username</span><strong>@{user.username}</strong></div><div><span>Role</span><strong>{user.role === 'administrator' ? 'Administrator' : 'Member'}</strong></div><div><span>Last sign in</span><strong>{shortDate(user.lastLoginAt)}</strong></div><div><span>Workspace</span><strong>{snapshot.workspace.displayName}</strong></div></div>
-      <div className="profile-card-note"><LockKeyhole size={15} /> Passwords use salted Argon2id hashes; session cookies are HttpOnly and remain in this browser.</div>
     </Card>
     <div className="account-profile-grid">
       <Card><SectionHeading title="Profile details" description="Your display name is visible in the local workspace." /><form className="account-inline-form" onSubmit={(event) => void saveName(event)}><Field label="Display name"><input required maxLength={60} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></Field><Button kind="primary" icon={profileBusy ? LoaderCircle : Save} disabled={profileBusy}>{profileBusy ? 'Saving' : 'Save profile'}</Button></form></Card>
-      <Card className="avatar-settings-card"><SectionHeading title="Profile image" description="PNG, JPEG or WebP · max 1 MiB · output is re-encoded as WebP." /><div className="avatar-settings-content"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} size="large" /><div><input ref={fileRef} className="sr-only" aria-label="Choose profile image" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void changeAvatar(event.target.files?.[0])} /><Button kind="secondary" icon={avatarBusy ? LoaderCircle : ArrowDownToLine} disabled={avatarBusy} onClick={() => fileRef.current?.click()}>{avatarBusy ? 'Uploading' : user.avatarUrl ? 'Change image' : 'Upload image'}</Button>{user.avatarUrl && <Button kind="quiet" icon={Trash2} disabled={avatarBusy} onClick={() => void deleteAvatar()}>Remove</Button>}<small>Images are stored outside the web root and served only to authorized users.</small></div></div></Card>
+      <Card className="avatar-settings-card"><SectionHeading title="Profile image" description="PNG, JPEG or WebP · max 1 MiB." /><div className="avatar-settings-content"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} size="large" /><div><input ref={fileRef} className="sr-only" aria-label="Choose profile image" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void changeAvatar(event.target.files?.[0])} /><Button kind="secondary" icon={avatarBusy ? LoaderCircle : ArrowDownToLine} disabled={avatarBusy} onClick={() => fileRef.current?.click()}>{avatarBusy ? 'Uploading' : user.avatarUrl ? 'Change image' : 'Upload image'}</Button>{user.avatarUrl && <Button kind="quiet" icon={Trash2} disabled={avatarBusy} onClick={() => void deleteAvatar()}>Remove</Button>}</div></div></Card>
     </div>
     <div className="account-profile-grid">
       <Card><SectionHeading title="Change password" description="Changing your password revokes every active session, including this one." /><form className="account-password-form" onSubmit={(event) => void submitPassword(event)}><Field label="Current password"><input type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></Field><Field label="New password" hint="At least 14 characters."><input type="password" autoComplete="new-password" required minLength={14} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field><Field label="Confirm new password"><input type="password" autoComplete="new-password" required minLength={14} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></Field><Button kind="primary" icon={passwordBusy ? LoaderCircle : KeyRound} disabled={passwordBusy}>{passwordBusy ? 'Changing password' : 'Change password'}</Button></form></Card>
@@ -283,11 +310,11 @@ export function ProfilePage() {
   </div>
 }
 
-type SettingsTab = 'Workspace' | 'Personal' | 'Notifications'
+type SettingsTab = 'Workspace' | 'Personal' | 'Notifications' | 'Monitoring'
 
 export function SettingsPage() {
   const auth = useAuth()
-  const monitor = useMachineMonitor()
+  const { history } = useMachineHistory()
   const isAdmin = auth.snapshot?.user.role === 'administrator'
   const snapshot = auth.snapshot!
   const [tab, setTab] = useState<SettingsTab>(isAdmin ? 'Workspace' : 'Personal')
@@ -295,6 +322,7 @@ export function SettingsPage() {
   const [workspaceLanding, setWorkspaceLanding] = useState<LandingPage>(snapshot.workspace.defaultLanding)
   const [compactNavigation, setCompactNavigation] = useState(snapshot.user.preferences.compactNavigation)
   const [personalLanding, setPersonalLanding] = useState<LandingPage>(snapshot.user.preferences.defaultLanding)
+  const [monitoringSettings, setMonitoringSettings] = useState<MonitoringSettings>(DEFAULT_MONITORING_SETTINGS)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<Notice | null>(null)
 
@@ -311,7 +339,16 @@ export function SettingsPage() {
     return () => { active = false }
   }, [isAdmin])
 
-  const tabList: SettingsTab[] = isAdmin ? ['Workspace', 'Personal', 'Notifications'] : ['Personal', 'Notifications']
+  useEffect(() => {
+    if (!isAdmin || tab !== 'Monitoring') return
+    const controller = new AbortController()
+    void getMonitoringSettings(controller.signal).then(setMonitoringSettings).catch((error: unknown) => {
+      if (!controller.signal.aborted) setNotice({ tone: 'error', message: requestMessage(error) })
+    })
+    return () => controller.abort()
+  }, [isAdmin, tab])
+
+  const tabList: SettingsTab[] = isAdmin ? ['Workspace', 'Personal', 'Monitoring', 'Notifications'] : ['Personal', 'Notifications']
   const saveWorkspace = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setBusy(true)
@@ -334,15 +371,26 @@ export function SettingsPage() {
     } catch (error) { setNotice({ tone: 'error', message: requestMessage(error) }) }
     finally { setBusy(false) }
   }
+  const saveMonitoring = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setBusy(true)
+    setNotice(null)
+    try {
+      setMonitoringSettings(await updateMonitoringSettings(monitoringSettings))
+      setNotice({ tone: 'ok', message: 'Monitoring settings were applied.' })
+    } catch (error) { setNotice({ tone: 'error', message: requestMessage(error) }) }
+    finally { setBusy(false) }
+  }
 
   return <div className="page-stack">
     <PageHeading title="Settings" description="Persistent settings for this local workspace and your account." />
     <NoticeBar notice={notice} />
-    <div className="settings-layout account-settings-layout"><nav className="settings-nav" aria-label="Settings sections">{tabList.map((name) => <button key={name} className={name === tab ? 'selected' : ''} onClick={() => setTab(name)}>{name === 'Workspace' ? <Users size={16} /> : name === 'Personal' ? <CircleUserRound size={16} /> : <AlertCircle size={16} />}{name}</button>)}</nav>
+    <div className="settings-layout account-settings-layout"><nav className="settings-nav" aria-label="Settings sections">{tabList.map((name) => <button key={name} className={name === tab ? 'selected' : ''} onClick={() => setTab(name)}>{name === 'Workspace' ? <Users size={16} /> : name === 'Personal' ? <CircleUserRound size={16} /> : name === 'Monitoring' ? <Clock3 size={16} /> : <AlertCircle size={16} />}{name}</button>)}</nav>
       <Card className="settings-content account-settings-content">
         <div className="settings-content-heading"><div><h2>{tab}</h2><p>{tab === 'Workspace' ? 'Shared defaults for the single local workspace' : tab === 'Personal' ? 'Saved to your account and applied on this device' : 'Saved operational alerts for your local account'}</p></div><Badge tone="good">{tab === 'Notifications' ? 'In-app' : 'Persistent'}</Badge></div>
-        {tab === 'Workspace' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveWorkspace(event)}><Field label="Workspace name"><input required maxLength={60} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} /></Field><Field label="Default landing page"><select value={workspaceLanding} onChange={(event) => setWorkspaceLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-readonly-row"><div><strong>Machine history timezone</strong><small>Configured when the local collector starts; raw timestamps remain UTC.</small></div><span>{monitor.current?.timeZone ?? 'Unavailable'}</span></div><div className="settings-footer"><span>Workspace changes apply for all local users.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save workspace'}</Button></div></form>}
+        {tab === 'Workspace' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveWorkspace(event)}><Field label="Workspace name"><input required maxLength={60} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} /></Field><Field label="Default landing page"><select value={workspaceLanding} onChange={(event) => setWorkspaceLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-readonly-row"><div><strong>Machine history timezone</strong><small>Configured when the local collector starts; raw timestamps remain UTC.</small></div><span>{history?.timeZone ?? 'Unavailable'}</span></div><div className="settings-footer"><span>Workspace changes apply for all local users.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save workspace'}</Button></div></form>}
         {tab === 'Personal' && <form className="account-settings-form" onSubmit={(event) => void savePersonal(event)}><div className="settings-row account-settings-row"><div><strong>Compact navigation</strong><small>Remember a narrower sidebar for your account.</small></div><label className="account-switch"><input aria-label="Compact navigation" type="checkbox" checked={compactNavigation} onChange={(event) => setCompactNavigation(event.target.checked)} /><span aria-hidden="true" /></label></div><Field label="Default landing page"><select value={personalLanding} onChange={(event) => setPersonalLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-footer"><span>Saved to your profile.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save preferences'}</Button></div></form>}
+        {tab === 'Monitoring' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveMonitoring(event)}><div className="settings-readonly-row"><div><strong>Live sample interval</strong><small>CPU, memory and network updates from one shared host sampler.</small></div><Field label="Seconds"><input type="number" min={1} max={60} step={1} value={monitoringSettings.fastSampleMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, fastSampleMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>History save interval</strong><small>Raw snapshots are saved less often; minute summaries include readings between saves.</small></div><Field label="Seconds"><input type="number" min={5} max={60} step={1} value={monitoringSettings.historySaveMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, historySaveMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>Disk refresh interval</strong><small>Disk usage refreshes separately from quick metrics.</small></div><Field label="Seconds"><input type="number" min={10} max={60} step={1} value={monitoringSettings.diskRefreshMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, diskRefreshMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>Server status check</strong><small>The dashboard player count updates after this interval.</small></div><Field label="Seconds"><input type="number" min={5} max={30} step={1} value={monitoringSettings.statusPollMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, statusPollMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-footer"><span>Changes apply immediately. History is retained using the current policy.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Applying' : 'Apply monitoring'}</Button></div></form>}
         {tab === 'Notifications' && <NotificationsPanel />}
       </Card>
     </div>

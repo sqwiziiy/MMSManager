@@ -72,7 +72,23 @@ function nullableLatest(current: number | null, column: SQLWrapper): SQL | numbe
   return current === null ? sql`${column}` : current
 }
 
-function recordSampleAndRollups(db: AppDatabase, snapshot: CollectedSnapshot, timestamp: string, timeZone: string): boolean {
+function maxValue(values: Array<number | null>): number | null {
+  const available = values.filter((value): value is number => value !== null)
+  return available.length ? Math.max(...available) : null
+}
+
+function minValue(values: Array<number | null>): number | null {
+  const available = values.filter((value): value is number => value !== null)
+  return available.length ? Math.min(...available) : null
+}
+
+function recordSampleAndRollups(
+  db: AppDatabase,
+  snapshot: CollectedSnapshot,
+  timestamp: string,
+  timeZone: string,
+  window: Array<{ snapshot: CollectedSnapshot; timestamp: string }>,
+): boolean {
   const { host, sample } = snapshot
   const stored = db.transaction((transaction) => {
     transaction.insert(machines).values({
@@ -109,16 +125,27 @@ function recordSampleAndRollups(db: AppDatabase, snapshot: CollectedSnapshot, ti
 
     const localDate = dateInTimeZone(Date.parse(timestamp), timeZone)
     const minuteStart = utcMinuteBucket(timestamp)
-    const cpu = sample.cpuPercent
-    const memoryUsed = sample.memory.usedBytes
+    const metrics = window.map((entry) => entry.snapshot.sample)
+    const cpuValues = metrics.map((item) => item.cpuPercent)
+    const cpuCount = cpuValues.filter((value): value is number => value !== null).length
+    const cpuSum = cpuValues.reduce<number>((sum, value) => sum + (value ?? 0), 0)
+    const cpuMinimum = minValue(cpuValues)
+    const cpuMaximum = maxValue(cpuValues)
     const memoryTotal = sample.memory.totalBytes
     const storageUsed = sample.storage?.usedBytes ?? null
     const storageTotal = sample.storage?.totalBytes ?? null
-    const rx = sample.network.rxBytesPerSecond
-    const tx = sample.network.txBytesPerSecond
-    const received = sample.network.rxTransferredBytes
-    const transmitted = sample.network.txTransferredBytes
-    const validNetwork = rx !== null && tx !== null
+    const memoryPeakUsed = maxValue(metrics.map((item) => item.memory.usedBytes))
+    const memoryPeakPercent = maxValue(metrics.map((item) => item.memory.usedPercent))
+    const storagePeak = maxValue(metrics.map((item) => item.storage?.usedBytes ?? null))
+    const rxValues = metrics.map((item) => item.network.rxBytesPerSecond)
+    const txValues = metrics.map((item) => item.network.txBytesPerSecond)
+    const validNetworkRates = rxValues.flatMap((value, index) => value !== null && txValues[index] !== null ? [[value, txValues[index]!] as const] : [])
+    const rxRateSum = validNetworkRates.reduce((sum, value) => sum + value[0], 0)
+    const txRateSum = validNetworkRates.reduce((sum, value) => sum + value[1], 0)
+    const networkRateCount = validNetworkRates.length
+    const received = metrics.reduce<number>((sum, item) => sum + (item.network.rxTransferredBytes ?? 0), 0)
+    const transmitted = metrics.reduce<number>((sum, item) => sum + (item.network.txTransferredBytes ?? 0), 0)
+    const firstSampleAt = window[0]?.timestamp ?? timestamp
 
     transaction.insert(machineMinuteRollups).values({
       machineId: host.id,
@@ -126,43 +153,43 @@ function recordSampleAndRollups(db: AppDatabase, snapshot: CollectedSnapshot, ti
       localDate,
       minuteStart,
       sampleCount: 1,
-      cpuSum: cpu,
-      cpuCount: cpu === null ? 0 : 1,
-      cpuMinimum: cpu,
-      cpuMaximum: cpu,
-      memoryPeakUsedBytes: memoryUsed,
+      cpuSum: cpuSum || null,
+      cpuCount,
+      cpuMinimum,
+      cpuMaximum,
+      memoryPeakUsedBytes: memoryPeakUsed,
       memoryTotalBytes: memoryTotal,
-      memoryPeakPercent: sample.memory.usedPercent,
+      memoryPeakPercent,
       storageLastUsedBytes: storageUsed,
-      storagePeakUsedBytes: storageUsed,
+      storagePeakUsedBytes: storagePeak,
       storageTotalBytes: storageTotal,
-      networkRxRateSum: rx,
-      networkTxRateSum: tx,
-      networkRateCount: validNetwork ? 1 : 0,
-      networkReceivedBytes: received,
-      networkTransmittedBytes: transmitted,
-      firstSampleAt: timestamp,
+      networkRxRateSum: rxRateSum || null,
+      networkTxRateSum: txRateSum || null,
+      networkRateCount,
+      networkReceivedBytes: received || null,
+      networkTransmittedBytes: transmitted || null,
+      firstSampleAt,
       lastSampleAt: timestamp,
     }).onConflictDoUpdate({
       target: [machineMinuteRollups.machineId, machineMinuteRollups.timeZone, machineMinuteRollups.minuteStart],
       set: {
         sampleCount: sql`${machineMinuteRollups.sampleCount} + 1`,
-        cpuSum: nullableAdd(machineMinuteRollups.cpuSum, cpu),
-        cpuCount: sql`${machineMinuteRollups.cpuCount} + ${cpu === null ? 0 : 1}`,
-        cpuMinimum: nullableMinimum(machineMinuteRollups.cpuMinimum, cpu),
-        cpuMaximum: nullablePeak(machineMinuteRollups.cpuMaximum, cpu),
-        memoryPeakUsedBytes: nullablePeak(machineMinuteRollups.memoryPeakUsedBytes, memoryUsed),
+        cpuSum: nullableAdd(machineMinuteRollups.cpuSum, cpuSum || null),
+        cpuCount: sql`${machineMinuteRollups.cpuCount} + ${cpuCount}`,
+        cpuMinimum: nullableMinimum(machineMinuteRollups.cpuMinimum, cpuMinimum),
+        cpuMaximum: nullablePeak(machineMinuteRollups.cpuMaximum, cpuMaximum),
+        memoryPeakUsedBytes: nullablePeak(machineMinuteRollups.memoryPeakUsedBytes, memoryPeakUsed),
         memoryTotalBytes: nullableLatest(memoryTotal, machineMinuteRollups.memoryTotalBytes),
-        memoryPeakPercent: nullablePeak(machineMinuteRollups.memoryPeakPercent, sample.memory.usedPercent),
+        memoryPeakPercent: nullablePeak(machineMinuteRollups.memoryPeakPercent, memoryPeakPercent),
         storageLastUsedBytes: nullableLatest(storageUsed, machineMinuteRollups.storageLastUsedBytes),
-        storagePeakUsedBytes: nullablePeak(machineMinuteRollups.storagePeakUsedBytes, storageUsed),
+        storagePeakUsedBytes: nullablePeak(machineMinuteRollups.storagePeakUsedBytes, storagePeak),
         storageTotalBytes: nullableLatest(storageTotal, machineMinuteRollups.storageTotalBytes),
-        networkRxRateSum: nullableAdd(machineMinuteRollups.networkRxRateSum, rx),
-        networkTxRateSum: nullableAdd(machineMinuteRollups.networkTxRateSum, tx),
-        networkRateCount: sql`${machineMinuteRollups.networkRateCount} + ${validNetwork ? 1 : 0}`,
+        networkRxRateSum: nullableAdd(machineMinuteRollups.networkRxRateSum, rxRateSum || null),
+        networkTxRateSum: nullableAdd(machineMinuteRollups.networkTxRateSum, txRateSum || null),
+        networkRateCount: sql`${machineMinuteRollups.networkRateCount} + ${networkRateCount}`,
         networkReceivedBytes: nullableAdd(machineMinuteRollups.networkReceivedBytes, received),
         networkTransmittedBytes: nullableAdd(machineMinuteRollups.networkTransmittedBytes, transmitted),
-        firstSampleAt: sql`min(${machineMinuteRollups.firstSampleAt}, ${timestamp})`,
+        firstSampleAt: sql`min(${machineMinuteRollups.firstSampleAt}, ${firstSampleAt})`,
         lastSampleAt: sql`max(${machineMinuteRollups.lastSampleAt}, ${timestamp})`,
       },
     }).run()
@@ -172,37 +199,37 @@ function recordSampleAndRollups(db: AppDatabase, snapshot: CollectedSnapshot, ti
       timeZone,
       localDate,
       sampleCount: 1,
-      cpuSum: cpu,
-      cpuCount: cpu === null ? 0 : 1,
-      cpuMinimum: cpu,
-      cpuMaximum: cpu,
-      memoryPeakUsedBytes: memoryUsed,
+      cpuSum: cpuSum || null,
+      cpuCount,
+      cpuMinimum,
+      cpuMaximum,
+      memoryPeakUsedBytes: memoryPeakUsed,
       memoryTotalBytes: memoryTotal,
-      memoryPeakPercent: sample.memory.usedPercent,
+      memoryPeakPercent,
       storageSnapshotUsedBytes: storageUsed,
-      storagePeakUsedBytes: storageUsed,
+      storagePeakUsedBytes: storagePeak,
       storageTotalBytes: storageTotal,
-      networkReceivedBytes: received,
-      networkTransmittedBytes: transmitted,
-      firstSampleAt: timestamp,
+      networkReceivedBytes: received || null,
+      networkTransmittedBytes: transmitted || null,
+      firstSampleAt,
       lastSampleAt: timestamp,
     }).onConflictDoUpdate({
       target: [machineDayRollups.machineId, machineDayRollups.timeZone, machineDayRollups.localDate],
       set: {
         sampleCount: sql`${machineDayRollups.sampleCount} + 1`,
-        cpuSum: nullableAdd(machineDayRollups.cpuSum, cpu),
-        cpuCount: sql`${machineDayRollups.cpuCount} + ${cpu === null ? 0 : 1}`,
-        cpuMinimum: nullableMinimum(machineDayRollups.cpuMinimum, cpu),
-        cpuMaximum: nullablePeak(machineDayRollups.cpuMaximum, cpu),
-        memoryPeakUsedBytes: nullablePeak(machineDayRollups.memoryPeakUsedBytes, memoryUsed),
+        cpuSum: nullableAdd(machineDayRollups.cpuSum, cpuSum || null),
+        cpuCount: sql`${machineDayRollups.cpuCount} + ${cpuCount}`,
+        cpuMinimum: nullableMinimum(machineDayRollups.cpuMinimum, cpuMinimum),
+        cpuMaximum: nullablePeak(machineDayRollups.cpuMaximum, cpuMaximum),
+        memoryPeakUsedBytes: nullablePeak(machineDayRollups.memoryPeakUsedBytes, memoryPeakUsed),
         memoryTotalBytes: nullableLatest(memoryTotal, machineDayRollups.memoryTotalBytes),
-        memoryPeakPercent: nullablePeak(machineDayRollups.memoryPeakPercent, sample.memory.usedPercent),
+        memoryPeakPercent: nullablePeak(machineDayRollups.memoryPeakPercent, memoryPeakPercent),
         storageSnapshotUsedBytes: nullableLatest(storageUsed, machineDayRollups.storageSnapshotUsedBytes),
-        storagePeakUsedBytes: nullablePeak(machineDayRollups.storagePeakUsedBytes, storageUsed),
+        storagePeakUsedBytes: nullablePeak(machineDayRollups.storagePeakUsedBytes, storagePeak),
         storageTotalBytes: nullableLatest(storageTotal, machineDayRollups.storageTotalBytes),
         networkReceivedBytes: nullableAdd(machineDayRollups.networkReceivedBytes, received),
         networkTransmittedBytes: nullableAdd(machineDayRollups.networkTransmittedBytes, transmitted),
-        firstSampleAt: sql`min(${machineDayRollups.firstSampleAt}, ${timestamp})`,
+        firstSampleAt: sql`min(${machineDayRollups.firstSampleAt}, ${firstSampleAt})`,
         lastSampleAt: sql`max(${machineDayRollups.lastSampleAt}, ${timestamp})`,
       },
     }).run()
@@ -221,14 +248,36 @@ export class MachineCollector {
   private lastCleanupAt = 0
   private lastSampleAt: string | null = null
   private lastSuccessfulAt: string | null = null
+  private lastPersistedAt = 0
+  private intervalMs: number
+  private persistenceIntervalMs: number
+  private pendingSamples: Array<{ snapshot: CollectedSnapshot; timestamp: string }> = []
+  private latest: { snapshot: CollectedSnapshot; timestamp: string } | null = null
 
   constructor(
     private readonly db: AppDatabase,
     private readonly reader: SnapshotReader,
     private readonly timeZone: string,
-    private readonly intervalMs = COLLECTOR_INTERVAL_MS,
+    intervalMs = 1_000,
     private readonly now: () => number = Date.now,
-  ) {}
+    persistenceIntervalMs = COLLECTOR_INTERVAL_MS,
+  ) {
+    this.intervalMs = intervalMs
+    this.persistenceIntervalMs = persistenceIntervalMs
+  }
+
+  get currentSnapshot(): { snapshot: CollectedSnapshot; timestamp: string } | null {
+    return this.latest
+  }
+
+  configure(intervalMs: number, persistenceIntervalMs: number): void {
+    this.intervalMs = intervalMs
+    this.persistenceIntervalMs = persistenceIntervalMs
+    if (!this.running) return
+    if (this.timer) clearInterval(this.timer)
+    this.timer = setInterval(() => { void this.collectOnce() }, this.intervalMs)
+    this.timer.unref()
+  }
 
   get health(): CollectorHealth {
     return {
@@ -252,6 +301,7 @@ export class MachineCollector {
     this.timer = undefined
     this.running = false
     await this.activeRun
+    this.persistPending()
   }
 
   async collectOnce(): Promise<void> {
@@ -273,10 +323,12 @@ export class MachineCollector {
         this.startupRecorded = true
       }
       const snapshot = await this.reader.read()
-      const inserted = recordSampleAndRollups(this.db, snapshot, timestamp, this.timeZone)
-      if (inserted) {
-        this.lastSampleAt = timestamp
-        if (snapshot.sample.sampleStatus !== 'error') this.lastSuccessfulAt = timestamp
+      this.latest = { snapshot, timestamp }
+      this.lastSampleAt = timestamp
+      if (snapshot.sample.sampleStatus !== 'error') this.lastSuccessfulAt = timestamp
+      this.pendingSamples.push({ snapshot, timestamp })
+      if (this.lastPersistedAt === 0 || timestampDateMs(timestamp) - this.lastPersistedAt >= this.persistenceIntervalMs) {
+        this.persistPending()
       }
       if (this.errorActive) {
         this.recordEvent(timestamp, 'info', 'Local machine sampling recovered.')
@@ -305,6 +357,15 @@ export class MachineCollector {
       message,
       source: 'local-backend',
     }).run()
+  }
+
+  private persistPending(): void {
+    const latest = this.pendingSamples[this.pendingSamples.length - 1]
+    if (!latest) return
+    const window = this.pendingSamples
+    this.pendingSamples = []
+    recordSampleAndRollups(this.db, latest.snapshot, latest.timestamp, this.timeZone, window)
+    this.lastPersistedAt = timestampDateMs(latest.timestamp)
   }
 
   private cleanup(nowMs: number): void {

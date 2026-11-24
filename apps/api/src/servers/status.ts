@@ -1,8 +1,8 @@
 import { createConnection } from 'node:net'
 import { and, desc, eq, lt } from 'drizzle-orm'
 import type { AppDatabase } from '../db/client.js'
-import { localServers, localServerStatusSamples } from '../db/schema.js'
-import type { ServerStatus } from '@mmsmanager/shared'
+import { localServers, localServerRuntime, localServerStatusSamples } from '../db/schema.js'
+import type { DashboardPlayerSummary, ServerStatus } from '@mmsmanager/shared'
 import { recordServerResourceSample } from './history.js'
 
 const MAX_FRAME_BYTES = 65_536
@@ -35,13 +35,13 @@ function frame(payload: Buffer): Buffer {
   return Buffer.concat([varInt(payload.length), payload])
 }
 
-type Probe = Pick<ServerStatus, 'state' | 'playersOnline' | 'playersMax' | 'versionName' | 'description' | 'latencyMs' | 'errorCode'>
+export type ServerStatusProbe = Pick<ServerStatus, 'state' | 'playersOnline' | 'playersMax' | 'versionName' | 'description' | 'latencyMs' | 'errorCode'>
 
 export class ServerStatusError extends Error {
   constructor(readonly code: string, message: string) { super(message) }
 }
 
-function parseResponse(payload: Buffer, elapsedMs: number): Probe {
+function parseResponse(payload: Buffer, elapsedMs: number): ServerStatusProbe {
   const packet = readVarInt(payload, 0)
   if (!packet || packet.value !== 0) throw new Error('Unexpected status packet')
   const size = readVarInt(payload, packet.next)
@@ -67,14 +67,14 @@ function parseResponse(payload: Buffer, elapsedMs: number): Probe {
   }
 }
 
-export function queryJavaStatus(port: number): Promise<Probe> {
+export function queryJavaStatus(port: number): Promise<ServerStatusProbe> {
   if (!Number.isInteger(port) || port < 1 || port > 65_535) return Promise.resolve({ state: 'unavailable', playersOnline: null, playersMax: null, versionName: null, description: null, latencyMs: null, errorCode: 'port-unavailable' })
   return new Promise((resolve) => {
     const began = Date.now()
     const socket = createConnection({ host: '127.0.0.1', port })
     let settled = false
     let buffer = Buffer.alloc(0)
-    const finish = (result: Probe) => {
+    const finish = (result: ServerStatusProbe) => {
       if (settled) return
       settled = true
       socket.destroy()
@@ -109,14 +109,31 @@ export function queryJavaStatus(port: number): Promise<Probe> {
 export class ServerStatusService {
   private readonly pending = new Map<string, Promise<ServerStatus>>()
   private readonly cache = new Map<string, { at: number; status: ServerStatus }>()
+  private pollIntervalMs = 5_000
+  private summaryPending: Promise<DashboardPlayerSummary> | null = null
+  private summaryCache: { at: number; summary: DashboardPlayerSummary } | null = null
 
-  constructor(private readonly db: AppDatabase, private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly db: AppDatabase,
+    private readonly now: () => number = Date.now,
+    private readonly probeStatus: (port: number) => Promise<ServerStatusProbe> = queryJavaStatus,
+  ) {}
+
+  configurePollInterval(intervalMs: number): void {
+    this.pollIntervalMs = Math.max(5_000, Math.min(30_000, Math.floor(intervalMs)))
+  }
+
+  invalidate(serverId?: string): void {
+    this.summaryCache = null
+    if (serverId) this.cache.delete(serverId)
+    else this.cache.clear()
+  }
 
   get(serverId: string): Promise<ServerStatus> {
     const server = this.db.select().from(localServers).where(eq(localServers.id, serverId)).get()
     if (!server) return Promise.reject(new ServerStatusError('SERVER_NOT_FOUND', 'Registered server not found.'))
     const cached = this.cache.get(serverId)
-    if (cached && this.now() - cached.at < 5_000) return Promise.resolve(cached.status)
+    if (cached && this.now() - cached.at < this.pollIntervalMs) return Promise.resolve(cached.status)
     const pending = this.pending.get(serverId)
     if (pending) return pending
     const work = this.probe(serverId, server.port)
@@ -125,8 +142,65 @@ export class ServerStatusService {
     return work
   }
 
+  getPlayerSummary(): Promise<DashboardPlayerSummary> {
+    if (this.summaryCache && this.now() - this.summaryCache.at < this.pollIntervalMs) {
+      return Promise.resolve(this.summaryCache.summary)
+    }
+    if (this.summaryPending) return this.summaryPending
+    const work = this.collectPlayerSummary().then((summary) => {
+      this.summaryCache = { at: this.now(), summary }
+      return summary
+    }).finally(() => { this.summaryPending = null })
+    this.summaryPending = work
+    return work
+  }
+
+  private async collectPlayerSummary(): Promise<DashboardPlayerSummary> {
+    const servers = this.db.select({ id: localServers.id, source: localServers.source, managed: localServers.managed, port: localServers.port })
+      .from(localServers).all()
+    const checkedAt = new Date(this.now()).toISOString()
+    if (servers.length === 0) return { playersOnline: 0, complete: true, registeredServerCount: 0, pollIntervalMs: this.pollIntervalMs, checkedAt }
+
+    const runtimes = new Map(this.db.select({ serverId: localServerRuntime.serverId, status: localServerRuntime.status })
+      .from(localServerRuntime).all().map((runtime) => [runtime.serverId, runtime.status]))
+    const ports = new Map<number, string>()
+    let unknown = false
+    for (const server of servers) {
+      const runtime = runtimes.get(server.id)
+      if (server.source === 'created' && server.managed && runtime === 'stopped') continue
+      if (server.port === null) { unknown = true; continue }
+      if (!ports.has(server.port)) ports.set(server.port, server.id)
+    }
+    if (ports.size === 0) {
+      return { playersOnline: unknown ? null : 0, complete: !unknown, registeredServerCount: servers.length, pollIntervalMs: this.pollIntervalMs, checkedAt }
+    }
+
+    const queue = [...ports.values()]
+    let cursor = 0
+    let observed = 0
+    let playersOnline = 0
+    const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+      while (cursor < queue.length) {
+        const serverId = queue[cursor++]!
+        try {
+          const status = await this.get(serverId)
+          if (status.state !== 'reachable' || status.playersOnline === null) unknown = true
+          else { observed += 1; playersOnline += status.playersOnline }
+        } catch { unknown = true }
+      }
+    })
+    await Promise.all(workers)
+    return {
+      playersOnline: observed > 0 ? playersOnline : null,
+      complete: !unknown,
+      registeredServerCount: servers.length,
+      pollIntervalMs: this.pollIntervalMs,
+      checkedAt: new Date(this.now()).toISOString(),
+    }
+  }
+
   private async probe(serverId: string, port: number | null): Promise<ServerStatus> {
-    const result = port ? await queryJavaStatus(port) : {
+    const result = port ? await this.probeStatus(port) : {
       state: 'unavailable' as const, playersOnline: null, playersMax: null,
       versionName: null, description: null, latencyMs: null, errorCode: 'port-unavailable',
     }

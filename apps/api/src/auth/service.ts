@@ -56,7 +56,7 @@ export type SessionPrincipal = {
 export type SessionSecrets = { sessionToken: string; csrfToken: string }
 
 export class AuthFailure extends Error {
-  constructor(readonly code: 'bootstrap' | 'unauthorized' | 'conflict' | 'not-found' | 'locked' | 'forbidden' | 'current-password') {
+  constructor(readonly code: 'bootstrap' | 'unauthorized' | 'conflict' | 'not-found' | 'locked' | 'forbidden' | 'current-password' | 'confirmation') {
     super(code)
   }
 }
@@ -361,6 +361,25 @@ export class AuthService {
       }
       const action = target.role !== input.role ? 'user.role.changed' : isEnabled(target.enabled) !== input.enabled ? (input.enabled ? 'user.enabled' : 'user.disabled') : 'user.updated'
       this.recordAudit(actor.userId, targetId, action, 'success', time)
+    }).immediate()
+  }
+
+  deleteUser(actor: SessionPrincipal, targetId: string, confirmation: string): { avatarKey: string | null } {
+    if (targetId === actor.userId) throw new AuthFailure('locked')
+    const time = nowIso(this.now())
+    return this.native.transaction(() => {
+      const target = this.native.prepare('SELECT id, username, role, enabled, avatar_key AS avatarKey FROM users WHERE id = ?')
+        .get(targetId) as { id: string; username: string; role: UserRole; enabled: number | boolean; avatarKey: string | null } | undefined
+      if (!target) throw new AuthFailure('not-found')
+      if (confirmation !== target.username) throw new AuthFailure('confirmation')
+      if (isEnabled(target.enabled) && target.role === 'administrator') {
+        const count = this.native.prepare("SELECT count(*) AS count FROM users WHERE enabled = 1 AND role = 'administrator'").get() as { count: number }
+        if (count.count <= 1) throw new AuthFailure('locked')
+      }
+      this.recordAudit(actor.userId, targetId, 'user.deleted', 'success', time)
+      const deleted = this.native.prepare('DELETE FROM users WHERE id = ?').run(targetId)
+      if (deleted.changes !== 1) throw new AuthFailure('not-found')
+      return { avatarKey: target.avatarKey }
     }).immediate()
   }
 

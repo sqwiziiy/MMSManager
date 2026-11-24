@@ -3,9 +3,10 @@ import { join, resolve } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 
 const screenshotDir = resolve(process.cwd(), '../../reports/screenshots')
+function screenshotPath(name: string): string { return resolve(screenshotDir, `stage-06h-${name}`) }
 mkdirSync(screenshotDir, { recursive: true })
 
-const adminPassword = process.env['MMSMANAGER_E2E_ADMIN_PASSWORD']!
+let adminPassword = process.env['MMSMANAGER_E2E_ADMIN_PASSWORD']!
 const memberPassword = process.env['MMSMANAGER_E2E_MEMBER_PASSWORD']!
 const browserSessionPath = resolve(process.env['MMSMANAGER_DATA_DIR']!, 'browser-session.json')
 
@@ -37,8 +38,25 @@ async function signOut(page: Page): Promise<void> {
 }
 
 async function expectNoHorizontalOverflow(page: Page, route: string): Promise<void> {
-  const size = await page.evaluate(() => ({ viewport: window.innerWidth, content: document.documentElement.scrollWidth }))
-  expect(size.content, `horizontal overflow on ${route}`).toBeLessThanOrEqual(size.viewport)
+  const size = await page.evaluate(() => {
+    const viewport = window.innerWidth
+    const offenders = [...document.querySelectorAll<HTMLElement>('body *')]
+      .map((element) => {
+        const bounds = element.getBoundingClientRect()
+        const chain: string[] = []
+        let parent: HTMLElement | null = element
+        while (parent && chain.length < 4) {
+          chain.push(`${parent.tagName.toLowerCase()}.${String(parent.className).split(/\s+/).filter(Boolean).join('.')}`)
+          parent = parent.parentElement
+        }
+        return { element: chain.join(' < '), right: Math.round(bounds.right), left: Math.round(bounds.left), width: Math.round(bounds.width), text: element.textContent?.trim().slice(0, 60) ?? '', position: getComputedStyle(element).position }
+      })
+      .filter((item) => item.right > viewport + 1)
+      .sort((left, right) => right.right - left.right)
+      .slice(0, 5)
+    return { viewport, content: document.documentElement.scrollWidth, offenders }
+  })
+  expect(size.content, `horizontal overflow on ${route}: ${JSON.stringify(size.offenders)}`).toBeLessThanOrEqual(size.viewport)
 }
 
 async function mockLocalServer(page: Page, runtimeStatus = 'running') {
@@ -262,7 +280,7 @@ test('first-run administrator setup creates the protected local workspace', asyn
   await page.goto('/')
   await expect(page).toHaveURL(/\/setup$/)
   await expect(page.getByRole('heading', { name: 'Create your administrator' })).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-03-setup-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-03-setup-desktop.png'), fullPage: true })
 
   const token = readFileSync(resolve(process.env['MMSMANAGER_DATA_DIR']!, 'bootstrap-token'), 'utf8').trim()
   await page.getByLabel('One-time setup key').fill(token)
@@ -272,11 +290,11 @@ test('first-run administrator setup creates the protected local workspace', asyn
   await page.getByLabel('Confirm password').fill(adminPassword)
   await page.getByRole('button', { name: 'Create administrator' }).click()
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
-  await expect(page.getByText('Local server registry connected')).toBeVisible()
+  await expect(page.getByText('Local server registry connected')).toHaveCount(0)
   await expect(page.getByText('No servers registered on this computer.')).toBeVisible()
   await page.context().storageState({ path: browserSessionPath })
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-03-dashboard-desktop.png'), fullPage: true })
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05a-dashboard-empty-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-03-dashboard-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05a-dashboard-empty-desktop.png'), fullPage: true })
   expect(page.url()).not.toContain('/setup')
 })
 
@@ -295,28 +313,30 @@ test('Stage 5G removes demo records from operational pages', async ({ page }) =>
   await page.keyboard.press('Enter')
   await expect(page.getByRole('heading', { name: 'Machine' })).toBeVisible()
   await page.getByRole('link', { name: 'Dashboard', exact: true }).click()
+  await expect(page.getByText('Players online').locator('..')).toContainText('0')
+  await expect(page.getByText('query unavailable')).toHaveCount(0)
 
   await page.getByRole('link', { name: 'Servers' }).click()
-  await expect(page.getByRole('heading', { name: 'Servers' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Servers', exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: /Alder SMP/ })).toHaveCount(0)
   await expect(page.getByText('No local servers registered', { exact: true })).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-servers-empty-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05g-servers-empty-desktop.png'), fullPage: true })
   await page.goto('/servers/alder-smp/overview')
   await expect(page.getByRole('heading', { name: 'Server not found' })).toBeVisible()
   await expect(page.getByText('Alder SMP', { exact: true })).toHaveCount(0)
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-legacy-server-route-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05g-legacy-server-route-desktop.png'), fullPage: true })
   await page.goto('/activity')
   await expect(page.getByText('Administrator setup completed', { exact: true })).toBeVisible()
   await expect(page.getByText('MiraWoods', { exact: true })).toHaveCount(0)
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-activity-empty-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05g-activity-empty-desktop.png'), fullPage: true })
   await page.goto('/backups')
   await expect(page.getByText('No managed servers available', { exact: true })).toBeVisible()
   await expect(page.getByText('Alder SMP', { exact: true })).toHaveCount(0)
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-backups-empty-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05g-backups-empty-desktop.png'), fullPage: true })
   await page.goto('/templates')
   await expect(page.getByText('No templates saved', { exact: true })).toBeVisible()
   await expect(page.getByText('Survival community', { exact: true })).toHaveCount(0)
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-templates-empty-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05g-templates-empty-desktop.png'), fullPage: true })
   expect(errors).toEqual([])
 })
 
@@ -352,11 +372,11 @@ test('admin creates a server through mocked provider responses', async ({ page }
   await expect(page.getByText('Mojang metadata requires Java 21 or newer')).toBeVisible()
   await page.getByRole('button', { name: 'Continue' }).click()
   await page.getByRole('button', { name: 'Continue' }).click()
-  await expect(page.getByText('New local server · stopped after install')).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04b-install-review-desktop.png') })
+  await expect(page.getByText('New server · stopped after install')).toBeVisible()
+  await page.screenshot({ path: screenshotPath('stage-04b-install-review-desktop.png') })
   await page.getByRole('button', { name: 'Install server' }).click()
   await expect(page.getByText('Installation in progress')).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04b-install-progress-desktop.png') })
+  await page.screenshot({ path: screenshotPath('stage-04b-install-progress-desktop.png') })
   await expect(page.getByText('Installation complete')).toBeVisible({ timeout: 5000 })
   expect(submitted).toMatchObject({ software: 'vanilla', version: '1.21.4', eulaAccepted: false, directoryName: 'community-server' })
   expect(page.url()).not.toContain('/servers/')
@@ -368,7 +388,7 @@ test('admin creates a server through mocked provider responses', async ({ page }
   const mobileWizard = page.getByRole('dialog', { name: 'Create server' })
   await expect(mobileWizard).toBeVisible()
   await expectNoHorizontalOverflow(page, 'mobile install wizard details')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04b-install-mobile.png'), animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-04b-install-mobile.png'), animations: 'disabled' })
   await mobileWizard.getByRole('button', { name: 'Continue' }).click()
   await expect(mobileWizard.getByLabel('Minecraft release')).toBeVisible()
   await expectNoHorizontalOverflow(page, 'mobile install wizard software')
@@ -430,22 +450,23 @@ test('admin imports a disposable local folder through a read-only preview', asyn
   writeFileSync(join(serverDirectory, 'server.jar'), 'not a real Minecraft archive')
 
   await page.goto('/servers')
-  await page.getByRole('button', { name: 'Import existing' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Import an existing server' })
-  await dialog.getByLabel('Absolute server folder path').fill(serverDirectory)
+  await page.getByRole('button', { name: 'Register host folder' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Register a server folder' })
+  await dialog.getByText('Advanced: register a folder already on this machine').click()
+  await dialog.getByLabel('Server folder path').fill(serverDirectory)
   await dialog.getByRole('button', { name: 'Inspect folder' }).click()
   await expect(dialog.getByText('Vanilla')).toBeVisible()
   await expect(dialog.getByText('25571')).toBeVisible()
   await expect(dialog.locator('.server-import-facts').getByText('Not found').first()).toBeVisible()
   await dialog.getByLabel('Display name').fill('Temporary Smoke Server')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04a-import-dialog-desktop.png') })
+  await page.screenshot({ path: screenshotPath('stage-04a-import-dialog-desktop.png') })
   await dialog.getByRole('button', { name: 'Add to local registry' }).click()
   await expect(page.getByText('Temporary Smoke Server')).toBeVisible()
-  await expect(page.getByText(serverDirectory, { exact: true })).toBeVisible()
+  await expect(page.getByText(serverDirectory, { exact: true })).toHaveCount(0)
   expect(existsSync(join(serverDirectory, 'server.properties'))).toBe(true)
   expect(existsSync(join(serverDirectory, 'server.jar'))).toBe(true)
   expect(existsSync(join(serverDirectory, 'eula.txt'))).toBe(false)
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04a-servers-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-04a-servers-desktop.png'), fullPage: true })
 })
 
 test('local server overview, console and visual properties use mocked API data', async ({ page }) => {
@@ -457,7 +478,7 @@ test('local server overview, console and visual properties use mocked API data',
   await expect(page.getByRole('heading', { name: 'Local Fixture' })).toBeVisible()
   await expect(page.getByText('Running', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('Players online').locator('..')).toContainText('3')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04c-local-server-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-04c-local-server-desktop.png'), fullPage: true })
   await page.getByRole('link', { name: 'Players' }).click()
   await expect(page.getByRole('heading', { name: 'Online identities' })).toBeVisible()
   await expect(page.getByText('FixturePlayer', { exact: true })).toBeVisible()
@@ -468,13 +489,13 @@ test('local server overview, console and visual properties use mocked API data',
   await page.getByRole('button', { name: 'Send player command' }).click()
   await expect.poll(() => fixture.submittedPlayerAction).toEqual({ action: 'ban', username: 'FixturePlayer' })
   await expect(page.getByText(/command was sent, but the server response was not recognized/)).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05a-local-players-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05a-local-players-desktop.png'), fullPage: true })
   await page.getByRole('link', { name: 'Overview' }).click()
 
   await page.getByRole('link', { name: 'Console' }).click()
   await expect(page.getByText('Connected to owned process')).toBeVisible()
   await expect(page.getByText('Done (1.2s)! For help, type "help"')).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04c-local-console-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-04c-local-console-desktop.png'), fullPage: true })
   await page.getByRole('textbox', { name: 'Minecraft server command' }).fill('say browser fixture')
   await page.getByRole('button', { name: 'Send' }).click()
   await expect.poll(() => fixture.submittedCommand).toBe('say browser fixture')
@@ -482,7 +503,7 @@ test('local server overview, console and visual properties use mocked API data',
   await page.getByRole('link', { name: 'Logs' }).click()
   await expect(page.getByRole('heading', { name: 'Process output' })).toBeVisible()
   await expect(page.getByText('Done (1.2s)! For help, type "help"').first()).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04c-local-logs-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-04c-local-logs-desktop.png'), fullPage: true })
 
   await page.getByRole('link', { name: 'Properties' }).click()
   await expect(page.getByRole('heading', { name: 'Server properties', level: 3 })).toBeVisible()
@@ -497,7 +518,80 @@ test('local server overview, console and visual properties use mocked API data',
   await expect(propertyRestore.getByText('The server is running. Restored values apply after its next restart.')).toBeVisible()
   await propertyRestore.getByRole('button', { name: 'Restore this version' }).click()
   await expect(page.getByLabel('Message of the day')).toHaveValue('A previous fixture message')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04d-properties-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-04d-properties-desktop.png'), fullPage: true })
+})
+
+test('sidebar preference persists through navigation and reload', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await signIn(page)
+  await page.getByRole('button', { name: 'Collapse sidebar' }).click()
+  await expect(page.locator('.app-frame')).toHaveClass(/sidebar-collapsed/)
+  await expect(page.getByRole('button', { name: 'Expand sidebar' })).toHaveAttribute('aria-expanded', 'false')
+  await page.goto('/settings')
+  await expect(page.locator('.app-frame')).toHaveClass(/sidebar-collapsed/)
+  await page.reload()
+  await expect(page.locator('.app-frame')).toHaveClass(/sidebar-collapsed/)
+  await page.getByRole('button', { name: 'Expand sidebar' }).click()
+  await expect(page.locator('.app-frame')).not.toHaveClass(/sidebar-collapsed/)
+  await page.getByRole('button', { name: 'Collapse sidebar' }).click()
+  await page.reload()
+  await expect(page.locator('.app-frame')).toHaveClass(/sidebar-collapsed/)
+  await page.getByRole('button', { name: 'Expand sidebar' }).click()
+  await page.reload()
+  await expect(page.locator('.app-frame')).not.toHaveClass(/sidebar-collapsed/)
+})
+
+test('administrator monitoring settings persist and apply without a restart', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Monitoring' }).click()
+  const values = page.locator('.settings-content input[type="number"]')
+  await expect(values.nth(0)).toHaveValue('1')
+  await expect(values.nth(1)).toHaveValue('10')
+  await expect(values.nth(2)).toHaveValue('30')
+  await expect(values.nth(3)).toHaveValue('15')
+  await values.nth(0).fill('2')
+  await values.nth(1).fill('15')
+  await values.nth(2).fill('45')
+  await values.nth(3).fill('25')
+  await page.getByRole('button', { name: 'Apply monitoring' }).click()
+  await expect(page.getByText('Monitoring settings were applied.')).toBeVisible()
+  await page.reload()
+  await page.getByRole('button', { name: 'Monitoring' }).click()
+  await expect(values.nth(0)).toHaveValue('2')
+  await expect(values.nth(1)).toHaveValue('15')
+  await expect(values.nth(2)).toHaveValue('45')
+  await expect(values.nth(3)).toHaveValue('25')
+  await values.nth(0).fill('1')
+  await values.nth(1).fill('10')
+  await values.nth(2).fill('30')
+  await values.nth(3).fill('15')
+  await page.getByRole('button', { name: 'Apply monitoring' }).click()
+  await expect(page.getByText('Monitoring settings were applied.')).toBeVisible()
+})
+
+test('dashboard player totals distinguish stopped and unavailable servers', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await signIn(page)
+  const stopped = await mockLocalServer(page, 'stopped')
+  let playerSummaryResponse = { playersOnline: 0, complete: true, registeredServerCount: 1, pollIntervalMs: 15_000, checkedAt: new Date().toISOString() }
+  await page.route('**/api/v1/dashboard/players', (route) => route.fulfill({ json: { summary: playerSummaryResponse } }))
+  await page.goto('/')
+  await expect(page.getByText('Players online').locator('..')).toContainText('0')
+  await expect(page.getByText('Players online').locator('..')).toContainText('none online')
+
+  await page.route(`**/api/v1/servers/${stopped.serverId}/status`, (route) => route.fulfill({ status: 503, json: { error: { code: 'STATUS_UNAVAILABLE', message: 'Status is unavailable.' } } }))
+  playerSummaryResponse = { ...playerSummaryResponse, playersOnline: null, complete: false, checkedAt: new Date().toISOString() }
+  await page.route('**/api/v1/servers', (route) => route.fulfill({ json: { servers: [{
+    id: stopped.serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar',
+    javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, eula: 'accepted', managed: true,
+    worldFolders: ['world'], createdAt: new Date().toISOString(), runtimeStatus: 'running',
+  }] } }))
+  await page.reload()
+  const playerSummary = page.getByText('Players online').locator('..')
+  await expect(playerSummary).toContainText('unavailable')
+  await expect(playerSummary).toContainText('—')
+  await expect(playerSummary).not.toContainText('0')
 })
 
 test('local server detail and property controls fit a mobile viewport', async ({ page }) => {
@@ -507,19 +601,19 @@ test('local server detail and property controls fit a mobile viewport', async ({
   await page.goto(`/servers/${serverId}/overview`)
   await expect(page.getByRole('heading', { name: 'Local Fixture' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'local server mobile overview')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04c-local-server-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-04c-local-server-mobile.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('link', { name: 'Properties' }).click()
   await expect(page.getByLabel('Message of the day')).toBeVisible()
   await expectNoHorizontalOverflow(page, 'local server mobile properties')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04d-properties-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-04d-properties-mobile.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('link', { name: 'Console' }).click()
   await expect(page.getByRole('textbox', { name: 'Minecraft server command' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'local server mobile console')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-04c-local-console-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-04c-local-console-mobile.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('link', { name: 'Players' }).click()
   await expect(page.getByRole('heading', { name: 'Online identities' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'local server mobile players')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05a-local-players-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-05a-local-players-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('runtime settings, safe restart and scheduled backup review work on desktop and mobile', async ({ page }) => {
@@ -536,7 +630,7 @@ test('runtime settings, safe restart and scheduled backup review work on desktop
   await page.getByRole('button', { name: 'Save runtime settings' }).click()
   await expect(page.getByText('Settings saved. Restart required before the running process uses them.')).toBeVisible()
   await expect(page.getByText('Restart required', { exact: true })).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05f-runtime-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05f-runtime-desktop.png'), fullPage: true })
 
   page.once('dialog', (dialog) => void dialog.accept())
   await page.getByRole('button', { name: 'Restart', exact: true }).click()
@@ -554,17 +648,17 @@ test('runtime settings, safe restart and scheduled backup review work on desktop
   await page.getByRole('button', { name: 'Save schedule' }).click()
   await expect(page.getByText('Schedule saved in Europe/Paris. The next backup will run only if the managed server is stopped.')).toBeVisible()
   await expect(page.getByLabel('Frequency')).toHaveValue('weekly')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05f-automation-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05f-automation-desktop.png'), fullPage: true })
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`/servers/${serverId}/runtime`)
   await expect(page.getByRole('heading', { name: 'Runtime profile' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'local server runtime mobile')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05f-runtime-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-05f-runtime-mobile.png'), fullPage: true, animations: 'disabled' })
   await page.goto(`/servers/${serverId}/automation`)
   await expect(page.getByRole('heading', { name: 'Scheduled tasks' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'local server automation mobile')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05f-automation-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-05f-automation-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('managed server backups preview, download and restore at desktop and mobile widths', async ({ page }) => {
@@ -574,7 +668,7 @@ test('managed server backups preview, download and restore at desktop and mobile
   await page.goto('/backups')
   await expect(page.getByRole('heading', { name: 'Recent snapshots' })).toBeVisible()
   await expect(page.getByText('Local Fixture ·', { exact: false }).first()).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-backups-registered-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05g-backups-registered-desktop.png'), fullPage: true })
   await page.goto(`/servers/${serverId}/backups`)
   await expect(page.getByRole('heading', { name: 'Private server snapshots' })).toBeVisible()
   await expect(page.getByText('No auto-delete')).toBeVisible()
@@ -589,19 +683,49 @@ test('managed server backups preview, download and restore at desktop and mobile
   await expect(restoreDialog.getByText('world/level.dat')).toBeVisible()
   const restoreButton = restoreDialog.getByRole('button', { name: 'Restore Local Fixture' })
   await expect(restoreButton).toBeDisabled()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05e-backup-restore-preview-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05e-backup-restore-preview-desktop.png'), fullPage: true })
   await restoreDialog.locator('.local-backup-confirmation input').fill('RESTORE Local Fixture')
   await expect(restoreButton).toBeEnabled()
   await restoreButton.click()
   await expect(page.getByText(/Restore complete · safety snapshot/)).toBeVisible()
   await expect(page.getByText('Pre-restore safety')).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05e-backups-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05e-backups-desktop.png'), fullPage: true })
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`/servers/${serverId}/backups`)
   await expect(page.getByRole('heading', { name: 'Private server snapshots' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'managed server backups mobile')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05e-backups-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-05e-backups-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('workspace backups retains healthy inventories when one managed server fails', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await signIn(page)
+  const { serverId } = await mockLocalServer(page)
+  const now = new Date().toISOString()
+  const unavailableId = 'f03c1cf8-e2a1-4a4e-9de4-4536c7796091'
+  const unavailable = {
+    id: unavailableId, name: 'Unavailable Fixture', source: 'created', software: 'paper', version: '1.21.4',
+    jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25566,
+    eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus: 'stopped',
+  }
+  await page.route('**/api/v1/servers', (route) => route.fulfill({ json: { servers: [
+    { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus: 'stopped' },
+    unavailable,
+  ] } }))
+  await page.route(`**/api/v1/admin/servers/${unavailableId}/backups`, (route) => route.fulfill({
+    status: 500,
+    headers: { 'x-mms-request-id': 'fixture-request-6h1' },
+    json: { error: { code: 'INTERNAL_ERROR', message: 'The local data request failed.' } },
+  }))
+
+  await page.goto('/backups')
+  await expect(page.getByRole('alert')).toContainText('1 server inventory is unavailable')
+  await expect(page.getByRole('alert')).toContainText('INTERNAL_ERROR')
+  await expect(page.getByRole('alert')).toContainText('fixture-request-6h1')
+  await expect(page.getByRole('link', { name: 'Open server backups' })).toBeVisible()
+  await expect(page.getByText('Local Fixture ·', { exact: false })).toBeVisible()
+  await expect(page.getByText('Unavailable Fixture ·', { exact: false })).toHaveCount(0)
 })
 
 test('local Paper plugin inventory uploads and disables only acknowledged files', async ({ page }) => {
@@ -620,10 +744,10 @@ test('local Paper plugin inventory uploads and disables only acknowledged files'
   await fixtureRow.getByRole('button', { name: 'Disable' }).click()
   await expect(fixtureRow.getByText('disabled', { exact: true })).toBeVisible()
   await expect(page.getByText('Restart required').first()).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05b-paper-plugins-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05b-paper-plugins-desktop.png'), fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
   await expectNoHorizontalOverflow(page, 'local Paper plugins mobile')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05b-paper-plugins-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-05b-paper-plugins-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('managed files edit with recovery, trash and restore at desktop and mobile widths', async ({ page }) => {
@@ -659,12 +783,12 @@ test('managed files edit with recovery, trash and restore at desktop and mobile 
   await createFolder.getByLabel('Name').fill('notes')
   await createFolder.getByRole('button', { name: 'Create folder' }).click()
   await expect(page.getByRole('button', { name: 'notes', exact: true })).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05c-file-manager-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05c-file-manager-desktop.png'), fullPage: true })
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`/servers/${serverId}/files`)
   await expectNoHorizontalOverflow(page, 'managed file manager mobile')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05c-file-manager-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-05c-file-manager-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('managed worlds and server history use isolated real-data API fixtures', async ({ page }) => {
@@ -704,10 +828,10 @@ test('managed worlds and server history use isolated real-data API fixtures', as
   await expect(page.getByRole('heading', { name: 'World folders' })).toBeVisible()
   await expect(page.getByText('maple-valley', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('7.0 MiB')).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05d-worlds-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05d-worlds-desktop.png'), fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
   await expectNoHorizontalOverflow(page, 'managed worlds mobile')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05d-worlds-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-05d-worlds-mobile.png'), fullPage: true, animations: 'disabled' })
 
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto(`/machine/history?source=${serverId}&month=2026-03&date=2026-03-29`)
@@ -717,10 +841,10 @@ test('managed worlds and server history use isolated real-data API fixtures', as
   await expect(page.getByText('Original log line')).toBeVisible()
   await expect(page.getByText('Uptime in selected day')).toBeVisible()
   await expect(page.getByText('<1% minute coverage')).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05d-server-history-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-05d-server-history-desktop.png'), fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
   await expectNoHorizontalOverflow(page, 'server history mobile')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-05d-server-history-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-05d-server-history-mobile.png'), fullPage: true, animations: 'disabled' })
   await page.getByLabel('History source').selectOption('all')
   await expect(page.getByRole('heading', { name: 'Server history' })).toBeVisible()
   await expect(page.getByLabel('History source')).toHaveValue('all')
@@ -749,13 +873,13 @@ test('operational notifications can be reviewed and marked read on desktop and m
   await page.getByRole('button', { name: 'Notifications' }).click()
   await expect(page.getByText('Server start failed')).toBeVisible()
   await expect(page.getByText('1 unread')).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-06c-notifications-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-06c-notifications-desktop.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('button', { name: 'Mark read' }).click()
   await expect(page.getByText('0 unread')).toBeVisible()
   await expect(page.getByText('Read', { exact: true })).toBeVisible()
   await page.setViewportSize({ width: 390, height: 844 })
   await expectNoHorizontalOverflow(page, 'notifications mobile')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-06c-notifications-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-06c-notifications-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('online-mode edits require stopped state and an explicit confirmation', async ({ page }) => {
@@ -783,14 +907,14 @@ test('online-mode edits require stopped state and an explicit confirmation', asy
   await expect(page.getByRole('group', { name: 'Online-mode change' })).toContainText('does not change MMSManager sign-in')
   const save = page.getByRole('button', { name: 'Save properties' })
   await expect(save).toBeDisabled()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-06c-online-mode-confirmation-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-06c-online-mode-confirmation-desktop.png'), fullPage: true, animations: 'disabled' })
   await page.getByLabel('I understand and confirm this change').check()
   await expect(save).toBeEnabled()
   await page.setViewportSize({ width: 390, height: 844 })
   const confirmation = page.getByRole('group', { name: 'Online-mode change' })
   await confirmation.scrollIntoViewIfNeeded()
   await expectNoHorizontalOverflow(page, 'online-mode settings mobile')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-06c-online-mode-confirmation-mobile.png'), animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-06c-online-mode-confirmation-mobile.png'), animations: 'disabled' })
   await save.click()
   await expect(page.getByText('Saved with a recovery copy.')).toBeVisible()
   expect(propertyUpdate).toMatchObject({ onlineMode: false, confirmOnlineModeChange: true })
@@ -830,7 +954,7 @@ test('installation cancellation preserves partial files and reports a cancelled 
   await dialog.getByRole('button', { name: 'Cancel installation' }).click()
   await expect(dialog.getByText('Installation cancelled')).toBeVisible()
   await expect(dialog.getByText('Partial files were preserved for review under the managed root.')).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-06e-install-cancelled-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.screenshot({ path: screenshotPath('stage-06e-install-cancelled-desktop.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('mobile dashboard, account screens and navigation fit a narrow viewport', async ({ page }) => {
@@ -847,12 +971,19 @@ test('mobile dashboard, account screens and navigation fit a narrow viewport', a
     await page.goto(route)
     await expect(page.getByRole('heading', { name: heading }).first()).toBeVisible()
     await expectNoHorizontalOverflow(page, route)
-    if (route === '/machine') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-machine-mobile.png'), fullPage: true })
-    if (route === '/servers') await page.screenshot({ path: resolve(screenshotDir, 'stage-04a-servers-mobile.png'), fullPage: true })
-    if (route === '/users') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-users-mobile.png'), fullPage: true })
-    if (route === '/profile') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-profile-mobile.png'), fullPage: true })
-    if (route === '/settings') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-settings-mobile.png'), fullPage: true })
-    if (route === '/activity') await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-activity-mobile.png'), fullPage: true, animations: 'disabled' })
+    if (route === '/machine') {
+      const ranges = page.getByRole('group', { name: 'History range' })
+      await expect(ranges.getByRole('button')).toHaveCount(4)
+      await ranges.getByRole('button', { name: '1h' }).click()
+      await expect(ranges.getByRole('button', { name: '1h' })).toHaveAttribute('aria-pressed', 'true')
+      await expectNoHorizontalOverflow(page, route)
+      await page.screenshot({ path: screenshotPath('stage-03-machine-mobile.png'), fullPage: true })
+    }
+    if (route === '/servers') await page.screenshot({ path: screenshotPath('stage-04a-servers-mobile.png'), fullPage: true })
+    if (route === '/users') await page.screenshot({ path: screenshotPath('stage-03-users-mobile.png'), fullPage: true })
+    if (route === '/profile') await page.screenshot({ path: screenshotPath('stage-03-profile-mobile.png'), fullPage: true })
+    if (route === '/settings') await page.screenshot({ path: screenshotPath('stage-03-settings-mobile.png'), fullPage: true })
+    if (route === '/activity') await page.screenshot({ path: screenshotPath('stage-05g-activity-mobile.png'), fullPage: true, animations: 'disabled' })
     if (route === '/backups') {
       const openServerBackups = page.getByRole('link', { name: 'Open server backups' }).first()
       await expect(openServerBackups).toBeVisible()
@@ -860,9 +991,9 @@ test('mobile dashboard, account screens and navigation fit a narrow viewport', a
       if (!bounds) throw new Error('The backup navigation link has no visible bounds.')
       expect(bounds.x).toBeGreaterThanOrEqual(0)
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(390)
-      await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-backups-mobile.png'), fullPage: true, animations: 'disabled' })
+      await page.screenshot({ path: screenshotPath('stage-05g-backups-mobile.png'), fullPage: true, animations: 'disabled' })
     }
-    if (route === '/templates') await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-templates-mobile.png'), fullPage: true, animations: 'disabled' })
+    if (route === '/templates') await page.screenshot({ path: screenshotPath('stage-05g-templates-mobile.png'), fullPage: true, animations: 'disabled' })
   }
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await page.locator('.sidebar.mobile-open .nav-link[href="/machine"]').click()
@@ -872,17 +1003,17 @@ test('mobile dashboard, account screens and navigation fit a narrow viewport', a
 test('local host metrics and history remain protected and visibly local', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await signIn(page)
-  await expect(page.getByText('LIVE', { exact: true }).first()).toBeVisible({ timeout: 20_000 })
+  await expect(page.locator('.top-demo.machine-live')).toBeVisible({ timeout: 20_000 })
   await expect(page.getByText('Running servers')).toBeVisible()
-  await expect(page.getByText('Local CPU · LIVE')).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-03-dashboard-authenticated-desktop.png'), fullPage: true })
+  await expect(page.getByText('Local CPU', { exact: true })).toBeVisible()
+  await page.screenshot({ path: screenshotPath('stage-03-dashboard-authenticated-desktop.png'), fullPage: true })
 
   await page.goto('/machine')
   await expect(page.getByRole('heading', { name: 'Machine' })).toBeVisible()
-  await expect(page.getByText('Local API connected')).toBeVisible()
-  await expect(page.getByText('Collected from this local machine only.')).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Java runtime inventory' })).toBeVisible()
-  await expect(page.getByText('Reading checked runtimes…')).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.getByText('Local API connected')).toHaveCount(0)
+  await expect(page.getByText('Collected from this local machine only.')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Java runtimes' })).toBeVisible()
+  await expect(page.getByText('Reading runtimes…')).toHaveCount(0, { timeout: 10_000 })
   await page.route('**/api/v1/admin/java/scan', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
@@ -890,12 +1021,12 @@ test('local host metrics and history remain protected and visibly local', async 
   }))
   await page.getByRole('button', { name: 'Scan standard paths' }).click()
   await expect(page.getByText('Temurin 21')).toBeVisible()
-  await page.locator('.java-inventory-card').screenshot({ path: resolve(screenshotDir, 'stage-04a-java-inventory-desktop.png') })
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-03-machine-desktop.png'), fullPage: true })
+  await page.locator('.java-inventory-card').screenshot({ path: screenshotPath('stage-04a-java-inventory-desktop.png') })
+  await page.screenshot({ path: screenshotPath('stage-03-machine-desktop.png'), fullPage: true })
 
   await page.goto('/machine/history?month=2001-01&date=2001-01-01')
   await expect(page.getByText('No machine samples saved')).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-03-history-no-data-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-03-history-no-data-desktop.png'), fullPage: true })
 })
 
 test('local accounts enforce administrator-only management and member access', async ({ page }) => {
@@ -904,7 +1035,7 @@ test('local accounts enforce administrator-only management and member access', a
   await page.goto('/users')
   await expect(page.getByRole('heading', { name: 'Users' })).toBeVisible()
   await expect(page.locator('.account-users-table .data-table-row').filter({ hasText: '@stage-admin' })).toBeVisible()
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-03-users-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-03-users-desktop.png'), fullPage: true })
   await page.getByRole('button', { name: 'Add user' }).click()
   const dialog = page.getByRole('dialog', { name: 'Add a user' })
   await dialog.getByLabel('Username').fill('stage-member')
@@ -918,7 +1049,8 @@ test('local accounts enforce administrator-only management and member access', a
   await signIn(page, 'stage-member', memberPassword)
   await page.goto('/servers')
   await expect(page.getByText('Temporary Smoke Server')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Import existing' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Register host folder' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /Import from ZIP/ })).toHaveCount(0)
   await expect(page.getByText(join(process.env['MMSMANAGER_DATA_DIR']!, 'servers', 'e2e-import'), { exact: true })).toHaveCount(0)
   await page.goto('/users')
   await expect(page.getByRole('heading', { name: 'Administrator access required' })).toBeVisible()
@@ -935,7 +1067,7 @@ test('profile, avatar and personal preferences persist; password change revokes 
   await page.setViewportSize({ width: 1440, height: 1000 })
   await signIn(page)
   await page.goto('/profile')
-  await page.screenshot({ path: resolve(screenshotDir, 'stage-03-profile-desktop.png'), fullPage: true })
+  await page.screenshot({ path: screenshotPath('stage-03-profile-desktop.png'), fullPage: true })
   await page.getByLabel('Display name').fill('Stage Owner Updated')
   await page.getByRole('button', { name: 'Save profile' }).click()
   await expect(page.getByRole('heading', { name: 'Stage Owner Updated' })).toBeVisible()
@@ -966,5 +1098,52 @@ test('profile, avatar and personal preferences persist; password change revokes 
   await page.locator('input[name="password"]').fill(newPassword)
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.locator('.profile-trigger')).toBeVisible()
+  adminPassword = newPassword
   await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible()
+})
+
+test('Stage 6H dashboard and machine layouts fit the 390/768/1280/1920px matrix', async ({ page }) => {
+  await signIn(page)
+  for (const width of [390, 768, 1280, 1920]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 980 })
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+    await page.screenshot({ path: screenshotPath(`dashboard-${width}.png`), fullPage: true, animations: 'disabled' })
+    await expectNoHorizontalOverflow(page, `dashboard at ${width}px`)
+    await page.goto('/machine')
+    await expect(page.getByRole('heading', { name: 'Machine' })).toBeVisible()
+    await page.screenshot({ path: screenshotPath(`machine-${width}.png`), fullPage: true, animations: 'disabled' })
+    await expectNoHorizontalOverflow(page, `machine at ${width}px`)
+  }
+})
+
+test('Stage 6H user deletion requires typed confirmation and preserves audit history', async ({ page }) => {
+  await signIn(page)
+  await page.setViewportSize({ width: 1280, height: 960 })
+  await page.goto('/users')
+  const username = `delete-${Date.now()}`
+  await page.getByRole('button', { name: 'Add user' }).click()
+  await page.getByLabel('Username').fill(username)
+  await page.getByLabel('Display name').fill('Temporary Reviewer')
+  await page.getByLabel('Initial password').fill('synthetic temporary member passphrase 35!')
+  await page.getByRole('button', { name: 'Create user' }).click()
+  const row = page.locator('.account-users-table .account-user-row').filter({ hasText: username })
+  await expect(row).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Delete stage-admin' })).toBeDisabled()
+  await row.getByRole('button', { name: `Delete ${username}` }).click()
+  const dialog = page.getByRole('dialog', { name: 'Delete Temporary Reviewer?' })
+  await expect(dialog).toBeVisible()
+  const confirmation = page.getByLabel(`Type ${username} to confirm`)
+  const deleteButton = dialog.getByRole('button', { name: 'Delete account' })
+  await expect(deleteButton).toBeDisabled()
+  await page.screenshot({ path: screenshotPath('user-delete-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'user deletion dialog at 390px')
+  await page.screenshot({ path: screenshotPath('user-delete-mobile.png'), animations: 'disabled' })
+  await confirmation.fill(username)
+  await expect(deleteButton).toBeEnabled()
+  await deleteButton.click()
+  await expect(page.locator('.account-notice')).toContainText('was deleted')
+  await expect(page.locator('.account-users-table .account-user-row').filter({ hasText: username })).toHaveCount(0)
+  await expect(page.locator('.audit-list')).toContainText('user deleted')
 })

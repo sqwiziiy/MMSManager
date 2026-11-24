@@ -7,7 +7,7 @@ import { Badge, Button, Card, PageHeading, SectionHeading } from '../components/
 import { LiveResourceChart, CalendarMonthHeading } from '../components/live-chart'
 import { getMachineCalendar, getMachineDay, isRequestCancelled } from '../api/machine'
 import { getLocalServers, getServerHistoryCalendar, getServerHistoryDay } from '../api/servers'
-import { useMachineMonitor } from '../state/use-machine-monitor'
+import { useMachineHistory, useMachineStatus } from '../state/use-machine-monitor'
 import { useAuth } from '../state/use-auth'
 import { formatBytes, formatConfiguredDate, formatPercent, formatTimestamp } from '../lib/format'
 
@@ -85,9 +85,10 @@ export function MachineHistoryPage() {
 }
 
 function LocalMachineHistoryPage({ sourceFilter }: { sourceFilter: ReactNode }) {
-  const monitor = useMachineMonitor()
+  const { history } = useMachineHistory()
+  const { apiStatus, error, refreshNow } = useMachineStatus()
   const [searchParams, setSearchParams] = useSearchParams()
-  const timeZone = monitor.current?.timeZone ?? monitor.history?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+  const timeZone = history?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
   const today = todayInZone(timeZone)
   const rawDate = searchParams.get('date')
   const explicitDateIsInvalid = rawDate !== null && !validDate(rawDate)
@@ -174,10 +175,10 @@ function LocalMachineHistoryPage({ sourceFilter }: { sourceFilter: ReactNode }) 
   const statusText = day?.status === 'observed' ? 'Observed' : day?.status === 'partial' ? 'Partial day' : day?.status === 'future' ? 'Future date' : 'No data'
 
   return <div className="page-stack machine-history-page">
-    <PageHeading eyebrow="Local machine · persisted history" title="Machine history" description="Browse real readings saved by this local backend. Dates follow the configured timezone." actions={<Badge tone={monitor.apiStatus === 'online' ? 'good' : 'warn'}>{timeZone}</Badge>} />
+    <PageHeading eyebrow="Local machine · persisted history" title="Machine history" description="Browse real readings saved by this local backend. Dates follow the configured timezone." actions={<Badge tone={apiStatus === 'online' ? 'good' : 'warn'}>{timeZone}</Badge>} />
     {sourceFilter}
 
-    {(calendarError || monitor.apiStatus === 'offline') && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Machine history is unavailable</strong><small>{calendarError ?? monitor.error ?? 'The local API is offline.'}</small></span><Button icon={RefreshCw} onClick={() => { monitor.refreshNow(); setCalendarError(null); setReloadKey((value) => value + 1) }}>Retry</Button></div>}
+    {(calendarError || apiStatus === 'offline') && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Machine history is unavailable</strong><small>{calendarError ?? error ?? 'The local API is offline.'}</small></span><Button icon={RefreshCw} onClick={() => { refreshNow(); setCalendarError(null); setReloadKey((value) => value + 1) }}>Retry</Button></div>}
     {explicitDateIsInvalid && <div className="history-inline-error" role="alert">This history link contains an invalid calendar date.</div>}
 
     <div className="history-layout">
@@ -238,7 +239,7 @@ function LocalMachineHistoryPage({ sourceFilter }: { sourceFilter: ReactNode }) 
         </>}
       </Card>
     </div>
-    <div className="history-footnote"><span className="footnote-dot" /> Local machine values are LIVE when connected. Server values remain DEMO and are excluded from this calendar.</div>
+    <div className="history-footnote"><span className="footnote-dot" /> Machine history uses saved host readings. Server history is shown separately.</div>
     {calendar && <span className="sr-only" aria-live="polite">{calendar.days.filter((item) => item.sampleCount > 0).length} days contain saved readings in this month.</span>}
     <span className="sr-only">Showing month beginning {monthStart.toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' })}.</span>
   </div>
@@ -386,7 +387,7 @@ function ServerHistoryPage({ sourceFilter, scope, serverName }: { sourceFilter: 
         </>}
       </Card>
     </div>
-    <div className="history-footnote"><span className="footnote-dot" /> Server history is separate from LIVE host telemetry. Player pings provide counts only; event parsing is limited to recognized owned-process lines.</div>
+    <div className="history-footnote"><span className="footnote-dot" /> Player pings provide counts only; event parsing is limited to recognized owned-process lines.</div>
   </div>
 }
 

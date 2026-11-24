@@ -103,6 +103,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
           : action === 'confirm' ? await confirmLocalServerStopped(server.id)
             : await restartLocalServer(server.id)
       setRuntime(next)
+      window.dispatchEvent(new Event('mmsmanager:server-lifecycle'))
       if (action === 'restart') window.dispatchEvent(new Event('mmsmanager:server-restarted'))
       await refreshRuntime()
     } catch (error) {
@@ -132,7 +133,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   const canConfirmStopped = isAdmin && isManaged && status === 'external/unmanaged'
   return <div className="page-stack server-detail-page local-detail-page">
     <div className="server-detail-heading">
-      <div className="server-detail-identity"><span className="local-server-icon detail-server-icon"><Server size={19} /></span><div><div className="server-detail-title"><h1>{displayName}</h1><Badge tone={statusTone}>{statusLabel(status)}</Badge></div><p>{server.software === 'unknown' ? 'Unknown software' : `${capitalize(server.software)}${server.version ? ` ${server.version}` : ''}`} <span>·</span> {server.port ? `127.0.0.1:${server.port}` : 'No game port detected'}</p></div></div>
+      <div className="server-detail-identity"><span className="local-server-icon detail-server-icon"><Server size={19} /></span><div><div className="server-detail-title"><h1>{displayName}</h1><Badge tone={statusTone}>{statusLabel(status)}</Badge></div><p>{server.software === 'unknown' ? 'Unknown software' : `${capitalize(server.software)}${server.version ? ` ${server.version}` : ''}`} <span>·</span> {server.port ? `Game port ${server.port}` : 'No game port detected'}</p></div></div>
       <div className="server-actions">
         {isAdmin && <Button kind="quiet" icon={PencilLine} onClick={() => { setNameDraft(displayName); setNameError(null); setNameDialogOpen(true) }}>Edit name</Button>}
         {isAdmin && (canStart ? <Button kind="primary" icon={Play} disabled={busy} onClick={() => void runAction('start')}>Start server</Button>
@@ -211,7 +212,7 @@ function LocalOverview({ server, runtime, statusSample, isAdmin }: { server: Loc
         <div><span>Process state</span><strong>{statusLabel(runtime?.status ?? server.runtimeStatus ?? 'unavailable')}</strong></div>
       </div><div className="local-detail-callout"><LockKeyhole size={15} /><span>Only the local child process created by MMSManager can be controlled. Imported folders remain unmanaged.</span></div></Card>
       <Card><SectionHeading title="Local process" description="Runtime values are separate from machine-wide telemetry." /><div className="local-process-state"><span className={`local-process-indicator ${runtime?.status === 'running' ? 'active' : ''}`} /><div><strong>{statusLabel(runtime?.status ?? server.runtimeStatus ?? 'unavailable')}</strong><small>{runtime?.ready ? 'Minecraft reported readiness in its output.' : runtime?.status === 'starting' ? 'Waiting for the Minecraft readiness line.' : 'No panel-owned ready process.'}</small></div></div>
-        <div className="local-detail-facts compact"><div><span>Process CPU</span><strong>{runtime?.cpuPercent === null || runtime?.cpuPercent === undefined ? 'Unavailable' : `${runtime.cpuPercent.toFixed(1)}%`}</strong><small>Share of local host capacity; needs two samples</small></div><div><span>Connected players</span><strong>Unavailable</strong></div><div><span>Last exit code</span><strong>{runtime?.lastExitCode ?? '—'}</strong></div></div>
+        <div className="local-detail-facts compact"><div><span>Process CPU</span><strong>{runtime?.cpuPercent === null || runtime?.cpuPercent === undefined ? 'Unavailable' : `${runtime.cpuPercent.toFixed(1)}%`}</strong><small>Share of host capacity; needs two samples</small></div><div><span>Last exit code</span><strong>{runtime?.lastExitCode ?? '—'}</strong></div></div>
         {!isAdmin && <div className="local-detail-callout"><Shield size={15} /><span>Only administrators can start, stop, edit properties, or send console commands.</span></div>}
       </Card>
     </div>

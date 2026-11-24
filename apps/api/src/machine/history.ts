@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, gte, lt, ne, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, lt, ne } from 'drizzle-orm'
 import type { MachineCalendarDay, MachineResourcePoint } from '@mmsmanager/shared'
 import { machines, machineDayRollups, machineEvents, machineMinuteRollups, machineSamples } from '../db/schema.js'
 import type { AppDatabase } from '../db/client.js'
 import { COLLECTOR_INTERVAL_MS, MAX_HISTORY_DAYS } from '../config.js'
 import { dateInTimeZone, localDayWindow, validateCalendarDate } from '../time.js'
 import type { CollectorHealth } from './collector.js'
+import type { CollectedSnapshot } from './reader.js'
 
 function percent(used: number | null, total: number | null): number | null {
   if (used === null || total === null || total <= 0) return null
@@ -27,6 +28,7 @@ function dayStatus(
   lastSampleAt: string | null,
   timeZone: string,
   nowMs: number,
+  persistenceIntervalMs: number,
 ): MachineCalendarDay['status'] {
   const today = dateInTimeZone(nowMs, timeZone)
   if (date > today) return 'future'
@@ -35,16 +37,16 @@ function dayStatus(
   const window = localDayWindow(date, timeZone)
   const dayStart = Date.parse(window.from)
   const observedEnd = Math.min(nowMs, Date.parse(window.to))
-  const expectedCount = Math.max(1, Math.floor(Math.max(0, observedEnd - dayStart) / COLLECTOR_INTERVAL_MS) + 1)
+  const expectedCount = Math.max(1, Math.floor(Math.max(0, observedEnd - dayStart) / persistenceIntervalMs) + 1)
   const ratio = Math.min(1, sampleCount / expectedCount)
   return ratio >= 0.8 ? 'observed' : 'partial'
 }
 
-function coveragePercent(sampleCount: number, date: string, timeZone: string, nowMs: number): number {
+function coveragePercent(sampleCount: number, date: string, timeZone: string, nowMs: number, persistenceIntervalMs: number): number {
   if (sampleCount <= 0) return 0
   const window = localDayWindow(date, timeZone)
   const expectedEnd = Math.min(nowMs, Date.parse(window.to))
-  const expected = Math.max(1, Math.floor(Math.max(0, expectedEnd - Date.parse(window.from)) / COLLECTOR_INTERVAL_MS) + 1)
+  const expected = Math.max(1, Math.floor(Math.max(0, expectedEnd - Date.parse(window.from)) / persistenceIntervalMs) + 1)
   return Math.max(0, Math.min(100, (sampleCount / expected) * 100))
 }
 
@@ -56,6 +58,9 @@ function mapMinutePoint(row: typeof machineMinuteRollups.$inferSelect): MachineR
   return {
     observedAt: row.lastSampleAt,
     sampleCount: row.sampleCount,
+    cpuSampleCount: row.cpuCount,
+    networkSampleCount: row.networkRateCount,
+    bucketSeconds: 60,
     cpuPercent: row.cpuCount > 0 && row.cpuSum !== null ? row.cpuSum / row.cpuCount : null,
     memoryUsedBytes: memoryUsed,
     memoryTotalBytes: memoryTotal,
@@ -76,6 +81,8 @@ function mapRawPoint(row: typeof machineSamples.$inferSelect): MachineResourcePo
   return {
     observedAt: row.collectedAt,
     sampleCount: 1,
+    cpuSampleCount: row.cpuPercent === null ? 0 : 1,
+    networkSampleCount: row.networkRxBytesPerSecond !== null && row.networkTxBytesPerSecond !== null ? 1 : 0,
     cpuPercent: row.cpuPercent,
     memoryUsedBytes: row.memoryUsedBytes,
     memoryTotalBytes: row.memoryTotalBytes,
@@ -88,12 +95,68 @@ function mapRawPoint(row: typeof machineSamples.$inferSelect): MachineResourcePo
   }
 }
 
+function aggregatePoints(
+  points: MachineResourcePoint[],
+  fromMs: number,
+  toMs: number,
+  bucketMs: number,
+  expectedIntervalMs: number,
+): MachineResourcePoint[] {
+  const buckets = new Map<number, MachineResourcePoint[]>()
+  for (const point of points) {
+    const index = Math.floor((Date.parse(point.observedAt) - fromMs) / bucketMs)
+    const bucket = buckets.get(index) ?? []
+    bucket.push(point)
+    buckets.set(index, bucket)
+  }
+
+  return [...buckets.entries()].sort(([left], [right]) => left - right).map(([index, bucket]) => {
+    const last = bucket[bucket.length - 1]!
+    const cpuCount = bucket.reduce((sum, point) => sum + (point.cpuSampleCount ?? point.sampleCount), 0)
+    const networkCount = bucket.reduce((sum, point) => sum + (point.networkSampleCount ?? point.sampleCount), 0)
+    const cpuTotal = bucket.reduce((sum, point) => sum + (point.cpuPercent ?? 0) * (point.cpuSampleCount ?? point.sampleCount), 0)
+    const rxTotal = bucket.reduce((sum, point) => sum + (point.rxBytesPerSecond ?? 0) * (point.networkSampleCount ?? point.sampleCount), 0)
+    const txTotal = bucket.reduce((sum, point) => sum + (point.txBytesPerSecond ?? 0) * (point.networkSampleCount ?? point.sampleCount), 0)
+    const bucketStart = fromMs + index * bucketMs
+    const expectedSamples = Math.max(1, Math.ceil((Math.min(toMs, bucketStart + bucketMs) - Math.max(fromMs, bucketStart)) / expectedIntervalMs))
+    const sampleCount = bucket.reduce((sum, point) => sum + point.sampleCount, 0)
+    const peak = <K extends 'memoryUsedBytes' | 'memoryPercent'>(key: K): MachineResourcePoint[K] => {
+      const values = bucket.map((point) => point[key]).filter((value): value is NonNullable<MachineResourcePoint[K]> => value !== null)
+      return (values.length ? Math.max(...values.map(Number)) : null) as MachineResourcePoint[K]
+    }
+    return {
+      observedAt: last.observedAt,
+      sampleCount,
+      cpuSampleCount: cpuCount,
+      networkSampleCount: networkCount,
+      bucketSeconds: Math.max(1, Math.ceil(bucketMs / 1000)),
+      coveragePercent: Math.max(0, Math.min(100, (sampleCount / expectedSamples) * 100)),
+      cpuPercent: cpuCount > 0 ? cpuTotal / cpuCount : null,
+      memoryUsedBytes: peak('memoryUsedBytes'),
+      memoryTotalBytes: last.memoryTotalBytes,
+      memoryPercent: peak('memoryPercent'),
+      storageUsedBytes: last.storageUsedBytes,
+      storageTotalBytes: last.storageTotalBytes,
+      storagePercent: last.storagePercent,
+      rxBytesPerSecond: networkCount > 0 ? rxTotal / networkCount : null,
+      txBytesPerSecond: networkCount > 0 ? txTotal / networkCount : null,
+    }
+  })
+}
+
 export class MachineHistoryService {
+  private persistenceIntervalMs: number
+
   constructor(
     private readonly db: AppDatabase,
     readonly timeZone: string,
     private readonly now: () => number = Date.now,
-  ) {}
+    persistenceIntervalMs = COLLECTOR_INTERVAL_MS,
+  ) { this.persistenceIntervalMs = persistenceIntervalMs }
+
+  setPersistenceInterval(intervalMs: number): void {
+    this.persistenceIntervalMs = intervalMs
+  }
 
   getHealth(collector: CollectorHealth) {
     const latestSample = this.db.select({ collectedAt: machineSamples.collectedAt })
@@ -114,7 +177,7 @@ export class MachineHistoryService {
     }
   }
 
-  getCurrent(collector: CollectorHealth) {
+  getCurrent(collector: CollectorHealth, live?: { snapshot: CollectedSnapshot; timestamp: string } | null) {
     const hostRow = this.db.select().from(machines).where(eq(machines.id, 'local')).limit(1).get()
     const sampleRow = this.db.select().from(machineSamples).where(eq(machineSamples.machineId, 'local'))
       .orderBy(desc(machineSamples.collectedAt)).limit(1).get()
@@ -122,7 +185,7 @@ export class MachineHistoryService {
       .from(machineSamples).where(and(eq(machineSamples.machineId, 'local'), ne(machineSamples.sampleStatus, 'error')))
       .orderBy(desc(machineSamples.collectedAt)).limit(1).get()
 
-    const sample = sampleRow ? {
+    let sample = sampleRow ? {
       id: sampleRow.id,
       collectedAt: sampleRow.collectedAt,
       cpuPercent: sampleRow.cpuPercent,
@@ -157,7 +220,37 @@ export class MachineHistoryService {
       unavailableFields: parseStringArray(sampleRow.unavailableFields),
       source: 'systeminformation' as const,
     } : null
-    const age = sampleRow ? this.now() - Date.parse(sampleRow.collectedAt) : null
+    if (sample && live) {
+      const liveSample = live.snapshot.sample
+      sample = {
+        ...sample,
+        collectedAt: live.timestamp,
+        cpuPercent: liveSample.cpuPercent,
+        coreCount: liveSample.coreCount,
+        loadAverage: liveSample.loadAverage,
+        memory: {
+          usedBytes: liveSample.memory.usedBytes,
+          availableBytes: liveSample.memory.availableBytes,
+          totalBytes: liveSample.memory.totalBytes,
+          swapUsedBytes: liveSample.memory.swapUsedBytes,
+          swapTotalBytes: liveSample.memory.swapTotalBytes,
+          usedPercent: percent(liveSample.memory.usedBytes, liveSample.memory.totalBytes),
+        },
+        storage: liveSample.storage?.mount ? {
+          device: liveSample.storage.device,
+          mount: liveSample.storage.mount,
+          usedBytes: liveSample.storage.usedBytes,
+          availableBytes: liveSample.storage.availableBytes,
+          totalBytes: liveSample.storage.totalBytes,
+          usedPercent: percent(liveSample.storage.usedBytes, liveSample.storage.totalBytes),
+        } : null,
+        network: liveSample.network,
+        sampleStatus: liveSample.sampleStatus,
+        unavailableFields: liveSample.unavailableFields,
+        source: liveSample.source,
+      }
+    }
+    const age = live ? this.now() - Date.parse(live.timestamp) : sampleRow ? this.now() - Date.parse(sampleRow.collectedAt) : null
     const status = !sampleRow
       ? 'collecting' as const
       : !collector.running || age === null || age > collector.intervalMs * 2.5
@@ -205,11 +298,11 @@ export class MachineHistoryService {
       const sampleCount = row?.sampleCount ?? 0
       return {
         date,
-        status: dayStatus(date, sampleCount, row?.firstSampleAt ?? null, row?.lastSampleAt ?? null, this.timeZone, nowMs),
+        status: dayStatus(date, sampleCount, row?.firstSampleAt ?? null, row?.lastSampleAt ?? null, this.timeZone, nowMs, this.persistenceIntervalMs),
         sampleCount,
         firstSampleAt: row?.firstSampleAt ?? null,
         lastSampleAt: row?.lastSampleAt ?? null,
-        coveragePercent: coveragePercent(sampleCount, date, this.timeZone, nowMs),
+        coveragePercent: coveragePercent(sampleCount, date, this.timeZone, nowMs, this.persistenceIntervalMs),
       }
     })
     return { year, month, timeZone: this.timeZone, days }
@@ -225,12 +318,12 @@ export class MachineHistoryService {
     )).limit(1).get()
     const today = dateInTimeZone(this.now(), this.timeZone)
     const sampleCount = row?.sampleCount ?? 0
-    const status = dayStatus(date, sampleCount, row?.firstSampleAt ?? null, row?.lastSampleAt ?? null, this.timeZone, this.now())
+    const status = dayStatus(date, sampleCount, row?.firstSampleAt ?? null, row?.lastSampleAt ?? null, this.timeZone, this.now(), this.persistenceIntervalMs)
     const summary = row ? {
       sampleCount,
       firstSampleAt: row.firstSampleAt,
       lastSampleAt: row.lastSampleAt,
-      coveragePercent: coveragePercent(sampleCount, date, this.timeZone, this.now()),
+      coveragePercent: coveragePercent(sampleCount, date, this.timeZone, this.now(), this.persistenceIntervalMs),
       cpuAveragePercent: row.cpuCount > 0 && row.cpuSum !== null ? row.cpuSum / row.cpuCount : null,
       cpuMaximumPercent: row.cpuMaximum,
       memoryPeakUsedBytes: row.memoryPeakUsedBytes,
@@ -281,33 +374,39 @@ export class MachineHistoryService {
     const durationMs = toMs - fromMs
     const limit = requestedLimit
     const resolution = durationMs <= 60 * 60 * 1000 ? 'raw' as const : 'minute' as const
-    let points: MachineResourcePoint[]
+    const bucketMs = resolution === 'raw'
+      ? Math.max(1_000, Math.ceil(durationMs / limit / 1_000) * 1_000)
+      : Math.max(60_000, Math.ceil(durationMs / limit / 60_000) * 60_000)
+    let sourcePoints: MachineResourcePoint[]
 
     if (resolution === 'raw') {
       const rows = this.db.select().from(machineSamples).where(and(
         eq(machineSamples.machineId, 'local'),
         gte(machineSamples.collectedAt, from),
         lt(machineSamples.collectedAt, to),
-      )).orderBy(asc(machineSamples.collectedAt)).limit(Math.min(360, limit * 4)).all()
-      points = downsample(rows.map(mapRawPoint), limit)
+      )).orderBy(asc(machineSamples.collectedAt)).limit(3_700).all()
+      sourcePoints = rows.map(mapRawPoint)
     } else {
-      const bucketSeconds = Math.max(60, Math.ceil(durationMs / limit / 60_000) * 60)
       const rows = this.db.select().from(machineMinuteRollups).where(and(
         eq(machineMinuteRollups.machineId, 'local'),
         eq(machineMinuteRollups.timeZone, this.timeZone),
         gte(machineMinuteRollups.minuteStart, from),
         lt(machineMinuteRollups.minuteStart, to),
-        sql`CAST(strftime('%s', ${machineMinuteRollups.minuteStart}) AS INTEGER) % ${bucketSeconds} = 0`,
-      )).orderBy(asc(machineMinuteRollups.minuteStart)).limit(limit).all()
-      points = rows.map(mapMinutePoint)
+      )).orderBy(asc(machineMinuteRollups.minuteStart)).limit(44_640).all()
+      sourcePoints = rows.map(mapMinutePoint)
     }
-    return { from, to, timeZone: this.timeZone, resolution, points }
+    const points = aggregatePoints(sourcePoints, fromMs, toMs, bucketMs, COLLECTOR_INTERVAL_MS)
+    const sampleCount = sourcePoints.reduce((sum, point) => sum + point.sampleCount, 0)
+    const expectedSamples = Math.max(1, Math.ceil(durationMs / this.persistenceIntervalMs))
+    const coveragePercent = Math.max(0, Math.min(100, (sampleCount / expectedSamples) * 100))
+    return {
+      from,
+      to,
+      timeZone: this.timeZone,
+      resolution,
+      bucketSeconds: Math.max(1, Math.ceil(bucketMs / 1000)),
+      coveragePercent,
+      points,
+    }
   }
-}
-
-function downsample(points: MachineResourcePoint[], limit: number): MachineResourcePoint[] {
-  if (points.length <= limit) return points
-  if (limit === 1) return [points[points.length - 1]!]
-  const step = (points.length - 1) / (limit - 1)
-  return Array.from({ length: limit }, (_, index) => points[Math.round(index * step)]!)
 }

@@ -70,15 +70,31 @@ function usedPercent(used: NullableNumber, total: NullableNumber): NullableNumbe
 }
 
 export class SystemInformationReader implements SnapshotReader {
+  private diskRefreshMs: number
+  private hostCache: { osInfo: Awaited<ReturnType<typeof si.osInfo>> | null; cpu: Awaited<ReturnType<typeof si.cpu>> | null; coreCount: number | null } | null = null
+  private hostCacheAt = 0
+  private hostCacheRequest: Promise<void> | null = null
+  private diskCache: Awaited<ReturnType<typeof si.fsSize>>[number] | null = null
+  private diskCacheAt = 0
+  private diskCacheRequest: Promise<void> | null = null
+
+  constructor(diskRefreshMs = 30_000) {
+    this.diskRefreshMs = diskRefreshMs
+  }
+
+  configureDiskRefresh(diskRefreshMs: number): void {
+    this.diskRefreshMs = diskRefreshMs
+  }
+
   async read(): Promise<CollectedSnapshot> {
-    const [loadResult, memoryResult, fileSystemsResult, interfaceResult, osResult, cpuResult] = await Promise.allSettled([
+    const [loadResult, memoryResult, interfaceResult] = await Promise.allSettled([
       si.currentLoad(),
       si.mem(),
-      si.fsSize(),
       si.networkInterfaceDefault(),
-      si.osInfo(),
-      si.cpu(),
     ])
+    await Promise.all([this.refreshHostCache(), this.refreshDiskCache()])
+    const hostCache = this.hostCache
+    const rootFilesystem = this.diskCache?.mount === '/' ? this.diskCache : null
 
     const networkInterface = interfaceResult.status === 'fulfilled' && interfaceResult.value.length > 0
       ? interfaceResult.value
@@ -104,9 +120,6 @@ export class SystemInformationReader implements SnapshotReader {
     const swapUsedRaw = finiteNonnegative(memoryData?.swapused)
     const swapUsed = swapTotal === null || swapUsedRaw === null ? null : Math.min(swapTotal, swapUsedRaw)
 
-    const rootFilesystem = fileSystemsResult.status === 'fulfilled'
-      ? fileSystemsResult.value.find((filesystem) => filesystem.mount === '/')
-      : undefined
     const storageTotal = finiteNonnegative(rootFilesystem?.size)
     const storageUsed = finiteNonnegative(rootFilesystem?.used)
     const storageAvailable = finiteNonnegative(rootFilesystem?.available)
@@ -136,9 +149,9 @@ export class SystemInformationReader implements SnapshotReader {
         : null,
     }
 
-    const cpuInfo = cpuResult.status === 'fulfilled' ? cpuResult.value : null
-    const osInfo = osResult.status === 'fulfilled' ? osResult.value : null
-    const cores = os.cpus().length || null
+    const cpuInfo = hostCache?.cpu ?? null
+    const osInfo = hostCache?.osInfo ?? null
+    const cores = (hostCache?.coreCount ?? os.cpus().length) || null
     const loadAverageValues = os.loadavg()
     const loadAverage = loadAverageValues.length === 3 && loadAverageValues.every(Number.isFinite)
       ? { one: loadAverageValues[0] ?? 0, five: loadAverageValues[1] ?? 0, fifteen: loadAverageValues[2] ?? 0 }
@@ -184,5 +197,36 @@ export class SystemInformationReader implements SnapshotReader {
     }
 
     return { host, sample }
+  }
+
+  private async refreshHostCache(): Promise<void> {
+    if (this.hostCacheAt > 0 && Date.now() - this.hostCacheAt < 5 * 60_000) return
+    if (this.hostCacheRequest) return this.hostCacheRequest
+    this.hostCacheRequest = (async () => {
+      const [osResult, cpuResult] = await Promise.allSettled([si.osInfo(), si.cpu()])
+      const previous = this.hostCache
+      const coreCount = os.cpus().length || previous?.coreCount || null
+      this.hostCache = {
+        osInfo: osResult.status === 'fulfilled' ? osResult.value : previous?.osInfo ?? null,
+        cpu: cpuResult.status === 'fulfilled' ? cpuResult.value : previous?.cpu ?? null,
+        coreCount,
+      }
+      this.hostCacheAt = Date.now()
+    })().finally(() => { this.hostCacheRequest = null })
+    return this.hostCacheRequest
+  }
+
+  private async refreshDiskCache(): Promise<void> {
+    if (this.diskCacheAt > 0 && Date.now() - this.diskCacheAt < this.diskRefreshMs) return
+    if (this.diskCacheRequest) return this.diskCacheRequest
+    this.diskCacheRequest = (async () => {
+      const result = await Promise.allSettled([si.fsSize()])
+      const filesystems = result[0]?.status === 'fulfilled' ? result[0].value : null
+      const root = filesystems?.find((filesystem) => filesystem.mount === '/') ?? null
+      if (root) this.diskCache = root
+      else if (filesystems?.length === 0) this.diskCache = null
+      this.diskCacheAt = Date.now()
+    })().finally(() => { this.diskCacheRequest = null })
+    return this.diskCacheRequest
   }
 }

@@ -1,0 +1,27 @@
+[Unit]
+Description=MMSManager single-host web and API service
+After=network.target
+
+[Service]
+Type=simple
+User=mmsmanager
+Group=mmsmanager
+WorkingDirectory=/opt/mmsmanager
+Environment=MMSMANAGER_SERVE_WEB=true
+Environment=MMSMANAGER_WEB_ORIGIN=https://panel.example.com
+Environment=MMSMANAGER_COOKIE_SECURE=true
+Environment=MMSMANAGER_DATA_DIR=/var/lib/mmsmanager
+Environment=MMSMANAGER_API_PORT=4174
+UMask=0077
+ExecStart=/usr/bin/node /opt/mmsmanager/apps/api/dist/server.js
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mmsmanager
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

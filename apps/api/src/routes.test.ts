@@ -8,6 +8,7 @@ import process from 'node:process'
 import { eq } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { API_HOST, WEB_ORIGIN } from './config.js'
+import { AppConfigStore } from './app-config.js'
 import { openDatabase } from './db/client.js'
 import { auditEvents, localServerEvents, localServerStructuredEvents, machineSamples, localServerRuntime, localServers } from './db/schema.js'
 import { recordServerResourceSample, recordStructuredServerEvent } from './servers/history.js'
@@ -33,6 +34,7 @@ describe('authenticated local API', () => {
   let servers: ServerRegistry
   let avatars: AvatarStore
   let javaRuntimes: JavaRuntimeRegistry
+  let monitoringConfig: AppConfigStore
   let availableJavaRuntimes: JavaRuntime[]
   let processManager: ServerProcessManager | null = null
 
@@ -40,6 +42,12 @@ describe('authenticated local API', () => {
     processManager = null
     dataDirectory = await mkdtemp(join(tmpdir(), 'mmsmanager-routes-'))
     opened = await openDatabase({ path: join(dataDirectory, 'mmsmanager.sqlite') })
+    monitoringConfig = new AppConfigStore(dataDirectory)
+    await monitoringConfig.load()
+    const staticWebDirectory = join(dataDirectory, 'web-dist')
+    await mkdir(join(staticWebDirectory, 'assets'), { recursive: true })
+    await writeFile(join(staticWebDirectory, 'index.html'), '<!doctype html><html><body><div id="root">fixture app</div></body></html>')
+    await writeFile(join(staticWebDirectory, 'assets', 'app-AbCdEf12.js'), 'window.fixtureReady = true')
     const reader: SnapshotReader = { read: async () => { throw new Error('Not sampled') } }
     collector = new MachineCollector(opened.db, reader, 'Europe/Paris')
     auth = new AuthService(opened.native, dataDirectory, () => Date.parse('2026-11-23T12:00:00.000Z'))
@@ -60,6 +68,8 @@ describe('authenticated local API', () => {
       avatars,
       servers,
       javaRuntimes,
+      monitoringConfig,
+      staticWebDirectory,
       webOrigin: WEB_ORIGIN,
       apiPort: 4174,
       now: () => Date.parse('2026-11-23T12:00:00.000Z'),
@@ -96,7 +106,121 @@ describe('authenticated local API', () => {
     expect(health.json()).toEqual({ service: 'mmsmanager-local-api', status: 'ok', setupRequired: true })
     const current = await app.inject({ method: 'GET', url: '/api/v1/machine/current' })
     const history = await app.inject({ method: 'GET', url: '/api/v1/machine/history?from=2026-11-23T00%3A00%3A00Z&to=2026-11-23T00%3A01%3A00Z' })
-    expect([current.statusCode, history.statusCode]).toEqual([401, 401])
+    const players = await app.inject({ method: 'GET', url: '/api/v1/dashboard/players' })
+    expect([current.statusCode, history.statusCode, players.statusCode]).toEqual([401, 401, 401])
+  })
+
+  it('allows authenticated members to read the bounded dashboard player summary', async () => {
+    const admin = await bootstrapAdmin()
+    const adminToken = /mmsmanager_session=([^;]+)/.exec(admin.cookieHeader)?.[1]
+    const principal = adminToken ? auth.authenticate(adminToken) : null
+    const member = await auth.createUser(principal!, {
+      username: 'summary-member', displayName: 'Summary Member', password: 'synthetic summary member pass 93!', role: 'member',
+    })
+    expect(member.role).toBe('member')
+    const session = await auth.login('summary-member', 'synthetic summary member pass 93!')
+    const response = await app.inject({
+      method: 'GET', url: '/api/v1/dashboard/players',
+      headers: { ...requestHeaders, cookie: `mmsmanager_session=${session.sessionToken}; mmsmanager_csrf=${session.csrfToken}` },
+    })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({ summary: { playersOnline: 0, complete: true, registeredServerCount: 0, pollIntervalMs: 15_000 } })
+  })
+
+  it('serves the production web build and direct SPA routes from the same origin', async () => {
+    const page = await app.inject({ method: 'GET', url: '/machine/history', headers: { host: '127.0.0.1:4174' } })
+    expect(page.statusCode).toBe(200)
+    expect(page.headers['content-type']).toContain('text/html')
+    expect(page.body).toContain('fixture app')
+    expect(page.headers['content-security-policy']).toContain("frame-ancestors 'none'")
+    const asset = await app.inject({ method: 'GET', url: '/assets/app-AbCdEf12.js', headers: { host: '127.0.0.1:4174' } })
+    expect(asset.statusCode).toBe(200)
+    expect(asset.headers['content-type']).toContain('text/javascript')
+    expect(asset.headers['cache-control']).toContain('immutable')
+    const missingAsset = await app.inject({ method: 'GET', url: '/assets/missing.js', headers: { host: '127.0.0.1:4174' } })
+    expect(missingAsset.statusCode).toBe(404)
+    const missingApi = await app.inject({ method: 'GET', url: '/api/v1/missing', headers: { host: '127.0.0.1:4174' } })
+    expect(missingApi.statusCode).toBe(404)
+    expect(missingApi.body).not.toContain('fixture app')
+  })
+
+  it('persists and applies validated monitoring settings for administrators', async () => {
+    const session = await bootstrapAdmin()
+    const read = await app.inject({ method: 'GET', url: '/api/v1/admin/monitoring-settings', headers: { ...requestHeaders, cookie: session.cookieHeader } })
+    expect(read.statusCode).toBe(200)
+    expect(read.json()).toEqual({ fastSampleMs: 1_000, historySaveMs: 10_000, diskRefreshMs: 30_000, statusPollMs: 15_000 })
+    const update = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/monitoring-settings',
+      headers: { ...requestHeaders, cookie: session.cookieHeader, 'x-mms-csrf': session.csrfToken, 'content-type': 'application/json' },
+      payload: { fastSampleMs: 2_000, historySaveMs: 15_000, diskRefreshMs: 45_000, statusPollMs: 25_000 },
+    })
+    expect(update.statusCode).toBe(200)
+    expect(update.json()).toEqual({ fastSampleMs: 2_000, historySaveMs: 15_000, diskRefreshMs: 45_000, statusPollMs: 25_000 })
+    expect(collector.health.intervalMs).toBe(2_000)
+    expect(await new AppConfigStore(dataDirectory).load()).toEqual({ fastSampleMs: 2_000, historySaveMs: 15_000, diskRefreshMs: 45_000, statusPollMs: 25_000 })
+    const invalid = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/monitoring-settings',
+      headers: { ...requestHeaders, cookie: session.cookieHeader, 'x-mms-csrf': session.csrfToken, 'content-type': 'application/json' },
+      payload: { fastSampleMs: 500, historySaveMs: 15_000, diskRefreshMs: 45_000, statusPollMs: 25_000 },
+    })
+    expect(invalid.statusCode).toBe(400)
+    expect((await new AppConfigStore(dataDirectory).load()).fastSampleMs).toBe(2_000)
+  })
+
+  it('deletes accounts only with administrator CSRF and username confirmation while retaining anonymous audit history', async () => {
+    const adminSession = await bootstrapAdmin()
+    const adminCookieToken = /mmsmanager_session=([^;]+)/.exec(adminSession.cookieHeader)?.[1]
+    const adminPrincipal = adminCookieToken ? auth.authenticate(adminCookieToken) : null
+    expect(adminPrincipal?.role).toBe('administrator')
+    const member = await auth.createUser(adminPrincipal!, {
+      username: 'fixture-member', displayName: 'Fixture Member', password: 'synthetic member passphrase 8H!long', role: 'member',
+    })
+    const memberSession = await auth.login('fixture-member', 'synthetic member passphrase 8H!long')
+    const memberPrincipal = auth.authenticate(memberSession.sessionToken)!
+    const avatarKey = 'a'.repeat(32)
+    const avatarPath = join(avatars.directory, `${avatarKey}.webp`)
+    await writeFile(avatarPath, Buffer.from('fixture image'), { mode: 0o600 })
+    auth.updateAvatarKey(memberPrincipal, avatarKey)
+    opened.native.prepare('INSERT INTO user_notification_reads (user_id, event_id, read_at) VALUES (?, ?, ?)').run(member.id, 'fixture-event', '2026-11-23T12:00:00.000Z')
+
+    const denied = await app.inject({
+      method: 'DELETE', url: `/api/v1/admin/users/${member.id}`,
+      headers: { ...requestHeaders, cookie: `mmsmanager_session=${memberSession.sessionToken}; mmsmanager_csrf=${memberSession.csrfToken}`, 'x-mms-csrf': memberSession.csrfToken, 'content-type': 'application/json' },
+      payload: { confirmation: member.username },
+    })
+    expect(denied.statusCode).toBe(403)
+    const mismatch = await app.inject({
+      method: 'DELETE', url: `/api/v1/admin/users/${member.id}`,
+      headers: { ...requestHeaders, cookie: adminSession.cookieHeader, 'x-mms-csrf': adminSession.csrfToken, 'content-type': 'application/json' },
+      payload: { confirmation: 'wrong-name' },
+    })
+    expect(mismatch.statusCode).toBe(400)
+    expect(auth.authenticate(memberSession.sessionToken)).not.toBeNull()
+
+    const deleted = await app.inject({
+      method: 'DELETE', url: `/api/v1/admin/users/${member.id}`,
+      headers: { ...requestHeaders, cookie: adminSession.cookieHeader, 'x-mms-csrf': adminSession.csrfToken, 'content-type': 'application/json' },
+      payload: { confirmation: member.username },
+    })
+    expect(deleted.statusCode).toBe(200)
+    expect(deleted.json()).toEqual({ ok: true, avatarCleanup: 'done' })
+    expect(auth.authenticate(memberSession.sessionToken)).toBeNull()
+    expect(auth.listUsers().users.some((user) => user.id === member.id)).toBe(false)
+    expect(opened.native.prepare('SELECT count(*) AS count FROM user_preferences WHERE user_id = ?').get(member.id)).toEqual({ count: 0 })
+    expect(opened.native.prepare('SELECT count(*) AS count FROM user_notification_reads WHERE user_id = ?').get(member.id)).toEqual({ count: 0 })
+    expect(opened.native.prepare('SELECT action, actor_user_id AS actor, subject_user_id AS subject FROM security_audit_events ORDER BY id DESC LIMIT 1').get()).toEqual({ action: 'user.deleted', actor: adminPrincipal!.userId, subject: null })
+    expect(opened.native.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    await expect(readFile(avatarPath)).rejects.toThrow()
+
+    const selfDelete = await app.inject({
+      method: 'DELETE', url: `/api/v1/admin/users/${adminPrincipal!.userId}`,
+      headers: { ...requestHeaders, cookie: adminSession.cookieHeader, 'x-mms-csrf': adminSession.csrfToken, 'content-type': 'application/json' },
+      payload: { confirmation: 'owner' },
+    })
+    expect(selfDelete.statusCode).toBe(409)
+    expect(auth.getSetupRequired()).toBe(false)
   })
 
   it('returns a proper rate-limit response after a bounded local request burst', async () => {
@@ -470,6 +594,13 @@ describe('authenticated local API', () => {
     const route = `/api/v1/admin/servers/${serverId}/backups`
     expect((await app.inject({ method: 'GET', url: route })).statusCode).toBe(401)
     expect((await app.inject({ method: 'POST', url: route, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: {} })).statusCode).toBe(403)
+    const emptyInventory = await app.inject({ method: 'GET', url: route, headers: adminHeaders })
+    expect(emptyInventory.statusCode, emptyInventory.body).toBe(200)
+    expect(emptyInventory.headers['x-mms-request-id']).toBeTruthy()
+    expect(emptyInventory.json()).toMatchObject({
+      serverId, items: [], truncated: false, storageUsedBytes: 0, storageLimitBytes: expect.any(Number),
+      quotaWarning: false, runtimeStatus: 'stopped',
+    })
     const created = await app.inject({ method: 'POST', url: route, headers: adminHeaders, payload: {} })
     expect(created.statusCode, created.body).toBe(201)
     const backupId = created.json().backup.id as string

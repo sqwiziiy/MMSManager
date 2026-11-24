@@ -98,6 +98,8 @@ export const userUpdateSchema = z.object({
   role: userRoleSchema,
   enabled: z.boolean(),
 }).strict()
+export const userDeleteRequestSchema = z.object({ confirmation: z.string().min(1).max(32) }).strict()
+export const userDeleteResultSchema = z.object({ ok: z.literal(true), avatarCleanup: z.enum(['done', 'pending']) }).strict()
 
 export const userPasswordResetSchema = z.object({ password: passwordSchema }).strict()
 export const profileUpdateSchema = z.object({ displayName: displayNameSchema }).strict()
@@ -164,6 +166,10 @@ export const machineCurrentSchema = z.object({
 export const machineResourcePointSchema = z.object({
   observedAt: z.string().datetime({ offset: true }),
   sampleCount: z.number().int().positive(),
+  cpuSampleCount: z.number().int().nonnegative().optional(),
+  networkSampleCount: z.number().int().nonnegative().optional(),
+  bucketSeconds: z.number().int().positive().optional(),
+  coveragePercent: z.number().finite().min(0).max(100).optional(),
   cpuPercent: nullablePercent,
   memoryUsedBytes: nullableBytes,
   memoryTotalBytes: nullableBytes,
@@ -180,8 +186,24 @@ export const machineHistorySchema = z.object({
   to: z.string().datetime({ offset: true }),
   timeZone: z.string(),
   resolution: z.enum(['raw', 'minute']),
+  bucketSeconds: z.number().int().positive(),
+  coveragePercent: z.number().finite().min(0).max(100),
   points: z.array(machineResourcePointSchema),
 })
+
+export const monitoringSettingsSchema = z.object({
+  fastSampleMs: z.number().int().min(1_000).max(60_000),
+  historySaveMs: z.number().int().min(5_000).max(60_000),
+  diskRefreshMs: z.number().int().min(10_000).max(60_000),
+  statusPollMs: z.number().int().min(5_000).max(30_000),
+}).strict()
+export const monitoringSettingsUpdateSchema = monitoringSettingsSchema
+export const DEFAULT_MONITORING_SETTINGS: z.infer<typeof monitoringSettingsSchema> = {
+  fastSampleMs: 1_000,
+  historySaveMs: 10_000,
+  diskRefreshMs: 30_000,
+  statusPollMs: 15_000,
+}
 
 export const machineCalendarDaySchema = z.object({
   date: z.string().regex(datePattern),
@@ -482,6 +504,14 @@ export const serverStatusSchema = z.object({
   authoritativePlayerList: z.literal(false),
 }).strict()
 export const serverStatusResultSchema = z.object({ status: serverStatusSchema }).strict()
+export const dashboardPlayerSummarySchema = z.object({
+  playersOnline: z.number().int().nonnegative().nullable(),
+  complete: z.boolean(),
+  registeredServerCount: z.number().int().nonnegative(),
+  pollIntervalMs: z.number().int().min(5_000).max(30_000),
+  checkedAt: z.string().datetime({ offset: true }),
+}).strict()
+export const dashboardPlayerSummaryResultSchema = z.object({ summary: dashboardPlayerSummarySchema }).strict()
 export const serverPlayerListSchema = z.object({
   serverId: z.string().uuid(),
   state: z.enum(['authoritative', 'unavailable']),
@@ -869,6 +899,7 @@ export type PublicHealth = z.infer<typeof publicHealthSchema>
 export type MachineCurrent = z.infer<typeof machineCurrentSchema>
 export type MachineResourcePoint = z.infer<typeof machineResourcePointSchema>
 export type MachineHistory = z.infer<typeof machineHistorySchema>
+export type MonitoringSettings = z.infer<typeof monitoringSettingsSchema>
 export type MachineCalendarDay = z.infer<typeof machineCalendarDaySchema>
 export type MachineCalendar = z.infer<typeof machineCalendarSchema>
 export type MachineEvent = z.infer<typeof machineEventSchema>
@@ -902,6 +933,7 @@ export type JvmOptions = z.infer<typeof jvmOptionsSchema>
 export type ServerRuntimeSettings = z.infer<typeof serverRuntimeSettingsSchema>
 export type ServerRuntimeSettingsUpdate = z.infer<typeof serverRuntimeSettingsUpdateSchema>
 export type ServerStatus = z.infer<typeof serverStatusSchema>
+export type DashboardPlayerSummary = z.infer<typeof dashboardPlayerSummarySchema>
 export type ServerPlayerList = z.infer<typeof serverPlayerListSchema>
 export type ServerPlayerAction = z.infer<typeof serverPlayerActionSchema>
 export type ServerPlayerActionResult = z.infer<typeof serverPlayerActionResultSchema>

@@ -6,6 +6,7 @@ export class ApiRequestError extends Error {
     message: string,
     readonly code: string | null = null,
     readonly kind: ApiErrorKind = 'http',
+    readonly requestId: string | null = null,
   ) {
     super(message)
     this.name = 'ApiRequestError'
@@ -88,9 +89,9 @@ function payloadMessage(payload: unknown): { message: string | null; code: strin
   return { message, code }
 }
 
-export function apiErrorFromPayload(status: number, payload: unknown, fallback?: string): ApiRequestError {
+export function apiErrorFromPayload(status: number, payload: unknown, fallback?: string, requestId: string | null = null): ApiRequestError {
   const detail = payloadMessage(payload)
-  return new ApiRequestError(status, detail.message ?? statusFallback(status, fallback), detail.code, errorKind(status))
+  return new ApiRequestError(status, detail.message ?? statusFallback(status, fallback), detail.code, errorKind(status), requestId)
 }
 
 export function apiNetworkError(fallback: string): ApiRequestError {
@@ -121,7 +122,7 @@ export async function apiRequestResponse(url: string, init: RequestInit = {}, op
   reportSessionExpiry(response.status, url, options)
   if (!response.ok) {
     const payload: unknown = await response.clone().json().catch(() => null)
-    throw apiErrorFromPayload(response.status, payload)
+    throw apiErrorFromPayload(response.status, payload, undefined, response.headers.get('x-mms-request-id'))
   }
   return response
 }

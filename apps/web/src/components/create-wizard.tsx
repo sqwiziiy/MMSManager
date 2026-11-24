@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Check, ChevronLeft, ChevronRight, CircleAlert, Cpu, Download, Folder, HardDrive, LoaderCircle, MemoryStick, Server, ShieldCheck, X } from 'lucide-react'
 import type { InstallCatalog, InstallOperation, InstallSoftware, JavaRuntime, ServerInstallRequest, ServerTemplate } from '@mmsmanager/shared'
-import { cancelServerInstall, createServerInstall, getInstallCatalog, getServerInstall, getServerInventory, getJavaRuntimes, scanJavaRuntimes } from '../api/servers'
+import { cancelServerInstall, createServerInstall, getInstallCatalog, getServerInstall, getJavaRuntimes, scanJavaRuntimes } from '../api/servers'
 import { useAuth } from '../state/use-auth'
 import { Button, IconButton } from './ui'
+import { javaRuntimeLabel } from '../lib/java-runtime'
 
 type WizardStep = 'details' | 'software' | 'resources' | 'review'
 const steps: { id: WizardStep; label: string }[] = [
@@ -36,7 +37,6 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
   const [versionCatalog, setVersionCatalog] = useState<InstallCatalog | null>(null)
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [catalogError, setCatalogError] = useState('')
-  const [inventoryRoot, setInventoryRoot] = useState('')
   const [runtimes, setRuntimes] = useState<JavaRuntime[]>([])
   const [javaPath, setJavaPath] = useState('')
   const [javaLoading, setJavaLoading] = useState(false)
@@ -68,11 +68,10 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
   useEffect(() => {
     if (!isAdmin) return
     const controller = new AbortController()
-    void Promise.all([getJavaRuntimes(controller.signal), getServerInventory(controller.signal)])
-      .then(([found, inventory]) => {
+    void getJavaRuntimes(controller.signal)
+      .then((found) => {
         setRuntimes(found)
         setJavaPath((current) => current || found[0]?.path || '')
-        setInventoryRoot(inventory.managedRoot)
       })
       .catch((error: unknown) => { if (!controller.signal.aborted) setJavaError(message(error)) })
     return () => controller.abort()
@@ -124,6 +123,7 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
         const latest = await getServerInstall(operationId)
         if (cancelled) return
         setOperation(latest)
+        if (latest.status === 'completed') window.dispatchEvent(new Event('mmsmanager:server-lifecycle'))
         if (latest.status !== 'completed' && latest.status !== 'failed') timer = setTimeout(() => void poll(), 700)
       } catch (error) {
         if (!cancelled) { setActionError(message(error)); timer = setTimeout(() => void poll(), 1500) }
@@ -185,7 +185,7 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
 
   return <div className="overlay-scrim wizard-scrim" onMouseDown={(event) => event.target === event.currentTarget && !operation && onClose()}>
     <section className="wizard-dialog install-wizard" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
-      <div className="wizard-header install-wizard-header"><div><div className="wizard-kicker"><span className="wizard-kicker-icon"><Server size={14} /></span> Local server setup <span className="install-live-label"><i /> REAL INSTALL</span></div><h2 id="wizard-title">Create server</h2><p>Downloads from official providers into a new managed directory.</p></div><IconButton icon={X} label="Close server setup" onClick={onClose} disabled={installing || cancelling} /></div>
+      <div className="wizard-header install-wizard-header"><div><div className="wizard-kicker"><span className="wizard-kicker-icon"><Server size={14} /></span> Server setup</div><h2 id="wizard-title">Create server</h2><p>Downloads from official providers into a new managed directory.</p></div><IconButton icon={X} label="Close server setup" onClick={onClose} disabled={installing || cancelling} /></div>
       {!operation && <div className="wizard-steps" aria-label="Creation steps">{steps.map((item, index) => <div className={`wizard-step ${step === item.id ? 'active' : ''} ${index < currentIndex ? 'complete' : ''}`} key={item.id}><span>{index < currentIndex ? <Check size={13} /> : `0${index + 1}`}</span><small>{item.label}</small>{index < steps.length - 1 && <i />}</div>)}</div>}
 
       {operation ? <div className="install-progress-view" aria-live="polite">
@@ -216,7 +216,7 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
           <div className="wizard-body install-wizard-body">
             {step === 'details' && <div className="wizard-step-content"><div className="wizard-step-intro"><span className="wizard-content-icon"><Folder size={18} /></span><div><h3>Choose a name and folder</h3><p>Every install uses a new, dedicated directory.</p></div></div>
               <FieldWizard label="Server name"><input autoFocus value={name} maxLength={60} onChange={(event) => setName(event.target.value)} placeholder="e.g. Alder community" /></FieldWizard>
-              <FieldWizard label="New directory name" hint={inventoryRoot ? `Created inside ${inventoryRoot}` : 'Created inside the configured managed server root'}><input value={directoryName} maxLength={64} onChange={(event) => setDirectoryName(event.target.value)} placeholder="alder-community" /></FieldWizard>
+              <FieldWizard label="New directory name" hint="Created in a new managed server folder."><input value={directoryName} maxLength={64} onChange={(event) => setDirectoryName(event.target.value)} placeholder="alder-community" /></FieldWizard>
               <div className="install-info-row"><HardDrive size={15} /><span>Existing files and worlds are never overwritten. Failed partial installs are preserved for review.</span></div>
             </div>}
             {step === 'software' && <div className="wizard-step-content"><div className="wizard-step-intro"><span className="wizard-content-icon"><Download size={18} /></span><div><h3>Select official server software</h3><p>Only stable official releases are offered.</p></div></div>
@@ -234,7 +234,7 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
               {presetNotice && <div className="install-error-inline"><CircleAlert size={15} /><span>{presetNotice}</span></div>}
             </div>}
             {step === 'resources' && <div className="wizard-step-content"><div className="wizard-step-intro"><span className="wizard-content-icon"><MemoryStick size={18} /></span><div><h3>Assign Java and resources</h3><p>Java is selected for this server only.</p></div></div>
-              <div className="install-java-row"><FieldWizard label="Java runtime"><select aria-label="Java runtime" value={javaPath} onChange={(event) => setJavaPath(event.target.value)} disabled={!runtimes.length}>{runtimes.map((runtime) => <option key={runtime.path} value={runtime.path}>Java {runtime.major} · {runtime.vendor ?? 'Runtime'} · {runtime.path}</option>)}</select></FieldWizard><Button kind="secondary" onClick={() => void refreshJava()} disabled={javaLoading}><LoaderCircle className={javaLoading ? 'spin' : ''} size={14} />{javaLoading ? 'Scanning…' : 'Scan runtimes'}</Button></div>
+              <div className="install-java-row"><FieldWizard label="Java runtime"><select aria-label="Java runtime" value={javaPath} onChange={(event) => setJavaPath(event.target.value)} disabled={!runtimes.length}>{runtimes.map((runtime) => <option key={runtime.path} value={runtime.path}>{javaRuntimeLabel(runtime, runtimes)}</option>)}</select></FieldWizard><Button kind="secondary" onClick={() => void refreshJava()} disabled={javaLoading}><LoaderCircle className={javaLoading ? 'spin' : ''} size={14} />{javaLoading ? 'Scanning…' : runtimes.length ? 'Rescan Java' : 'Scan Java'}</Button></div>
               {javaError && <div className="install-error-inline"><CircleAlert size={15} /><span>{javaError}</span></div>}
               {!runtimes.length && <div className="install-info-row"><Cpu size={15} /><span>Java is not scanned automatically. Scan or probe a runtime before installation.</span></div>}
               {requiredJavaMajor && selectedRuntime && selectedRuntime.major < requiredJavaMajor && <div className="install-error-inline"><CircleAlert size={15} /><span>Java {selectedRuntime.major} is too old for this release. Choose Java {requiredJavaMajor} or newer.</span></div>}
@@ -242,7 +242,7 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
               <div className="install-info-row"><ShieldCheck size={15} /><span>New servers bind to loopback initially. A local port check runs before download.</span></div>
             </div>}
             {step === 'review' && <div className="wizard-step-content"><div className="wizard-step-intro"><span className="wizard-content-icon"><Check size={18} /></span><div><h3>Review installation</h3><p>Confirm the provider, directory and startup settings.</p></div></div>
-              <div className="wizard-review-card"><div className="wizard-review-banner"><span className="wizard-review-mark"><Server size={18} /></span><div><strong>{name || 'Untitled server'}</strong><small>New local server · stopped after install</small></div><span className="install-live-label"><i /> REAL</span></div><div className="wizard-review-grid"><div><span>Software</span><strong>{softwareTitle} {version}{software === 'paper' && paperBuild ? ` · build ${paperBuild}` : ''}</strong></div><div><span>Java</span><strong>{selectedRuntime ? `${selectedRuntime.vendor ?? 'Java'} ${selectedRuntime.major}` : 'Not selected'}</strong></div><div><span>Memory</span><strong>{minMemoryMb}–{maxMemoryMb} MB</strong></div><div><span>Port</span><strong>{port}</strong></div><div><span>Folder</span><strong>{normalizedDirectory || 'Not selected'}</strong></div><div><span>Network</span><strong>Loopback only</strong></div></div></div>
+              <div className="wizard-review-card"><div className="wizard-review-banner"><span className="wizard-review-mark"><Server size={18} /></span><div><strong>{name || 'Untitled server'}</strong><small>New server · stopped after install</small></div></div><div className="wizard-review-grid"><div><span>Software</span><strong>{softwareTitle} {version}{software === 'paper' && paperBuild ? ` · build ${paperBuild}` : ''}</strong></div><div><span>Java</span><strong>{selectedRuntime ? `${selectedRuntime.vendor ?? 'Java'} ${selectedRuntime.major}` : 'Not selected'}</strong></div><div><span>Memory</span><strong>{minMemoryMb}–{maxMemoryMb} MB</strong></div><div><span>Port</span><strong>{port}</strong></div><div><span>Folder</span><strong>{normalizedDirectory || 'Not selected'}</strong></div><div><span>Network</span><strong>Loopback only</strong></div></div></div>
               <label className="install-eula-check"><input type="checkbox" checked={eulaAccepted} onChange={(event) => setEulaAccepted(event.target.checked)} /><span>I have read and accept the <a href="https://www.minecraft.net/en-us/eula" target="_blank" rel="noreferrer">Minecraft EULA</a>.</span></label>
               <div className="install-info-row"><ShieldCheck size={15} /><span>The install records <code>eula=true</code> only if you check this box. Otherwise it writes <code>eula=false</code> and the server cannot start.</span></div>
               {actionError && <div className="install-error-inline"><CircleAlert size={15} /><span>{actionError}</span></div>}

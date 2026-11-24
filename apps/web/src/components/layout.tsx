@@ -2,14 +2,16 @@ import { useEffect, useMemo, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, Archive, Blocks, CalendarDays, ChevronDown, ChevronRight, Computer, FilePlus2,
-  Info, LayoutDashboard, Menu, PanelLeftClose, Search, Server, Settings2, ShieldCheck, Users, X,
+  LayoutDashboard, Menu, PanelLeftClose, PanelLeftOpen, Search, Server, Settings2, ShieldCheck, Users, X,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { getLocalServers } from '../api/servers'
 import type { LocalServerSummary } from '@mmsmanager/shared'
 import { Button, IconButton } from './ui'
-import { useMachineMonitor } from '../state/use-machine-monitor'
+import { useMachineStatus } from '../state/use-machine-monitor'
+import { useAuth } from '../state/use-auth'
 import type { AuthUser } from '@mmsmanager/shared'
+import { updateUserPreferences } from '../api/auth'
 
 type NavItem = { label: string; to: string; icon: LucideIcon; exact?: boolean }
 const operations: NavItem[] = [
@@ -26,17 +28,36 @@ const administration: NavItem[] = [
 ]
 
 export function AppShell({ children, onCreate, onSignOut, user, workspaceName }: { children: React.ReactNode; onCreate: () => void; onSignOut: () => void; user: AuthUser; workspaceName: string }) {
+  const { replaceSnapshot } = useAuth()
   const [collapsed, setCollapsed] = useState(user.preferences.compactNavigation)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [sidebarPreferenceError, setSidebarPreferenceError] = useState(false)
+  const [sidebarSaving, setSidebarSaving] = useState(false)
   const [registeredServers, setRegisteredServers] = useState<LocalServerSummary[]>([])
   const location = useLocation()
-  const monitor = useMachineMonitor()
-  const machineLive = monitor.apiStatus === 'online' && monitor.current?.status === 'live'
   const accountNavigation = user.role === 'administrator' ? administration : administration.filter((item) => item.to !== '/users')
 
   useEffect(() => { setCollapsed(user.preferences.compactNavigation) }, [user.preferences.compactNavigation])
+
+  const toggleSidebar = async () => {
+    if (sidebarSaving) return
+    const next = !collapsed
+    setCollapsed(next)
+    setSidebarSaving(true)
+    setSidebarPreferenceError(false)
+    try {
+      const updated = await updateUserPreferences({ compactNavigation: next, defaultLanding: user.preferences.defaultLanding })
+      // Update the shared session snapshot so settings and the shell stay in sync.
+      replaceSnapshot(updated)
+    } catch {
+      setCollapsed(user.preferences.compactNavigation)
+      setSidebarPreferenceError(true)
+    } finally {
+      setSidebarSaving(false)
+    }
+  }
 
   useEffect(() => {
     setMobileOpen(false)
@@ -45,8 +66,10 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
 
   useEffect(() => {
     const controller = new AbortController()
-    void getLocalServers(controller.signal).then(setRegisteredServers).catch(() => undefined)
-    return () => controller.abort()
+    const load = () => { void getLocalServers(controller.signal).then(setRegisteredServers).catch(() => undefined) }
+    load()
+    window.addEventListener('mmsmanager:server-lifecycle', load)
+    return () => { controller.abort(); window.removeEventListener('mmsmanager:server-lifecycle', load) }
   }, [location.pathname])
 
   useEffect(() => {
@@ -76,7 +99,7 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
       <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
         <div className="brand-row">
           <NavLink to="/" className="brand-mark" aria-label="MMSManager dashboard"><span className="brand-glyph"><i /><i /><i /><i /></span><span className="brand-name">MMSManager</span></NavLink>
-          <IconButton icon={PanelLeftClose} label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} className="collapse-sidebar" onClick={() => setCollapsed((value) => !value)} />
+          <IconButton icon={collapsed ? PanelLeftOpen : PanelLeftClose} label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} className="collapse-sidebar" aria-expanded={!collapsed} disabled={sidebarSaving} onClick={() => void toggleSidebar()} />
           <IconButton icon={X} label="Close navigation" className="close-mobile" onClick={() => setMobileOpen(false)} />
         </div>
 
@@ -91,7 +114,7 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
         </div>
 
         <div className="sidebar-bottom">
-          <div className="local-node"><span className="node-icon"><Computer size={16} /></span><div><strong>Local machine</strong><span>{machineLive ? 'Live telemetry' : monitor.apiStatus === 'offline' ? 'API offline' : 'Waiting for sample'}</span></div><span className={`node-dot ${machineLive ? 'live' : ''}`} /></div>
+          <SidebarMachineStatus />
           <button className="profile-trigger" onClick={() => setProfileOpen((value) => !value)} aria-expanded={profileOpen}>
             <ProfileAvatar user={user} /><span className="profile-copy"><strong>{user.displayName}</strong><small>{user.role === 'administrator' ? 'Administrator' : 'Member'}</small></span><ChevronDown size={15} className="profile-chevron" />
           </button>
@@ -107,14 +130,29 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
       <main className="main-panel">
         <header className="topbar">
           <div className="topbar-left"><IconButton icon={Menu} label="Open navigation" className="menu-mobile" onClick={() => setMobileOpen(true)} /><span className="topbar-page">{pageTitle}</span><span className="breadcrumb-divider">/</span><span className="breadcrumb-current">Workspace</span></div>
-          <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd>Ctrl K</kbd></button><span className="topbar-separator" /><span className={`top-demo ${machineLive ? 'machine-live' : ''}`}><span />{machineLive ? 'Local machine · Live' : 'Local machine · Offline'}</span>{user.role === 'administrator' && <Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button>}</div>
+          <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd>Ctrl K</kbd></button><span className="topbar-separator" /><TopbarMachineStatus />{user.role === 'administrator' && <Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button>}</div>
         </header>
-        <div className="global-demo-bar"><span className="demo-bar-mark"><Info size={10} aria-hidden="true" /></span><span><strong>{workspaceName}</strong><span className="demo-bar-divider">·</span> Local server registry connected</span><span className="demo-bar-right">Loopback only</span></div>
+        {sidebarPreferenceError && <div className="sidebar-preference-error" role="status">Sidebar preference could not be saved.</div>}
         <div className="page-content" key={location.pathname}>{children}</div>
       </main>
       {searchOpen && <QuickSearch onClose={() => setSearchOpen(false)} includeUsers={user.role === 'administrator'} registeredServers={registeredServers} />}
     </div>
   )
+}
+
+function SidebarMachineStatus() {
+  const { apiStatus, machineStatus } = useMachineStatus()
+  const live = apiStatus === 'online' && machineStatus === 'live'
+  const problem = apiStatus === 'offline' ? 'API offline' : apiStatus === 'checking' ? 'Checking' : machineStatus === 'stale' ? 'Stale sample' : machineStatus !== 'live' ? 'Waiting for sample' : ''
+  const tone = live ? 'live' : apiStatus === 'offline' ? 'offline' : machineStatus === 'stale' ? 'stale' : ''
+  return <div className="local-node"><span className="node-icon"><Computer size={16} /></span><div><strong>Local machine</strong>{problem && <span>{problem}</span>}</div><span className={`node-dot ${tone}`} role="status" aria-label={live ? 'Machine monitoring is current' : problem} title={live ? 'Monitoring current' : problem} /></div>
+}
+
+function TopbarMachineStatus() {
+  const { apiStatus, machineStatus } = useMachineStatus()
+  const live = apiStatus === 'online' && machineStatus === 'live'
+  const problem = apiStatus === 'offline' ? 'API offline' : apiStatus === 'checking' ? 'Checking' : machineStatus === 'stale' ? 'Stale sample' : machineStatus !== 'live' ? 'Waiting for sample' : ''
+  return <span className={`top-demo ${live ? 'machine-live' : problem ? 'machine-problem' : ''}`} title={problem || 'Monitoring current'} aria-label={live ? 'Local machine monitoring is current' : `Local machine: ${problem}`}><span aria-hidden="true" />Local machine</span>
 }
 
 function NavGroup({ title, items, serverCount }: { title: string; items: NavItem[]; serverCount?: number }) {

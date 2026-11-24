@@ -98,6 +98,34 @@ describe('machine collector persistence', () => {
     opened.native.close()
   })
 
+  it('keeps a fast in-memory sampler while persisting at a slower cadence and aggregating observed peaks', async () => {
+    const opened = await openDatabase({ path: ':memory:' })
+    const start = Date.parse('2026-11-23T10:00:00.000Z')
+    let now = start
+    const collector = new MachineCollector(
+      opened.db,
+      new QueueReader([snapshot(10, 100, 200), snapshot(10, 100, 200), snapshot(20, 200, 300), snapshot(90, 800, 700), snapshot(20, 200, 300), snapshot(10, 100, 200)]),
+      'UTC',
+      1_000,
+      () => now,
+      5_000,
+    )
+    for (let index = 0; index <= 5; index += 1) {
+      now = start + index * 1_000
+      await collector.collectOnce()
+    }
+    const samples = opened.db.select().from(machineSamples).orderBy(asc(machineSamples.collectedAt)).all()
+    const minute = opened.db.select().from(machineMinuteRollups).get()
+    expect(samples).toHaveLength(2)
+    expect(minute?.sampleCount).toBe(2)
+    expect(minute?.cpuCount).toBe(6)
+    expect(minute?.cpuSum && minute.cpuSum / minute.cpuCount).toBeCloseTo(26.67, 1)
+    expect(minute?.cpuMaximum).toBe(90)
+    expect(minute?.memoryPeakUsedBytes).toBe(800)
+    expect(minute?.storagePeakUsedBytes).toBe(700)
+    opened.native.close()
+  })
+
   it('reopens the SQLite file with samples and rollups intact', async () => {
     temporaryDirectory = await mkdtemp(join(tmpdir(), 'mmsmanager-reopen-'))
     const databasePath = join(temporaryDirectory, 'mmsmanager.sqlite')

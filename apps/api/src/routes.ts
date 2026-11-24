@@ -4,6 +4,9 @@ import rateLimit from '@fastify/rate-limit'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import Fastify from 'fastify'
 import { timingSafeEqual } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import { realpath, stat } from 'node:fs/promises'
+import { extname, resolve, sep } from 'node:path'
 import {
   adminUsersSchema,
   auditRecordsSchema,
@@ -21,6 +24,8 @@ import {
   machineCurrentSchema,
   machineDaySchema,
   machineHistorySchema,
+  monitoringSettingsSchema,
+  monitoringSettingsUpdateSchema,
   installCatalogQuerySchema,
   installCatalogSchema,
   installOperationIdSchema,
@@ -35,6 +40,7 @@ import {
   serverRuntimeSettingsResultSchema,
   serverRuntimeSettingsUpdateSchema,
   serverStatusResultSchema,
+  dashboardPlayerSummaryResultSchema,
   serverPlayerListResultSchema,
   serverPlayerActionRequestSchema,
   serverPlayerActionResultSchema,
@@ -80,6 +86,8 @@ import {
   userCreateSchema,
   userIdParamSchema,
   userPasswordResetSchema,
+  userDeleteRequestSchema,
+  userDeleteResultSchema,
   userPreferencesSchema,
   userUpdateSchema,
   workspacePreferencesSchema,
@@ -96,6 +104,8 @@ import {
   serverTemplateResultSchema,
 } from '@mmsmanager/shared'
 import { API_HOST, WEB_ORIGIN } from './config.js'
+import { DEFAULT_MONITORING_SETTINGS } from './app-config.js'
+import type { AppConfigStore } from './app-config.js'
 import type { AppDatabase } from './db/client.js'
 import type { MachineCollector } from './machine/collector.js'
 import { MachineHistoryService } from './machine/history.js'
@@ -148,7 +158,9 @@ function requestHostAllowed(host: string | undefined, webOrigin: string, apiPort
   if (!host) return false
   const normalized = host.toLowerCase()
   const webPort = new URL(webOrigin).port || '80'
+  const configuredOriginHost = new URL(webOrigin).host.toLowerCase()
   const allowed = new Set([
+    configuredOriginHost,
     '127.0.0.1', 'localhost', 'localhost:80', '127.0.0.1:80',
     `127.0.0.1:${apiPort}`, `localhost:${apiPort}`,
     `127.0.0.1:${webPort}`, `localhost:${webPort}`,
@@ -207,7 +219,11 @@ function respondAuthFailure(error: unknown, reply: FastifyReply): boolean {
     return true
   }
   if (error.code === 'locked') {
-    reply.code(409).send({ error: { code: 'LAST_ADMIN', message: 'This change would remove the last enabled administrator.' } })
+    reply.code(409).send({ error: { code: 'ADMIN_ACCESS_PROTECTED', message: 'This action is blocked to protect administrator access.' } })
+    return true
+  }
+  if (error.code === 'confirmation') {
+    reply.code(400).send({ error: { code: 'CONFIRMATION_MISMATCH', message: 'The typed username did not match.' } })
     return true
   }
   if (error.code === 'current-password') {
@@ -233,9 +249,12 @@ export async function createApiApp(options: {
   rateLimitMax?: number
   installFetch?: typeof fetch
   now?: () => number
+  monitoringConfig?: AppConfigStore
+  onMonitoringSettingsChanged?: (settings: { fastSampleMs: number; historySaveMs: number; diskRefreshMs: number; statusPollMs: number }) => void
+  staticWebDirectory?: string
 }): Promise<FastifyInstance> {
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, trustProxy: false })
-  const history = new MachineHistoryService(options.db, options.timeZone, options.now)
+  const history = new MachineHistoryService(options.db, options.timeZone, options.now, options.monitoringConfig?.get().historySaveMs)
   const activity = new ActivityFeedService(options.db)
   const notifications = new NotificationService(options.db, activity, options.now)
   const templates = new ServerTemplateService(options.db, options.now)
@@ -246,6 +265,7 @@ export async function createApiApp(options: {
   const runtimeSettings = new ServerRuntimeSettingsService(options.db, options.servers, processes, options.javaRuntimes, options.now)
   const properties = new ServerPropertiesManager(options.db, options.servers, options.now)
   const serverStatus = new ServerStatusService(options.db, options.now)
+  serverStatus.configurePollInterval(options.monitoringConfig?.get().statusPollMs ?? DEFAULT_MONITORING_SETTINGS.statusPollMs)
   const mods = new ServerModsService(options.db, options.servers, processes, options.now)
   const files = new ServerFileService(options.db, options.servers, processes, options.now)
   const backups = new ServerBackupService(options.db, options.servers, processes, options.now)
@@ -298,10 +318,15 @@ export async function createApiApp(options: {
       }
     }
   })
-  app.addHook('onSend', async (_request, reply, payload) => {
-    reply.header('cache-control', 'no-store')
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (!reply.getHeader('cache-control')) reply.header('cache-control', 'no-store')
     reply.header('x-content-type-options', 'nosniff')
     reply.header('referrer-policy', 'no-referrer')
+    reply.header('x-frame-options', 'DENY')
+    reply.header('permissions-policy', 'camera=(), microphone=(), geolocation=()')
+    reply.header('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+    if (secureCookies) reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains')
+    reply.header('x-mms-request-id', request.id)
     return payload
   })
 
@@ -543,6 +568,19 @@ export async function createApiApp(options: {
       throw error
     }
   })
+  app.delete('/api/v1/admin/users/:userId', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(userIdParamSchema, request.params)
+    const input = parse(userDeleteRequestSchema, request.body)
+    try {
+      const deleted = options.auth.deleteUser(request.principal!, params.userId, input.confirmation)
+      let avatarCleanup: 'done' | 'pending' = 'done'
+      try { await options.avatars.remove(deleted.avatarKey) } catch { avatarCleanup = 'pending' }
+      return reply.send(userDeleteResultSchema.parse({ ok: true, avatarCleanup }))
+    } catch (error) {
+      if (respondAuthFailure(error, reply)) return reply
+      throw error
+    }
+  })
   app.post('/api/v1/admin/users/:userId/password', { preHandler: requireAdminMutation }, async (request, reply) => {
     const params = parse(userIdParamSchema, request.params)
     const input = parse(userPasswordResetSchema, request.body)
@@ -646,6 +684,8 @@ export async function createApiApp(options: {
     const params = parse(localServerIdSchema, request.params)
     return serverStatusResultSchema.parse({ status: await serverStatus.get(params.serverId) })
   })
+  app.get('/api/v1/dashboard/players', { preHandler: requireAuth }, async () =>
+    dashboardPlayerSummaryResultSchema.parse({ summary: await serverStatus.getPlayerSummary() }))
   app.get('/api/v1/admin/servers/:serverId/players', { preHandler: requireAdmin }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverPlayerListResultSchema.parse({ players: await processes.players(params.serverId) })
@@ -701,15 +741,21 @@ export async function createApiApp(options: {
   })
   app.post('/api/v1/admin/servers/:serverId/start', { preHandler: requireAdminMutation }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
-    return reply.code(202).send(serverRuntimeResultSchema.parse({ runtime: await processes.start(params.serverId, request.principal!.userId) }))
+    const runtime = await processes.start(params.serverId, request.principal!.userId)
+    serverStatus.invalidate(params.serverId)
+    return reply.code(202).send(serverRuntimeResultSchema.parse({ runtime }))
   })
   app.post('/api/v1/admin/servers/:serverId/stop', { preHandler: requireAdminMutation }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
-    return serverRuntimeResultSchema.parse({ runtime: await processes.stop(params.serverId, request.principal!.userId) })
+    const runtime = await processes.stop(params.serverId, request.principal!.userId)
+    serverStatus.invalidate(params.serverId)
+    return serverRuntimeResultSchema.parse({ runtime })
   })
   app.post('/api/v1/admin/servers/:serverId/restart', { preHandler: requireAdminMutation }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
-    return serverRuntimeResultSchema.parse({ runtime: await processes.restart(params.serverId, request.principal!.userId) })
+    const runtime = await processes.restart(params.serverId, request.principal!.userId)
+    serverStatus.invalidate(params.serverId)
+    return serverRuntimeResultSchema.parse({ runtime })
   })
   app.post('/api/v1/admin/servers/:serverId/confirm-stopped', { preHandler: requireAdminMutation }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
@@ -875,7 +921,19 @@ export async function createApiApp(options: {
     const params = parse(notificationEventIdParamSchema, request.params)
     return notificationsResponseSchema.parse(notifications.markRead(request.principal!.userId, request.principal!.role, params.eventId))
   })
-  app.get('/api/v1/machine/current', { preHandler: requireAuth }, async () => machineCurrentSchema.parse(history.getCurrent(options.collector.health)))
+  app.get('/api/v1/machine/current', { preHandler: requireAuth }, async () => machineCurrentSchema.parse(history.getCurrent(options.collector.health, options.collector.currentSnapshot)))
+  app.get('/api/v1/monitoring-settings', { preHandler: requireAuth }, async () => monitoringSettingsSchema.parse(options.monitoringConfig?.get() ?? DEFAULT_MONITORING_SETTINGS))
+  app.get('/api/v1/admin/monitoring-settings', { preHandler: requireAdmin }, async () => monitoringSettingsSchema.parse(options.monitoringConfig?.get() ?? DEFAULT_MONITORING_SETTINGS))
+  app.patch('/api/v1/admin/monitoring-settings', { preHandler: requireAdminMutation }, async (request) => {
+    if (!options.monitoringConfig) throw new Error('Monitoring settings are not available in this API process.')
+    const input = parse(monitoringSettingsUpdateSchema, request.body)
+    const settings = await options.monitoringConfig.update(input)
+    options.collector.configure(settings.fastSampleMs, settings.historySaveMs)
+    history.setPersistenceInterval(settings.historySaveMs)
+    serverStatus.configurePollInterval(settings.statusPollMs)
+    options.onMonitoringSettingsChanged?.(settings)
+    return monitoringSettingsSchema.parse(settings)
+  })
   app.get('/api/v1/machine/history', { preHandler: requireAuth }, async (request) => {
     const query = parse(historyQuerySchema, request.query)
     return machineHistorySchema.parse(history.getHistory(query.from, query.to, query.limit))
@@ -897,6 +955,41 @@ export async function createApiApp(options: {
     const query = parse(serverHistoryDayQuerySchema, request.query)
     return serverHistoryDayResultSchema.parse({ day: serverHistory.getDay(query.scope, query.date) })
   })
+
+  if (options.staticWebDirectory) {
+    const root = resolve(options.staticWebDirectory)
+    const rootRealPath = await realpath(root)
+    app.get('/*', async (request, reply) => {
+      let pathname: string
+      try { pathname = decodeURIComponent(new URL(request.raw.url ?? '/', 'http://mmsmanager.local').pathname) }
+      catch { return reply.code(400).send({ error: { code: 'BAD_PATH', message: 'The requested page path is invalid.' } }) }
+      if (pathname === '/api' || pathname.startsWith('/api/')) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'This endpoint does not exist.' } })
+      const relativePath = pathname === '/' ? 'index.html' : pathname.slice(1)
+      let candidate = resolve(root, relativePath)
+      if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) return reply.code(404).send()
+      let metadata: Awaited<ReturnType<typeof stat>> | null = null
+      try { metadata = await stat(candidate) } catch { /* SPA route or absent asset */ }
+      if (!metadata?.isFile()) {
+        if (extname(pathname)) return reply.code(404).send()
+        candidate = resolve(root, 'index.html')
+        try { metadata = await stat(candidate) } catch { return reply.code(503).send() }
+      }
+      if (!metadata?.isFile()) return reply.code(404).send()
+      let candidateRealPath: string
+      try { candidateRealPath = await realpath(candidate) } catch { return reply.code(404).send() }
+      if (candidateRealPath !== rootRealPath && !candidateRealPath.startsWith(`${rootRealPath}${sep}`)) return reply.code(404).send()
+      const contentTypes: Record<string, string> = {
+        '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+        '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon',
+        '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.json': 'application/json; charset=utf-8',
+      }
+      const extension = extname(candidate).toLowerCase()
+      reply.header('content-type', contentTypes[extension] ?? 'application/octet-stream')
+      reply.header('content-length', metadata.size)
+      reply.header('cache-control', extension === '.html' ? 'no-store' : /-[A-Za-z0-9_-]{8,}\./.test(candidate) ? 'public, max-age=31536000, immutable' : 'no-cache')
+      return reply.send(createReadStream(candidateRealPath))
+    })
+  }
 
   await app.ready()
   return app
