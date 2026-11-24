@@ -278,7 +278,7 @@ test('first-run administrator setup creates the protected local workspace', asyn
   expect(page.url()).not.toContain('/setup')
 })
 
-test('desktop navigation keeps server pages clearly in preview mode', async ({ page }) => {
+test('Stage 5G removes demo records from operational pages', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   page.on('response', (response) => {
@@ -297,18 +297,24 @@ test('desktop navigation keeps server pages clearly in preview mode', async ({ p
   await page.getByRole('link', { name: 'Servers' }).click()
   await expect(page.getByRole('heading', { name: 'Servers' })).toBeVisible()
   await expect(page.getByRole('link', { name: /Alder SMP/ })).toHaveCount(0)
+  await expect(page.getByText('No local servers registered', { exact: true })).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-servers-empty-desktop.png'), fullPage: true })
   await page.goto('/servers/alder-smp/overview')
-  await expect(page.getByRole('heading', { name: 'Server overview' })).toBeVisible()
-  await page.getByRole('link', { name: 'Console' }).click()
-  await expect(page.getByText('Sample console stream')).toBeVisible()
-  await page.getByRole('link', { name: 'Logs' }).click()
-  await expect(page.getByRole('heading', { name: 'Log history' })).toBeVisible()
-  await page.getByRole('link', { name: 'Players' }).click()
-  await expect(page.getByRole('heading', { name: 'Player directory' })).toBeVisible()
-  await page.getByRole('link', { name: 'Mods' }).click()
-  await expect(page.getByRole('heading', { name: 'Installed mods' })).toBeVisible()
-  await page.getByRole('link', { name: 'Properties' }).click()
-  await expect(page.getByRole('heading', { name: 'Visual properties' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Server not found' })).toBeVisible()
+  await expect(page.getByText('Alder SMP', { exact: true })).toHaveCount(0)
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-legacy-server-route-desktop.png'), fullPage: true })
+  await page.goto('/activity')
+  await expect(page.getByText('No combined event feed yet', { exact: true })).toBeVisible()
+  await expect(page.getByText('MiraWoods', { exact: true })).toHaveCount(0)
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-activity-empty-desktop.png'), fullPage: true })
+  await page.goto('/backups')
+  await expect(page.getByText('No managed servers available', { exact: true })).toBeVisible()
+  await expect(page.getByText('Alder SMP', { exact: true })).toHaveCount(0)
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-backups-empty-desktop.png'), fullPage: true })
+  await page.goto('/templates')
+  await expect(page.getByText('No templates available', { exact: true })).toBeVisible()
+  await expect(page.getByText('Survival community', { exact: true })).toHaveCount(0)
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-templates-empty-desktop.png'), fullPage: true })
   expect(errors).toEqual([])
 })
 
@@ -563,6 +569,10 @@ test('managed server backups preview, download and restore at desktop and mobile
   await page.setViewportSize({ width: 1440, height: 1000 })
   await signIn(page)
   const { serverId } = await mockLocalServer(page, 'stopped')
+  await page.goto('/backups')
+  await expect(page.getByRole('heading', { name: 'Recent snapshots' })).toBeVisible()
+  await expect(page.getByText('Local Fixture ·', { exact: false }).first()).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-backups-registered-desktop.png'), fullPage: true })
   await page.goto(`/servers/${serverId}/backups`)
   await expect(page.getByRole('heading', { name: 'Private server snapshots' })).toBeVisible()
   await expect(page.getByText('No auto-delete')).toBeVisible()
@@ -721,12 +731,13 @@ test('managed worlds and server history use isolated real-data API fixtures', as
 test('mobile dashboard, account screens and navigation fit a narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await signIn(page)
+  const { serverId } = await mockLocalServer(page)
   const routes = [
-    ['/', 'Dashboard'], ['/servers', 'Servers'], ['/servers/alder-smp/overview', 'Server overview'],
-    ['/servers/alder-smp/logs', 'Log history'], ['/servers/alder-smp/mods', 'Installed mods'],
-    ['/servers/alder-smp/properties', 'Visual properties'], ['/machine', 'Machine'],
-    ['/users', 'Users'], ['/profile', 'Profile'], ['/settings', 'Settings'],
-  ] as const
+    ['/', 'Dashboard'], ['/servers', 'Servers'], [`/servers/${serverId}/overview`, 'Local Fixture'],
+    [`/servers/${serverId}/logs`, 'Process output'], [`/servers/${serverId}/mods`, 'Installed mods'],
+    [`/servers/${serverId}/properties`, 'Server properties'], ['/activity', 'Activity'], ['/backups', 'Backups'],
+    ['/templates', 'Templates'], ['/machine', 'Machine'], ['/users', 'Users'], ['/profile', 'Profile'], ['/settings', 'Settings'],
+  ]
   for (const [route, heading] of routes) {
     await page.goto(route)
     await expect(page.getByRole('heading', { name: heading }).first()).toBeVisible()
@@ -736,6 +747,17 @@ test('mobile dashboard, account screens and navigation fit a narrow viewport', a
     if (route === '/users') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-users-mobile.png'), fullPage: true })
     if (route === '/profile') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-profile-mobile.png'), fullPage: true })
     if (route === '/settings') await page.screenshot({ path: resolve(screenshotDir, 'stage-03-settings-mobile.png'), fullPage: true })
+    if (route === '/activity') await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-activity-mobile.png'), fullPage: true, animations: 'disabled' })
+    if (route === '/backups') {
+      const openServerBackups = page.getByRole('link', { name: 'Open server backups' }).first()
+      await expect(openServerBackups).toBeVisible()
+      const bounds = await openServerBackups.boundingBox()
+      if (!bounds) throw new Error('The backup navigation link has no visible bounds.')
+      expect(bounds.x).toBeGreaterThanOrEqual(0)
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(390)
+      await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-backups-mobile.png'), fullPage: true, animations: 'disabled' })
+    }
+    if (route === '/templates') await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-templates-mobile.png'), fullPage: true, animations: 'disabled' })
   }
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await page.locator('.sidebar.mobile-open .nav-link[href="/machine"]').click()

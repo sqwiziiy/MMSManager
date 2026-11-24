@@ -1,6 +1,6 @@
 # MMSManager
 
-MMSManager is a local-first workspace for Minecraft server operators. It includes real, read-only metrics from the Linux host, persistent machine history, an authenticated local server-folder inventory, an official-provider installer, and lifecycle controls for processes created by MMSManager. Fictional server cards and sample data remain clearly marked; an imported folder remains read only and unmanaged.
+MMSManager is a local-first workspace for Minecraft server operators. It includes real, read-only metrics from the Linux host, persistent machine history, an authenticated local server-folder inventory, an official-provider installer, and lifecycle controls for processes created by MMSManager. Imported folders remain read only and unmanaged.
 
 ## Run locally
 
@@ -84,4 +84,5 @@ pnpm build
 - The local server registry, Java version checks, Vanilla/Fabric/Paper installation, panel-owned start/stop, basic process console/logs, typed managed `server.properties` editing and backup restore, Fabric mods/Paper plugins and constrained managed-server file operations are local-only features. Imported folders remain read-only and unmanaged. File edits are bounded, recoverable and Admin-only.
 - Per-server CPU comes only from the verified owned process; status-ping player counts and process console identities show their own source and freshness. Fixed player actions are Admin-only and use response verification. Fabric mods and Paper plugins use the local file-backed manager; the managed-server Files page supports bounded, recoverable file operations. Worlds inventory and server history are read only; managed-server backup and restore are local, stopped-only Administrator actions. Typed Runtime settings, safe owned-process Restart and persisted stopped-server backup schedules are real local features. Optional RCON and scheduled restarts are not implemented.
 - User creation, roles, profile, password, avatar and workspace/personal settings are backed by the local SQLite workspace. They do not control Minecraft permissions or server access.
+- Global Activity and Templates are currently honest empty/preview states; global Backups aggregates actual retained snapshots for managed servers. Unknown text-slug server URLs return not found instead of loading demo records. The UI API client applies consistent same-origin, CSRF and session-expiry handling.
 - No RCON, SSH, remote host, LAN API or arbitrary OS shell endpoint is included. The API and Vite remain loopback-only.

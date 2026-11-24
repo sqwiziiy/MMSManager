@@ -9,6 +9,7 @@ import { getLocalServers } from '../api/servers'
 import { useAuth } from '../state/use-auth'
 import { useMachineMonitor } from '../state/use-machine-monitor'
 import { formatBytes, formatPercent, formatTimestamp } from '../lib/format'
+import { apiErrorMessage } from '../api/client'
 
 export function DashboardPage({ onCreate }: { onCreate: () => void }) {
   const [registered, setRegistered] = useState<LocalServerSummary[]>([])
@@ -22,7 +23,7 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
       setServerError(null)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
-      setServerError(error instanceof Error ? error.message : 'The local server registry is unavailable.')
+      setServerError(apiErrorMessage(error, 'The local server registry is unavailable.'))
     } finally { setServerLoading(false) }
   }, [])
   useEffect(() => { const controller = new AbortController(); void loadServers(controller.signal); return () => controller.abort() }, [loadServers])

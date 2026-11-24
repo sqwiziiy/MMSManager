@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, Archive, ArrowDownToLine, ArrowRight, CalendarClock, CalendarDays, ChevronRight, CircleHelp,
-  CloudDownload, Cpu, Database, FolderSearch, HardDrive, Layers3, MemoryStick, Monitor, Plus,
-  RefreshCw, Search, Server, ShieldCheck, Wifi,
+  Activity, Archive, ArrowRight, CalendarDays, ChevronRight, CircleHelp,
+  Cpu, Database, FolderSearch, HardDrive, Layers3, MemoryStick, Monitor, Plus,
+  RefreshCw, Search, Server, Wifi,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { activities, servers } from '../data'
-import { MetricTrack, WorldBlocks } from '../components/charts'
-import { Badge, Button, Card, ComingSoon, DisabledButton, PageHeading, PreviewFlag, SectionHeading, StatusDot } from '../components/ui'
+import type { LocalServerSummary, ServerBackup } from '@mmsmanager/shared'
+import { MetricTrack } from '../components/charts'
+import { Badge, Button, Card, DisabledButton, EmptyNote, PageHeading, SectionHeading } from '../components/ui'
 import { useMachineMonitor } from '../state/use-machine-monitor'
 import { LiveResourceChart } from '../components/live-chart'
 import { formatBytes, formatPercent, formatRate, formatTimestamp } from '../lib/format'
-import { getLocalServers, getServerInventory } from '../api/servers'
-import type { LocalServerSummary, ServerInventory } from '@mmsmanager/shared'
+import { getLocalServers, getServerBackups, getServerInventory } from '../api/servers'
+import type { ServerInventory } from '@mmsmanager/shared'
 import { useAuth } from '../state/use-auth'
 import { ImportServerDialog } from '../components/import-server-dialog'
 import { JavaInventoryCard } from '../components/java-inventory'
+import { apiErrorMessage } from '../api/client'
 
 type ServerFilter = 'All servers' | 'Running' | 'Other'
 
@@ -41,7 +42,7 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
       setLocalError(null)
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
-      setLocalError(error instanceof Error ? error.message : 'The local server list could not be loaded.')
+      setLocalError(apiErrorMessage(error, 'The local server list could not be loaded.'))
     } finally {
       setLoadingLocal(false)
     }
@@ -119,50 +120,62 @@ function MachineMetricTrack({ label, value, detail, tone }: { label: string; val
 }
 
 export function ActivityPage() {
-  const [filter, setFilter] = useState<'All events' | 'Good' | 'Warnings'>('All events')
-  const filtered = activities.filter((item) => filter === 'All events' || (filter === 'Good' ? item.tone === 'good' : item.tone === 'warn'))
-  return <div className="page-stack"><PageHeading title="Activity" description="A readable history built from fictional sample events." actions={<PreviewFlag />} />
-    <div className="list-toolbar"><div className="filter-tabs" role="tablist" aria-label="Filter activity">{(['All events', 'Good', 'Warnings'] as const).map((item) => <button key={item} role="tab" aria-selected={filter === item} className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div><span className="table-count">{filtered.length} sample events</span></div>
-    <Card className="activity-table-card"><div className="activity-table-header"><span>Event</span><span>Server</span><span>Details</span><span>Time</span></div>{filtered.map((item) => <div className="activity-table-row" key={item.id}><div className="activity-table-event"><span className={`activity-marker marker-${item.tone}`} /><strong>{item.event}</strong></div><span>{item.server}</span><span className="activity-detail-text">{item.detail}</span><time>{item.time}</time></div>)}</Card>
-    <div className="list-footnote"><span className="footnote-dot" /> Activity is sample history and is not connected to server logs</div>
+  const { snapshot } = useAuth()
+  const isAdmin = snapshot?.user.role === 'administrator'
+  return <div className="page-stack"><PageHeading title="Activity" description="Only events recorded from managed server processes are shown." />
+    <Card><EmptyNote icon={Activity} title="No combined event feed yet" detail="A workspace-wide event feed is not connected. Verified process events remain available in managed server history." /><div className="empty-state-actions">{isAdmin ? <Link className="button button-secondary" to="/machine/history?source=all">Open server history <ArrowRight size={14} /></Link> : <Link className="button button-secondary" to="/servers">Open local servers <ArrowRight size={14} /></Link>}</div></Card>
   </div>
 }
-
-const backupRows = [
-  { server: 'Alder SMP', date: 'Today, 08:00', kind: 'Scheduled snapshot', size: '842 MB', state: 'Complete' },
-  { server: 'Copper Grove', date: 'Today, 06:00', kind: 'Scheduled snapshot', size: '536 MB', state: 'Complete' },
-  { server: 'Alder SMP', date: 'Yesterday, 08:00', kind: 'Scheduled snapshot', size: '831 MB', state: 'Complete' },
-  { server: 'Test Dimension', date: 'Nov 21, 19:30', kind: 'Manual snapshot', size: '1.2 GB', state: 'Complete' },
-]
 
 export function BackupsPage() {
-  return <div className="page-stack"><PageHeading title="Backups" description="Sample restore points for the visual prototype." actions={<DisabledButton icon={Plus}>Create backup</DisabledButton>} />
-    <div className="overview-strip"><div className="overview-number"><span className="overview-icon"><Archive size={17} /></span><div><span>Sample snapshots</span><strong>14<small> shown in preview</small></strong></div></div><div className="overview-number"><span className="overview-icon"><HardDrive size={17} /></span><div><span>Combined size</span><strong>8.4<small> GB mock</small></strong></div></div><div className="overview-number"><span className="overview-icon"><CalendarClock size={17} /></span><div><span>Schedule</span><strong>Daily<small> preview</small></strong></div></div><div className="overview-number"><span className="overview-icon"><ShieldCheck size={17} /></span><div><span>Restore actions</span><strong>Preview<small> only</small></strong></div></div></div>
-    <Card className="data-table-card"><div className="table-title-row"><div><h2>Recent snapshots</h2><p>Fictional records · nothing has been written to disk</p></div><Badge>Mock data</Badge></div><div className="data-table backup-table"><div className="data-table-head"><span>Server</span><span>Created</span><span>Type</span><span>Size</span><span>Status</span><span /></div>{backupRows.map((row, index) => <div className="data-table-row" key={`${row.server}-${index}`}><strong>{row.server}</strong><span>{row.date}</span><span>{row.kind}</span><span>{row.size}</span><Badge tone="good">{row.state}</Badge><Button disabled kind="quiet" icon={ArrowDownToLine}>Restore</Button></div>)}</div><div className="table-mobile-rows">{backupRows.map((row, index) => <div className="backup-mobile-row" key={`${row.server}-mobile-${index}`}><div><strong>{row.server}</strong><span>{row.date} · {row.size}</span></div><Badge tone="good">{row.state}</Badge><DisabledButton icon={ArrowDownToLine}>Restore</DisabledButton></div>)}</div></Card>
-    <div className="preview-note"><Archive size={17} /><span><strong>Backup actions are not connected</strong><small>Scheduling, downloading and restoring will be added after local backend and safety work.</small></span><ComingSoon /></div>
+  const { snapshot } = useAuth()
+  const isAdmin = snapshot?.user.role === 'administrator'
+  const [servers, setServers] = useState<LocalServerSummary[]>([])
+  const [items, setItems] = useState<{ server: LocalServerSummary; backup: ServerBackup }[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    if (!isAdmin) { setLoading(false); return }
+    setLoading(true)
+    try {
+      const registered = await getLocalServers(signal)
+      const eligible = registered.filter((server) => server.source === 'created' && server.managed)
+      const inventories = await Promise.all(eligible.map(async (server) => ({ server, inventory: await getServerBackups(server.id, signal) })))
+      setServers(eligible)
+      setItems(inventories.flatMap(({ server, inventory }) => inventory.items.map((backup) => ({ server, backup }))).sort((a, b) => b.backup.createdAt.localeCompare(a.backup.createdAt)))
+      setError(null)
+    } catch (issue) {
+      if (!(issue instanceof DOMException && issue.name === 'AbortError')) setError(apiErrorMessage(issue, 'The local backup inventory could not be loaded.'))
+    } finally { setLoading(false) }
+  }, [isAdmin])
+  useEffect(() => {
+    const controller = new AbortController()
+    void refresh(controller.signal)
+    return () => controller.abort()
+  }, [refresh, reloadKey])
+
+  return <div className="page-stack"><PageHeading title="Backups" description="Verified snapshots from MMSManager-managed local servers." />
+    {!isAdmin ? <Card><EmptyNote icon={Archive} title="Administrator access required" detail="Backup inventory is restricted because snapshots can contain private server data." /></Card>
+      : error ? <div className="monitor-offline-banner" role="alert"><span><HardDrive size={16} /><strong>Local backup inventory unavailable</strong><small>{error}</small></span><Button icon={RefreshCw} onClick={() => setReloadKey((key) => key + 1)}>Retry</Button></div>
+        : loading ? <Card><div className="local-server-empty"><span className="loading-pulse" /><span>Loading local backup inventory…</span></div></Card>
+          : items.length === 0 ? <Card><EmptyNote icon={Archive} title={servers.length ? 'No backups saved yet' : 'No managed servers available'} detail={servers.length ? 'Create a verified snapshot from a managed server’s Backups tab. Imported folders are read only.' : 'Only servers created by MMSManager can be backed up. No sample records are shown here.'} />{servers[0] && <div className="empty-state-actions"><Link className="button button-secondary" to={`/servers/${servers[0].id}/backups`}>Open {servers[0].name} backups <ArrowRight size={14} /></Link></div>}</Card>
+            : <Card className="data-table-card"><div className="table-title-row"><div><h2>Recent snapshots</h2><p>{items.length} retained records shown · backup inventory is local to this computer</p></div><Badge>{servers.length} managed {servers.length === 1 ? 'server' : 'servers'}</Badge></div><div className="local-backup-list">{items.map(({ server, backup }) => <article className="workspace-backup-row" key={`${server.id}-${backup.id}`}>
+              <div className="local-backup-icon"><Archive size={15} /></div><div className="local-backup-row-main"><strong>{server.name} · {new Date(backup.createdAt).toLocaleString()}</strong><span>{formatBytes(backup.archiveSizeBytes)} archive · {backup.fileCount.toLocaleString()} files · {formatBytes(backup.totalFileBytes)} content</span><small>SHA-256 {backup.archiveSha256.slice(0, 16)}… · {backup.excludedCount ? `${backup.excludedCount} excluded paths` : 'no excluded paths'}</small></div><Badge tone={backup.origin === 'manual' ? 'good' : 'neutral'}>{backup.origin === 'scheduled' ? 'Scheduled' : backup.origin === 'system' ? 'Safety snapshot' : 'Manual'}</Badge><Link className="button button-secondary" to={`/servers/${server.id}/backups`}>Open server backups</Link>
+            </article>)}</div></Card>}
   </div>
 }
 
-const templates = [
-  { name: 'Survival community', type: 'Fabric', version: '1.21.4', tag: 'Lightweight', description: 'A small community world with performance basics and voice chat.' },
-  { name: 'Paper essentials', type: 'Paper', version: '1.21.4', tag: 'Plugins', description: 'A focused plugin-ready base for a small public server.' },
-  { name: 'Modded exploration', type: 'NeoForge', version: '1.20.1', tag: 'Modded', description: 'A sample modded profile with additional memory allocation.' },
-]
-
 export function TemplatesPage() {
-  return <div className="page-stack"><PageHeading title="Templates" description="Starting points shown for browsing. Nothing will be downloaded." actions={<DisabledButton icon={CloudDownload}>Import template</DisabledButton>} /><div className="template-intro"><div><Layers3 size={17} /><span>Curated setup examples</span></div><p>Choose a software family and compare a possible setup. Template installation is not available in this preview.</p></div><div className="template-grid">{templates.map((template, index) => <Card className="template-card" key={template.name}><div className={`template-visual template-tone-${index}`}><div className="template-visual-grid">{Array.from({ length: 16 }, (_, cell) => <i key={cell} />)}</div><span className="template-visual-version">{template.version}</span></div><div className="template-card-copy"><div className="template-card-meta"><Badge>{template.type}</Badge><span>{template.tag}</span></div><h2>{template.name}</h2><p>{template.description}</p><div className="template-card-foot"><span>Preview profile</span><DisabledButton icon={ArrowRight}>View setup</DisabledButton></div></div></Card>)}</div><div className="list-footnote"><span className="footnote-dot" /> Example templates only · no provider catalog is connected</div></div>
+  return <div className="page-stack"><PageHeading title="Templates" description="No local template catalog is connected." actions={<DisabledButton icon={Layers3}>Browse templates</DisabledButton>} /><Card><EmptyNote icon={Layers3} title="No templates available" detail="The template gallery is a preview-only area. No template records or provider downloads are shown here." /></Card></div>
 }
 
 export { UsersPage, ProfilePage, SettingsPage } from './account-pages'
 
 export function NotFoundPage() {
-  return <div className="not-found"><div className="not-found-code">404</div><h1>Page not found</h1><p>This preview route does not exist.</p><Link className="button button-secondary" to="/">Return to dashboard <ChevronRight size={15} /></Link></div>
+  return <div className="not-found"><div className="not-found-code">404</div><h1>Page not found</h1><p>This page is not part of the local workspace.</p><Link className="button button-secondary" to="/">Return to dashboard <ChevronRight size={15} /></Link></div>
 }
 
 export function DataSummary({ title, value, detail }: { title: string; value: string; detail: string }) {
   return <div className="compact-summary"><span>{title}</span><strong>{value}</strong><small>{detail}</small></div>
-}
-
-export function SmallServerList() {
-  return <div className="small-server-list">{servers.map((server) => <Link to={`/servers/${server.id}`} key={server.id}><WorldBlocks server={server} compact /><span><strong>{server.name}</strong><small>{server.software} · {server.version}</small></span><StatusDot status={server.status} /></Link>)}</div>
 }

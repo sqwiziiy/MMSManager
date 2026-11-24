@@ -35,24 +35,10 @@ import {
 import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult } from '@mmsmanager/shared'
 import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
+import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestResponse, reportSessionExpiry } from './client'
 
-async function request<T>(url: string, schema: { parse: (value: unknown) => T }, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers)
-  headers.set('accept', 'application/json')
-  const method = (init.method ?? 'GET').toUpperCase()
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
-    headers.set('content-type', 'application/json')
-    const csrf = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith('mmsmanager_csrf='))?.slice('mmsmanager_csrf='.length)
-    if (csrf) headers.set('x-mms-csrf', csrf)
-  }
-  const response = await fetch(url, { ...init, method, headers, credentials: 'same-origin' })
-  if (response.status === 401) window.dispatchEvent(new Event('mmsmanager:session-expired'))
-  const raw: unknown = await response.json().catch(() => null)
-  if (!response.ok) {
-    const body = raw as { error?: { message?: unknown } } | null
-    throw new Error(typeof body?.error?.message === 'string' ? body.error.message : 'The local server request could not be completed.')
-  }
-  return schema.parse(raw)
+function request<T>(url: string, schema: { parse: (value: unknown) => T }, init: RequestInit = {}): Promise<T> {
+  return apiRequest(url, schema, init)
 }
 
 export async function getLocalServers(signal?: AbortSignal): Promise<LocalServerSummary[]> {
@@ -170,14 +156,9 @@ export async function restoreServerBackup(serverId: string, backupId: string, co
 }
 
 export async function downloadServerBackup(serverId: string, backupId: string): Promise<Blob> {
-  const response = await fetch(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/backups/${encodeURIComponent(backupId)}/download`, {
-    method: 'GET', credentials: 'same-origin', headers: { accept: 'application/octet-stream' },
+  const response = await apiRequestResponse(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/backups/${encodeURIComponent(backupId)}/download`, {
+    method: 'GET', headers: { accept: 'application/octet-stream' },
   })
-  if (response.status === 401) window.dispatchEvent(new Event('mmsmanager:session-expired'))
-  if (!response.ok) {
-    const body = await response.json().catch(() => null) as { error?: { message?: unknown } } | null
-    throw new Error(typeof body?.error?.message === 'string' ? body.error.message : 'The backup download could not be completed.')
-  }
   return response.blob()
 }
 
@@ -295,35 +276,29 @@ export async function getServerMods(serverId: string, signal?: AbortSignal): Pro
   return response.mods
 }
 
-function csrfToken(): string | null {
-  const item = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith('mmsmanager_csrf='))
-  if (!item) return null
-  try { return decodeURIComponent(item.slice('mmsmanager_csrf='.length)) } catch { return null }
-}
-
 export function uploadServerFile(serverId: string, directory: string, file: File, onProgress: (percent: number) => void): Promise<ServerFileList> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     const query = new URLSearchParams({ path: directory })
-    xhr.open('POST', `/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/upload?${query}`)
+    const url = `/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/upload?${query}`
+    xhr.open('POST', url)
     xhr.withCredentials = true
     xhr.setRequestHeader('accept', 'application/json')
-    const csrf = csrfToken()
+    const csrf = apiCsrfToken()
     if (csrf) xhr.setRequestHeader('x-mms-csrf', csrf)
     xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.min(99, Math.round(event.loaded / event.total * 100))) }
-    xhr.onerror = () => reject(new Error('The file upload could not reach the local API.'))
+    xhr.onerror = () => reject(apiNetworkError('The file upload could not reach the local API.'))
     xhr.onabort = () => reject(new Error('The file upload was cancelled.'))
     xhr.onload = () => {
-      if (xhr.status === 401) window.dispatchEvent(new Event('mmsmanager:session-expired'))
+      reportSessionExpiry(xhr.status, url)
       let raw: unknown = null
       try { raw = JSON.parse(xhr.responseText) as unknown } catch { /* handled as a local API error */ }
       if (xhr.status < 200 || xhr.status >= 300) {
-        const body = raw as { error?: { message?: unknown } } | null
-        reject(new Error(typeof body?.error?.message === 'string' ? body.error.message : 'The file upload could not be completed.'))
+        reject(apiErrorFromPayload(xhr.status, raw, 'The file upload could not be completed.'))
         return
       }
       try { onProgress(100); resolve(serverFileListSchema.parse(raw)) }
-      catch { reject(new Error('The local API returned an invalid server file inventory.')) }
+      catch { reject(apiInvalidResponseError()) }
     }
     const body = new FormData()
     body.append('file', file, file.name)
@@ -333,13 +308,10 @@ export function uploadServerFile(serverId: string, directory: string, file: File
 
 export async function downloadServerFile(serverId: string, path: string): Promise<void> {
   const query = new URLSearchParams({ path })
-  const response = await fetch(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/download?${query}`, { credentials: 'same-origin', headers: { accept: 'application/octet-stream' } })
-  if (response.status === 401) window.dispatchEvent(new Event('mmsmanager:session-expired'))
-  if (!response.ok) {
-    const raw = await response.json().catch(() => null) as { error?: { message?: unknown } } | null
-    throw new Error(typeof raw?.error?.message === 'string' ? raw.error.message : 'The file download could not be completed.')
-  }
-  const fileName = decodeURIComponent(response.headers.get('content-disposition')?.match(/filename\*=UTF-8''([^;]+)/i)?.[1] ?? 'server-file')
+  const response = await apiRequestResponse(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/download?${query}`, { headers: { accept: 'application/octet-stream' } })
+  let fileName = 'server-file'
+  const encodedName = response.headers.get('content-disposition')?.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encodedName) { try { fileName = decodeURIComponent(encodedName) } catch { /* keep the safe fallback name */ } }
   const objectUrl = URL.createObjectURL(await response.blob())
   const anchor = document.createElement('a')
   anchor.href = objectUrl
@@ -353,27 +325,27 @@ export async function downloadServerFile(serverId: string, path: string): Promis
 export function uploadServerMod(serverId: string, file: File, onProgress: (percent: number) => void): Promise<ServerModsInventory> {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest()
-    request.open('POST', `/api/v1/admin/servers/${encodeURIComponent(serverId)}/mods`)
+    const url = `/api/v1/admin/servers/${encodeURIComponent(serverId)}/mods`
+    request.open('POST', url)
     request.withCredentials = true
     request.setRequestHeader('accept', 'application/json')
-    const csrf = csrfToken()
+    const csrf = apiCsrfToken()
     if (csrf) request.setRequestHeader('x-mms-csrf', csrf)
     request.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.min(99, Math.round(event.loaded / event.total * 100))) }
-    request.onerror = () => reject(new Error('The mod upload could not reach the local API.'))
+    request.onerror = () => reject(apiNetworkError('The mod upload could not reach the local API.'))
     request.onabort = () => reject(new Error('The mod upload was cancelled.'))
     request.onload = () => {
-      if (request.status === 401) window.dispatchEvent(new Event('mmsmanager:session-expired'))
+      reportSessionExpiry(request.status, url)
       let raw: unknown = null
       try { raw = JSON.parse(request.responseText) as unknown } catch { /* handled as a local API error */ }
       if (request.status < 200 || request.status >= 300) {
-        const error = raw as { error?: { message?: unknown } } | null
-        reject(new Error(typeof error?.error?.message === 'string' ? error.error.message : 'The mod upload could not be completed.'))
+        reject(apiErrorFromPayload(request.status, raw, 'The mod upload could not be completed.'))
         return
       }
       try {
         onProgress(100)
         resolve(serverModsInventoryResultSchema.parse(raw).mods)
-      } catch { reject(new Error('The local API returned an invalid mod inventory.')) }
+      } catch { reject(apiInvalidResponseError()) }
     }
     const body = new FormData()
     body.append('file', file, file.name)
