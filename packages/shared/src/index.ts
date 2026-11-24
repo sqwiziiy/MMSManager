@@ -208,6 +208,48 @@ export const machineEventSchema = z.object({
   source: z.literal('local-backend'),
 })
 
+export const activityCategorySchema = z.enum(['all', 'system', 'security', 'server', 'player', 'backup', 'automation'])
+export const activityQuerySchema = z.object({
+  category: activityCategorySchema.default('all'),
+  serverId: z.string().uuid().optional(),
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+  cursor: z.string().max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+}).strict().superRefine((value, context) => {
+  if (value.from && value.to && Date.parse(value.from) > Date.parse(value.to)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['to'], message: 'The end of the activity range must be after its start.' })
+  }
+})
+export const activityItemSchema = z.object({
+  id: z.string().min(1).max(120),
+  occurredAt: z.string().datetime({ offset: true }),
+  category: activityCategorySchema.exclude(['all']),
+  title: z.string().min(1).max(120),
+  description: z.string().max(300),
+  outcome: z.enum(['success', 'failure', 'info']),
+  source: z.enum(['machine', 'audit', 'server-action', 'server-log']),
+  serverId: z.string().uuid().nullable(),
+  serverName: z.string().max(60).nullable(),
+  actor: z.string().max(60).nullable(),
+  redacted: z.boolean(),
+}).strict()
+export const activityResponseSchema = z.object({
+  events: z.array(activityItemSchema).max(100),
+  nextCursor: z.string().max(512).nullable(),
+  hasMore: z.boolean(),
+}).strict()
+export const notificationItemSchema = z.object({
+  eventId: z.string().min(1).max(120),
+  event: activityItemSchema,
+  readAt: z.string().datetime({ offset: true }).nullable(),
+}).strict()
+export const notificationsResponseSchema = z.object({
+  items: z.array(notificationItemSchema).max(100),
+  unreadCount: z.number().int().nonnegative().max(100),
+}).strict()
+export const notificationEventIdParamSchema = z.object({ eventId: z.string().min(1).max(120).regex(/^(?:machine|audit|server-action|server-log|restart):[^/]+$/) }).strict()
+
 export const machineDaySummarySchema = z.object({
   sampleCount: z.number().int().nonnegative(),
   firstSampleAt: z.string().datetime({ offset: true }).nullable(),
@@ -283,6 +325,7 @@ export const localServerSummarySchema = z.object({
 })
 export const localServerListSchema = z.object({ servers: z.array(localServerSummarySchema) })
 export const serverImportResultSchema = z.object({ server: localServerSummarySchema })
+export const serverMetadataUpdateSchema = z.object({ name: z.string().trim().min(1).max(60) }).strict()
 export const serverImportRequestSchema = z.object({
   path: z.string().trim().min(1).max(1024),
 }).strict()
@@ -304,6 +347,24 @@ export const serverImportPreviewSchema = z.object({
   worldFolders: z.array(z.string()),
   alreadyRegistered: z.boolean(),
 })
+
+export const serverTemplateInputSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  software: z.enum(['vanilla', 'fabric', 'paper']),
+  version: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){1,3}$/),
+  minMemoryMb: z.number().int().min(512).max(131072),
+  maxMemoryMb: z.number().int().min(512).max(131072),
+}).strict().refine((value) => value.maxMemoryMb >= value.minMemoryMb, {
+  path: ['maxMemoryMb'], message: 'Maximum memory must be at least the minimum memory.',
+})
+export const serverTemplateIdParamSchema = z.object({ templateId: z.string().uuid() }).strict()
+export const serverTemplateSchema = serverTemplateInputSchema.extend({
+  id: z.string().uuid(),
+  createdAt: z.string().datetime({ offset: true }),
+  updatedAt: z.string().datetime({ offset: true }),
+}).strict()
+export const serverTemplateListSchema = z.object({ templates: z.array(serverTemplateSchema).max(200) }).strict()
+export const serverTemplateResultSchema = z.object({ template: serverTemplateSchema }).strict()
 
 export const installSoftwareSchema = z.enum(['vanilla', 'fabric', 'paper'])
 export const installCatalogQuerySchema = z.object({
@@ -481,6 +542,7 @@ export const serverConsoleResponseSchema = z.object({ entries: z.array(serverCon
 export const serverConsoleQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().default(0), limit: z.coerce.number().int().min(1).max(500).default(200) }).strict()
 export const serverCommandSchema = z.object({ command: z.string().min(1).max(256).refine((value) => value.trim().length > 0 && !/[\u0000-\u001f\u007f]/.test(value)) }).strict()
 export const serverPropertySettingsSchema = z.object({
+  onlineMode: z.boolean(),
   motd: z.string().max(120).refine((value) => !/[\u0000-\u001f\u007f]/.test(value), 'MOTD cannot contain control characters.'),
   gameMode: z.enum(['survival', 'creative', 'adventure', 'spectator']),
   difficulty: z.enum(['peaceful', 'easy', 'normal', 'hard']),
@@ -493,6 +555,7 @@ export const serverPropertySettingsSchema = z.object({
   allowNether: z.boolean(),
 }).strict()
 export const serverPropertiesUpdateSchema = serverPropertySettingsSchema.partial().strict().refine((value) => Object.keys(value).length > 0, 'At least one property change is required.')
+export const serverPropertiesUpdateRequestSchema = serverPropertySettingsSchema.partial().extend({ confirmOnlineModeChange: z.boolean().optional() }).strict().refine((value) => Object.keys(value).some((key) => key !== 'confirmOnlineModeChange'), 'At least one property change is required.')
 export const serverPropertiesBackupSchema = z.object({ id: z.string().uuid(), createdAt: z.string().datetime({ offset: true }), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
 export const serverPropertiesResponseSchema = z.object({
   settings: serverPropertySettingsSchema,
@@ -809,6 +872,12 @@ export type MachineHistory = z.infer<typeof machineHistorySchema>
 export type MachineCalendarDay = z.infer<typeof machineCalendarDaySchema>
 export type MachineCalendar = z.infer<typeof machineCalendarSchema>
 export type MachineEvent = z.infer<typeof machineEventSchema>
+export type ActivityCategory = z.infer<typeof activityCategorySchema>
+export type ActivityQuery = z.infer<typeof activityQuerySchema>
+export type ActivityItem = z.infer<typeof activityItemSchema>
+export type ActivityResponse = z.infer<typeof activityResponseSchema>
+export type NotificationItem = z.infer<typeof notificationItemSchema>
+export type NotificationsResponse = z.infer<typeof notificationsResponseSchema>
 export type MachineDay = z.infer<typeof machineDaySchema>
 export type UserRole = z.infer<typeof userRoleSchema>
 export type LandingPage = z.infer<typeof landingPageSchema>
@@ -819,7 +888,10 @@ export type AuditRecord = z.infer<typeof auditRecordSchema>
 export type RegisteredServer = z.infer<typeof registeredServerSchema>
 export type ServerInventory = z.infer<typeof serverInventorySchema>
 export type LocalServerSummary = z.infer<typeof localServerSummarySchema>
+export type ServerMetadataUpdate = z.infer<typeof serverMetadataUpdateSchema>
 export type ServerImportPreview = z.infer<typeof serverImportPreviewSchema>
+export type ServerTemplateInput = z.infer<typeof serverTemplateInputSchema>
+export type ServerTemplate = z.infer<typeof serverTemplateSchema>
 export type JavaRuntime = z.infer<typeof javaRuntimeSchema>
 export type InstallSoftware = z.infer<typeof installSoftwareSchema>
 export type InstallCatalog = z.infer<typeof installCatalogSchema>

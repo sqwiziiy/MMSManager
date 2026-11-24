@@ -3,8 +3,9 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { eq } from 'drizzle-orm'
 import { openDatabase } from '../db/client.js'
-import { users } from '../db/schema.js'
+import { localServerEvents, localServers, users } from '../db/schema.js'
 import { inspectJavaRuntime, JavaRuntimeError, JavaRuntimeRegistry } from './java.js'
 import { ServerRegistry } from './registry.js'
 
@@ -86,6 +87,17 @@ describe('local server inventory', () => {
     expect(await readFile(join(serverDirectory, 'eula.txt'), 'utf8')).toBe(beforeEula)
     expect(await readFile(join(serverDirectory, 'server-1.21.4.jar'))).toEqual(beforeJar)
     expect((await lstat(join(serverDirectory, 'world'))).isDirectory()).toBe(true)
+  })
+
+  it('edits only display metadata and preserves the imported directory and files', async () => {
+    const serverDirectory = await makeServer('Metadata Fixture')
+    const beforeProperties = await readFile(join(serverDirectory, 'server.properties'), 'utf8')
+    const server = await registry.registerImport({ path: serverDirectory, name: 'Before edit', minMemoryMb: 1024, maxMemoryMb: 2048 }, userId)
+    const updated = await registry.updateMetadata(server.id, 'After edit', userId)
+    expect(updated.name).toBe('After edit')
+    expect(opened.db.select().from(localServers).where(eq(localServers.id, server.id)).get()?.directory).toBe(serverDirectory)
+    expect(await readFile(join(serverDirectory, 'server.properties'), 'utf8')).toBe(beforeProperties)
+    expect(opened.db.select().from(localServerEvents).where(eq(localServerEvents.action, 'server-metadata-updated')).get()).toMatchObject({ serverId: server.id, actorUserId: userId })
   })
 
   it('rejects paths outside configured roots, directories that are symlinks, and duplicate registration', async () => {

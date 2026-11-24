@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { check, index, integer, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { check, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 export const machines = sqliteTable('machines', {
   id: text('id').primaryKey(),
@@ -176,6 +176,33 @@ export const userPreferences = sqliteTable('user_preferences', {
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
   check('user_preferences_landing_check', sql`${table.defaultLanding} IN ('dashboard', 'machine')`),
+])
+
+export const serverTemplates = sqliteTable('server_templates', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  software: text('software', { enum: ['vanilla', 'fabric', 'paper'] }).notNull(),
+  version: text('version').notNull(),
+  minMemoryMb: integer('min_memory_mb').notNull(),
+  maxMemoryMb: integer('max_memory_mb').notNull(),
+  createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+  updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('server_templates_name_unique').on(sql`lower(${table.name})`),
+  index('server_templates_updated_idx').on(table.updatedAt),
+  check('server_templates_software_check', sql`${table.software} IN ('vanilla', 'fabric', 'paper')`),
+  check('server_templates_memory_check', sql`${table.minMemoryMb} >= 512 AND ${table.maxMemoryMb} >= ${table.minMemoryMb} AND ${table.maxMemoryMb} <= 131072`),
+])
+
+export const userNotificationReads = sqliteTable('user_notification_reads', {
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  eventId: text('event_id').notNull(),
+  readAt: text('read_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.eventId], name: 'user_notification_reads_pk' }),
+  index('user_notification_reads_read_idx').on(table.userId, table.readAt),
 ])
 
 export const auditEvents = sqliteTable('security_audit_events', {

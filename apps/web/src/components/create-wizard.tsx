@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Check, ChevronLeft, ChevronRight, CircleAlert, Cpu, Download, Folder, HardDrive, LoaderCircle, MemoryStick, Server, ShieldCheck, X } from 'lucide-react'
-import type { InstallCatalog, InstallOperation, InstallSoftware, JavaRuntime, ServerInstallRequest } from '@mmsmanager/shared'
-import { createServerInstall, getInstallCatalog, getServerInstall, getServerInventory, getJavaRuntimes, scanJavaRuntimes } from '../api/servers'
+import type { InstallCatalog, InstallOperation, InstallSoftware, JavaRuntime, ServerInstallRequest, ServerTemplate } from '@mmsmanager/shared'
+import { cancelServerInstall, createServerInstall, getInstallCatalog, getServerInstall, getServerInventory, getJavaRuntimes, scanJavaRuntimes } from '../api/servers'
 import { useAuth } from '../state/use-auth'
 import { Button, IconButton } from './ui'
 
@@ -17,15 +17,18 @@ const softwareOptions: { id: InstallSoftware; title: string; description: string
   { id: 'paper', title: 'Paper', description: 'Plugin-ready server software', mark: 'P' },
 ]
 
-export function CreateServerWizard({ onClose }: { onClose: () => void }) {
+export function CreateServerWizard({ onClose, preset }: { onClose: () => void; preset?: ServerTemplate }) {
   const auth = useAuth()
   const navigate = useNavigate()
   const isAdmin = auth.snapshot?.user.role === 'administrator'
   const [step, setStep] = useState<WizardStep>('details')
-  const [name, setName] = useState('Local community server')
-  const [directoryName, setDirectoryName] = useState('community-server')
-  const [software, setSoftware] = useState<InstallSoftware>('vanilla')
-  const [version, setVersion] = useState('')
+  const [name, setName] = useState(preset?.name ?? 'Local community server')
+  const [directoryName, setDirectoryName] = useState(() => {
+    const safe = (preset?.name ?? 'community-server').toLowerCase().replace(/[^a-z0-9._ -]+/g, '-').replace(/^[^a-z0-9]+/, '').trim().replace(/\s+/g, '-').slice(0, 64)
+    return safe && safe !== '.' && safe !== '..' ? safe : 'server-from-template'
+  })
+  const [software, setSoftware] = useState<InstallSoftware>(preset?.software ?? 'vanilla')
+  const [version, setVersion] = useState(preset?.version ?? '')
   const [loaderVersion, setLoaderVersion] = useState('')
   const [installerVersion, setInstallerVersion] = useState('')
   const [paperBuild, setPaperBuild] = useState<number | undefined>()
@@ -38,18 +41,22 @@ export function CreateServerWizard({ onClose }: { onClose: () => void }) {
   const [javaPath, setJavaPath] = useState('')
   const [javaLoading, setJavaLoading] = useState(false)
   const [javaError, setJavaError] = useState('')
-  const [minMemoryMb, setMinMemoryMb] = useState(1024)
-  const [maxMemoryMb, setMaxMemoryMb] = useState(4096)
+  const [minMemoryMb, setMinMemoryMb] = useState(preset?.minMemoryMb ?? 1024)
+  const [maxMemoryMb, setMaxMemoryMb] = useState(preset?.maxMemoryMb ?? 4096)
   const [port, setPort] = useState(25565)
   const [eulaAccepted, setEulaAccepted] = useState(false)
   const [operation, setOperation] = useState<InstallOperation | null>(null)
+  const [cancelling, setCancelling] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [actionError, setActionError] = useState('')
+  const [presetNotice, setPresetNotice] = useState('')
   const currentIndex = steps.findIndex((item) => item.id === step)
   const selectedRuntime = runtimes.find((runtime) => runtime.path === javaPath) ?? null
   const requiredJavaMajor = versionCatalog?.requiredJavaMajor ?? null
   const softwareTitle = softwareOptions.find((option) => option.id === software)?.title ?? software
   const selectedArtifactBuild = software === 'paper' ? paperBuild : undefined
+  const presetSoftware = preset?.software
+  const presetVersion = preset?.version
   const canContinue = step !== 'software' || Boolean(catalog && version && !catalogLoading && !catalogError && (software !== 'fabric' || loaderVersion) && (software !== 'paper' || paperBuild))
 
   useEffect(() => {
@@ -80,12 +87,13 @@ export function CreateServerWizard({ onClose }: { onClose: () => void }) {
     setVersionCatalog(null)
     void getInstallCatalog(software, undefined, controller.signal).then((next) => {
       setCatalog(next)
+      if (presetSoftware === software && presetVersion && !next.versions.includes(presetVersion)) setPresetNotice(`The saved ${presetSoftware} ${presetVersion} version is no longer listed. Choose an available version below.`)
       setVersion((current) => next.versions.includes(current) ? current : next.versions[0] ?? '')
       if (software === 'fabric') setInstallerVersion(next.installerVersion ?? '')
     }).catch((error: unknown) => { if (!controller.signal.aborted) setCatalogError(message(error)) })
       .finally(() => { if (!controller.signal.aborted) setCatalogLoading(false) })
     return () => controller.abort()
-  }, [software, isAdmin])
+  }, [software, isAdmin, presetSoftware, presetVersion])
 
   useEffect(() => {
     if (!isAdmin || !version) return
@@ -140,6 +148,7 @@ export function CreateServerWizard({ onClose }: { onClose: () => void }) {
   const chooseSoftware = (next: InstallSoftware) => {
     if (software === next) return
     setSoftware(next)
+    setPresetNotice('')
     setVersion('')
     setLoaderVersion('')
     setPaperBuild(undefined)
@@ -164,22 +173,32 @@ export function CreateServerWizard({ onClose }: { onClose: () => void }) {
   const next = () => setStep(steps[currentIndex + 1]!.id)
   const installDone = operation?.status === 'completed'
   const installing = Boolean(operation && ['pending', 'downloading', 'validating'].includes(operation.status))
+  const installCancelled = operation?.error?.code === 'INSTALL_CANCELLED'
+  const cancelInstallation = async () => {
+    if (!operation || !window.confirm('Cancel this installation? Any files already created will remain in the managed folder for review.')) return
+    setCancelling(true)
+    setActionError('')
+    try { setOperation(await cancelServerInstall(operation.id)) }
+    catch (error) { setActionError(message(error)) }
+    finally { setCancelling(false) }
+  }
 
   return <div className="overlay-scrim wizard-scrim" onMouseDown={(event) => event.target === event.currentTarget && !operation && onClose()}>
     <section className="wizard-dialog install-wizard" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
-      <div className="wizard-header install-wizard-header"><div><div className="wizard-kicker"><span className="wizard-kicker-icon"><Server size={14} /></span> Local server setup <span className="install-live-label"><i /> REAL INSTALL</span></div><h2 id="wizard-title">Create server</h2><p>Downloads from official providers into a new managed directory.</p></div><IconButton icon={X} label="Close server setup" onClick={onClose} /></div>
+      <div className="wizard-header install-wizard-header"><div><div className="wizard-kicker"><span className="wizard-kicker-icon"><Server size={14} /></span> Local server setup <span className="install-live-label"><i /> REAL INSTALL</span></div><h2 id="wizard-title">Create server</h2><p>Downloads from official providers into a new managed directory.</p></div><IconButton icon={X} label="Close server setup" onClick={onClose} disabled={installing || cancelling} /></div>
       {!operation && <div className="wizard-steps" aria-label="Creation steps">{steps.map((item, index) => <div className={`wizard-step ${step === item.id ? 'active' : ''} ${index < currentIndex ? 'complete' : ''}`} key={item.id}><span>{index < currentIndex ? <Check size={13} /> : `0${index + 1}`}</span><small>{item.label}</small>{index < steps.length - 1 && <i />}</div>)}</div>}
 
       {operation ? <div className="install-progress-view" aria-live="polite">
         <div className={`install-result-icon ${installDone ? 'success' : operation.status === 'failed' ? 'failure' : ''}`}>{operation.status === 'failed' ? <CircleAlert size={23} /> : installDone ? <Check size={24} /> : <LoaderCircle className="spin" size={22} />}</div>
-        <p className="eyebrow">{installDone ? 'Installation complete' : operation.status === 'failed' ? 'Installation stopped' : 'Installation in progress'}</p>
-        <h3>{installDone ? `${operation.name} is installed` : operation.status === 'failed' ? 'Could not finish setup' : operation.phase.replaceAll('-', ' ')}</h3>
+        <p className="eyebrow">{installDone ? 'Installation complete' : installCancelled ? 'Installation cancelled' : operation.status === 'failed' ? 'Installation stopped' : 'Installation in progress'}</p>
+        <h3>{installDone ? `${operation.name} is installed` : installCancelled ? 'Setup was cancelled' : operation.status === 'failed' ? 'Could not finish setup' : operation.phase.replaceAll('-', ' ')}</h3>
         <p>{installDone ? 'The server is registered locally and is currently stopped.' : operation.error?.message ?? `Installing ${operation.software} ${operation.version} into a new managed folder.`}</p>
         {installing && <div className="install-progress-track" role="progressbar" aria-label="Installation progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={operation.progress}><span style={{ width: `${operation.progress}%` }} /></div>}
         <div className="install-progress-meta"><span>{operation.status === 'completed' ? 'Complete' : `${operation.progress}%`}</span><span>{operation.directoryName}</span></div>
         {operation.error && <div className="install-error-card"><strong>{operation.error.code.replaceAll('_', ' ')}</strong>{operation.partialDirectory && <span>Partial files were preserved for review under the managed root.</span>}</div>}
         {installDone && <div className="install-summary-list"><div><span>Software</span><strong>{softwareTitle} · {operation.version}</strong></div><div><span>Java</span><strong>{selectedRuntime ? `Java ${selectedRuntime.major}` : 'Selected runtime'}</strong></div><div><span>Memory</span><strong>{minMemoryMb}–{maxMemoryMb} MB</strong></div><div><span>EULA</span><strong>{eulaAccepted ? 'Accepted explicitly' : 'Not accepted'}</strong></div></div>}
         <div className="install-progress-actions">
+          {installing && <Button kind="danger" icon={CircleAlert} disabled={cancelling} onClick={() => void cancelInstallation()}>{cancelling ? 'Cancelling…' : 'Cancel installation'}</Button>}
           {operation.status === 'failed' && <Button kind="secondary" onClick={() => {
             if (operation.partialDirectory) {
               const suffix = `-retry-${String(Date.now()).slice(-5)}`
@@ -212,6 +231,7 @@ export function CreateServerWizard({ onClose }: { onClose: () => void }) {
               {requiredJavaMajor && <div className="install-info-row"><Cpu size={15} /><span>Mojang metadata requires Java {requiredJavaMajor} or newer for this Minecraft release.</span></div>}
               {catalogLoading && <div className="install-inline-status"><LoaderCircle className="spin" size={14} /> Contacting official version metadata…</div>}
               {catalogError && <div className="install-error-inline"><CircleAlert size={15} /><span>{catalogError}</span></div>}
+              {presetNotice && <div className="install-error-inline"><CircleAlert size={15} /><span>{presetNotice}</span></div>}
             </div>}
             {step === 'resources' && <div className="wizard-step-content"><div className="wizard-step-intro"><span className="wizard-content-icon"><MemoryStick size={18} /></span><div><h3>Assign Java and resources</h3><p>Java is selected for this server only.</p></div></div>
               <div className="install-java-row"><FieldWizard label="Java runtime"><select aria-label="Java runtime" value={javaPath} onChange={(event) => setJavaPath(event.target.value)} disabled={!runtimes.length}>{runtimes.map((runtime) => <option key={runtime.path} value={runtime.path}>Java {runtime.major} · {runtime.vendor ?? 'Runtime'} · {runtime.path}</option>)}</select></FieldWizard><Button kind="secondary" onClick={() => void refreshJava()} disabled={javaLoading}><LoaderCircle className={javaLoading ? 'spin' : ''} size={14} />{javaLoading ? 'Scanning…' : 'Scan runtimes'}</Button></div>

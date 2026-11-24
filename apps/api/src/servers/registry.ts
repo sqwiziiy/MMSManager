@@ -7,7 +7,7 @@ import type { AppDatabase } from '../db/client.js'
 import { localServerEvents, localServers } from '../db/schema.js'
 
 export class ServerInventoryError extends Error {
-  constructor(readonly code: 'invalid-path' | 'outside-allowlist' | 'not-directory' | 'unsafe-file' | 'duplicate', message: string) {
+  constructor(readonly code: 'invalid-path' | 'outside-allowlist' | 'not-directory' | 'unsafe-file' | 'duplicate' | 'not-found', message: string) {
     super(message)
   }
 }
@@ -246,6 +246,17 @@ export class ServerRegistry {
       throw error
     }
     return (await this.list()).find((server) => server.id === id)!
+  }
+
+  async updateMetadata(serverId: string, name: string, actorUserId: string) {
+    const exists = await this.db.select({ id: localServers.id }).from(localServers).where(eq(localServers.id, serverId)).get()
+    if (!exists) throw new ServerInventoryError('not-found', 'The registered server was not found.')
+    const at = new Date(this.now()).toISOString()
+    this.db.transaction((tx) => {
+      tx.update(localServers).set({ name, updatedAt: at }).where(eq(localServers.id, serverId)).run()
+      tx.insert(localServerEvents).values({ serverId, actorUserId, action: 'server-metadata-updated', outcome: 'success', occurredAt: at, detail: '{}' }).run()
+    })
+    return (await this.listPublic()).find((server) => server.id === serverId)!
   }
 }
 

@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity, Archive, ArrowRight, CalendarDays, ChevronRight, CircleHelp,
-  Cpu, Database, FolderSearch, HardDrive, Layers3, MemoryStick, Monitor, Plus,
-  RefreshCw, Search, Server, Wifi,
+  Cpu, Database, FolderSearch, HardDrive, MemoryStick, Monitor, Plus,
+  RefreshCw, Search, Server, Shield, Users, Wifi,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import type { LocalServerSummary, ServerBackup } from '@mmsmanager/shared'
+import type { ActivityCategory, ActivityItem } from '@mmsmanager/shared'
 import { MetricTrack } from '../components/charts'
-import { Badge, Button, Card, DisabledButton, EmptyNote, PageHeading, SectionHeading } from '../components/ui'
+import { Badge, Button, Card, EmptyNote, PageHeading, SectionHeading } from '../components/ui'
 import { useMachineMonitor } from '../state/use-machine-monitor'
 import { LiveResourceChart } from '../components/live-chart'
 import { formatBytes, formatPercent, formatRate, formatTimestamp } from '../lib/format'
@@ -17,6 +18,7 @@ import { useAuth } from '../state/use-auth'
 import { ImportServerDialog } from '../components/import-server-dialog'
 import { JavaInventoryCard } from '../components/java-inventory'
 import { apiErrorMessage } from '../api/client'
+import { getActivity } from '../api/activity'
 
 type ServerFilter = 'All servers' | 'Running' | 'Other'
 
@@ -122,8 +124,77 @@ function MachineMetricTrack({ label, value, detail, tone }: { label: string; val
 export function ActivityPage() {
   const { snapshot } = useAuth()
   const isAdmin = snapshot?.user.role === 'administrator'
-  return <div className="page-stack"><PageHeading title="Activity" description="Only events recorded from managed server processes are shown." />
-    <Card><EmptyNote icon={Activity} title="No combined event feed yet" detail="A workspace-wide event feed is not connected. Verified process events remain available in managed server history." /><div className="empty-state-actions">{isAdmin ? <Link className="button button-secondary" to="/machine/history?source=all">Open server history <ArrowRight size={14} /></Link> : <Link className="button button-secondary" to="/servers">Open local servers <ArrowRight size={14} /></Link>}</div></Card>
+  const [category, setCategory] = useState<ActivityCategory>('all')
+  const [serverId, setServerId] = useState('')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
+  const [servers, setServers] = useState<LocalServerSummary[]>([])
+  const [events, setEvents] = useState<ActivityItem[]>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const from = fromDate ? new Date(`${fromDate}T00:00:00`).toISOString() : undefined
+  const to = toDate ? new Date(`${toDate}T23:59:59.999`).toISOString() : undefined
+  useEffect(() => {
+    const controller = new AbortController()
+    void getLocalServers(controller.signal).then(setServers).catch(() => undefined)
+    return () => controller.abort()
+  }, [])
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    setError(null)
+    void getActivity({ category, serverId: serverId || undefined, from, to, limit: 30 }, controller.signal).then((response) => {
+      setEvents(response.events)
+      setNextCursor(response.nextCursor)
+      setHasMore(response.hasMore)
+    }).catch((issue: unknown) => {
+      if (!(issue instanceof DOMException && issue.name === 'AbortError')) setError(apiErrorMessage(issue, 'Activity could not be loaded from local history.'))
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [category, serverId, from, to, reloadKey])
+  const loadMore = async () => {
+    if (!nextCursor || loadingMore) return
+    setLoadingMore(true)
+    setError(null)
+    try {
+      const response = await getActivity({ category, serverId: serverId || undefined, from, to, cursor: nextCursor, limit: 30 })
+      setEvents((current) => {
+        const seen = new Set(current.map((event) => event.id))
+        return [...current, ...response.events.filter((event) => !seen.has(event.id))]
+      })
+      setNextCursor(response.nextCursor)
+      setHasMore(response.hasMore)
+    } catch (issue) { setError(apiErrorMessage(issue, 'Older activity could not be loaded.')) }
+    finally { setLoadingMore(false) }
+  }
+  const iconFor = (item: ActivityItem) => item.category === 'security' ? Shield : item.category === 'system' ? Cpu : item.category === 'backup' ? Archive : item.category === 'automation' ? CalendarDays : item.category === 'player' ? Users : Server
+  const displayTime = (value: string) => new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }).format(new Date(value))
+  return <div className="page-stack">
+    <PageHeading title="Activity" description="A durable timeline from the local machine, server actions, player logs and account audit." />
+    <Card className="activity-feed-card">
+      <div className="activity-filters" aria-label="Activity filters">
+        <label><span>Category</span><select aria-label="Filter activity by category" value={category} onChange={(event) => setCategory(event.target.value as ActivityCategory)}>
+          <option value="all">All activity</option><option value="system">Local machine</option>{isAdmin && <option value="security">Account security</option>}
+          <option value="server">Server actions</option><option value="player">Player events</option><option value="backup">Backups</option><option value="automation">Scheduled tasks</option>
+        </select></label>
+        <label><span>Server</span><select aria-label="Filter activity by server" value={serverId} onChange={(event) => setServerId(event.target.value)}><option value="">All servers</option>{servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select></label>
+        <label><span>From</span><input type="date" aria-label="Activity start date" value={fromDate} max={toDate || undefined} onChange={(event) => setFromDate(event.target.value)} /></label>
+        <label><span>To</span><input type="date" aria-label="Activity end date" value={toDate} min={fromDate || undefined} onChange={(event) => setToDate(event.target.value)} /></label>
+      </div>
+      {error && <div className="activity-feed-error" role="alert"><strong>Activity unavailable</strong><span>{error}</span><Button kind="secondary" icon={RefreshCw} onClick={() => setReloadKey((value) => value + 1)}>Retry</Button></div>}
+      {loading ? <div className="local-server-empty"><span className="loading-pulse" />Loading saved activity…</div>
+        : events.length ? <div className="activity-feed-list">{events.map((event) => { const Icon = iconFor(event); return <article className={`activity-feed-row outcome-${event.outcome}`} key={event.id}>
+          <span className="activity-feed-icon"><Icon size={16} /></span><div className="activity-feed-copy"><div><strong>{event.title}</strong>{event.serverName && <span className="activity-feed-server">{event.serverName}</span>}</div>
+            <p>{event.description}</p><small>{event.actor ? `By ${event.actor} · ` : ''}{event.redacted ? 'Some details are hidden for your role · ' : ''}{event.category === 'system' ? 'Local machine' : event.category}</small></div>
+          <time dateTime={event.occurredAt} title={new Date(event.occurredAt).toISOString()}>{displayTime(event.occurredAt)}</time>
+        </article>})}</div>
+        : <EmptyNote icon={Activity} title="No saved activity in this range" detail="The feed only shows events already persisted by MMSManager. It never fills gaps with sample entries." />}
+      {hasMore && <div className="activity-feed-footer"><span>Showing the newest saved events first.</span><Button kind="secondary" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? 'Loading…' : 'Load older activity'}</Button></div>}
+    </Card>
   </div>
 }
 
@@ -164,10 +235,6 @@ export function BackupsPage() {
               <div className="local-backup-icon"><Archive size={15} /></div><div className="local-backup-row-main"><strong>{server.name} · {new Date(backup.createdAt).toLocaleString()}</strong><span>{formatBytes(backup.archiveSizeBytes)} archive · {backup.fileCount.toLocaleString()} files · {formatBytes(backup.totalFileBytes)} content</span><small>SHA-256 {backup.archiveSha256.slice(0, 16)}… · {backup.excludedCount ? `${backup.excludedCount} excluded paths` : 'no excluded paths'}</small></div><Badge tone={backup.origin === 'manual' ? 'good' : 'neutral'}>{backup.origin === 'scheduled' ? 'Scheduled' : backup.origin === 'system' ? 'Safety snapshot' : 'Manual'}</Badge><Link className="button button-secondary" to={`/servers/${server.id}/backups`}>Open server backups</Link>
             </article>)}</div></Card>}
   </div>
-}
-
-export function TemplatesPage() {
-  return <div className="page-stack"><PageHeading title="Templates" description="No local template catalog is connected." actions={<DisabledButton icon={Layers3}>Browse templates</DisabledButton>} /><Card><EmptyNote icon={Layers3} title="No templates available" detail="The template gallery is a preview-only area. No template records or provider downloads are shown here." /></Card></div>
 }
 
 export { UsersPage, ProfilePage, SettingsPage } from './account-pages'

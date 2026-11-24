@@ -10,6 +10,7 @@ import { serverPropertySettingsSchema } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
 
 const PROPERTY_NAMES = {
+  onlineMode: 'online-mode',
   motd: 'motd',
   gameMode: 'gamemode',
   difficulty: 'difficulty',
@@ -22,6 +23,7 @@ const PROPERTY_NAMES = {
   allowNether: 'allow-nether',
 } as const satisfies Record<keyof ServerPropertySettings, string>
 const DEFAULT_SETTINGS: ServerPropertySettings = {
+  onlineMode: true,
   motd: 'A Minecraft Server', gameMode: 'survival', difficulty: 'easy', maxPlayers: 20,
   viewDistance: 10, simulationDistance: 10, spawnProtection: 16,
   pvp: true, whiteList: false, allowNether: true,
@@ -87,6 +89,7 @@ function parseSettings(lines: string[]): { settings: ServerPropertySettings; unk
   const rawDifficulty = values.get(PROPERTY_NAMES.difficulty)
   return {
     settings: serverPropertySettingsSchema.parse({
+      onlineMode: booleanValue(PROPERTY_NAMES.onlineMode, DEFAULT_SETTINGS.onlineMode),
       motd: values.get(PROPERTY_NAMES.motd) ?? DEFAULT_SETTINGS.motd,
       gameMode: ['survival', 'creative', 'adventure', 'spectator'].includes(rawGameMode ?? '') ? rawGameMode : DEFAULT_SETTINGS.gameMode,
       difficulty: ['peaceful', 'easy', 'normal', 'hard'].includes(rawDifficulty ?? '') ? rawDifficulty : DEFAULT_SETTINGS.difficulty,
@@ -157,7 +160,7 @@ export class ServerPropertiesManager {
     }
   }
 
-  async update(serverId: string, actorUserId: string, update: ServerPropertiesUpdate): Promise<ServerPropertiesResponse> {
+  async update(serverId: string, actorUserId: string, update: ServerPropertiesUpdate, options: { confirmOnlineModeChange?: boolean } = {}): Promise<ServerPropertiesResponse> {
     const server = this.serverRow(serverId)
     const propertiesPath = await this.propertiesPath(server)
     const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
@@ -168,6 +171,13 @@ export class ServerPropertiesManager {
     const lines = original.text.split(/\r?\n/)
     const parsed = parseSettings(lines)
     const settings = serverPropertySettingsSchema.parse({ ...parsed.settings, ...update })
+    const onlineModeChanged = settings.onlineMode !== parsed.settings.onlineMode
+    if (onlineModeChanged && !options.confirmOnlineModeChange) {
+      throw new ServerPropertiesError('ONLINE_MODE_CONFIRMATION_REQUIRED', 'Explicitly confirm the online-mode change before saving.')
+    }
+    if (onlineModeChanged && runtime?.status !== 'stopped') {
+      throw new ServerPropertiesError('ONLINE_MODE_REQUIRES_STOPPED', 'Online mode can only change while the managed server is confirmed stopped.')
+    }
     const changed = Object.keys(update).some((key) => settings[key as keyof ServerPropertySettings] !== parsed.settings[key as keyof ServerPropertySettings])
     if (!changed) return this.get(serverId)
 

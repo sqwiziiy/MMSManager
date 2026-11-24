@@ -7,6 +7,7 @@ import {
   localServerListSchema,
   serverImportPreviewSchema,
   serverImportResultSchema,
+  serverMetadataUpdateSchema,
   serverInventorySchema,
   serverConsoleResponseSchema,
   serverRuntimeResultSchema,
@@ -32,7 +33,7 @@ import {
   serverHistoryCalendarResultSchema,
   serverHistoryDayResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate } from '@mmsmanager/shared'
 import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestResponse, reportSessionExpiry } from './client'
@@ -72,6 +73,11 @@ export function registerServerImport(input: { path: string; name: string; minMem
   return request('/api/v1/admin/servers/import', serverImportResultSchema, { method: 'POST', body: JSON.stringify(input) })
 }
 
+export async function updateServerMetadata(serverId: string, input: ServerMetadataUpdate): Promise<LocalServerSummary> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/metadata`, serverImportResultSchema, { method: 'PATCH', body: JSON.stringify(serverMetadataUpdateSchema.parse(input)) })
+  return response.server
+}
+
 export async function getJavaRuntimes(signal?: AbortSignal): Promise<JavaRuntime[]> {
   const response = await request('/api/v1/admin/java', javaRuntimeListSchema, { signal })
   return response.runtimes
@@ -104,6 +110,11 @@ export async function createServerInstall(input: ServerInstallRequest): Promise<
 
 export async function getServerInstall(operationId: string, signal?: AbortSignal): Promise<InstallOperation> {
   const response = await request(`/api/v1/admin/server-installs/${encodeURIComponent(operationId)}`, installOperationResultSchema, { signal })
+  return response.operation
+}
+
+export async function cancelServerInstall(operationId: string): Promise<InstallOperation> {
+  const response = await request(`/api/v1/admin/server-installs/${encodeURIComponent(operationId)}/cancel`, installOperationResultSchema, { method: 'POST', body: JSON.stringify({}) })
   return response.operation
 }
 
@@ -198,8 +209,8 @@ export async function getServerProperties(serverId: string, signal?: AbortSignal
   return response.properties
 }
 
-export async function updateServerProperties(serverId: string, update: ServerPropertiesUpdate): Promise<ServerPropertiesResponse> {
-  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/properties`, serverPropertiesResultSchema, { method: 'PATCH', body: JSON.stringify(update) })
+export async function updateServerProperties(serverId: string, update: ServerPropertiesUpdate, confirmOnlineModeChange = false): Promise<ServerPropertiesResponse> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/properties`, serverPropertiesResultSchema, { method: 'PATCH', body: JSON.stringify({ ...update, confirmOnlineModeChange }) })
   return response.properties
 }
 

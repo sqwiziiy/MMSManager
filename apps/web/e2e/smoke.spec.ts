@@ -46,7 +46,7 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   const backupId = 'c03c1cf8-e2a1-4a4e-9de4-4536c7796091'
   const now = new Date().toISOString()
   const server = { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus }
-  let settings = { motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
+  let settings = { onlineMode: true, motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
   let restartRequired = false
   let runtimeSettings = {
     serverId, javaPath: '/tmp/mmsmanager-e2e-java-21', javaMajor: 21, requiredJavaMajor: 21,
@@ -138,7 +138,9 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   })
   await page.route(`**/api/v1/admin/servers/${serverId}/properties`, async (route) => {
     if (route.request().method() === 'PATCH') {
-      settings = { ...settings, ...(route.request().postDataJSON() as Partial<typeof settings>) }
+      const input = route.request().postDataJSON() as Partial<typeof settings> & { confirmOnlineModeChange?: boolean }
+      const changes = Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'confirmOnlineModeChange')) as Partial<typeof settings>
+      settings = { ...settings, ...changes }
       restartRequired = true
     }
     return route.fulfill({ json: { properties: properties() } })
@@ -304,7 +306,7 @@ test('Stage 5G removes demo records from operational pages', async ({ page }) =>
   await expect(page.getByText('Alder SMP', { exact: true })).toHaveCount(0)
   await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-legacy-server-route-desktop.png'), fullPage: true })
   await page.goto('/activity')
-  await expect(page.getByText('No combined event feed yet', { exact: true })).toBeVisible()
+  await expect(page.getByText('Administrator setup completed', { exact: true })).toBeVisible()
   await expect(page.getByText('MiraWoods', { exact: true })).toHaveCount(0)
   await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-activity-empty-desktop.png'), fullPage: true })
   await page.goto('/backups')
@@ -312,7 +314,7 @@ test('Stage 5G removes demo records from operational pages', async ({ page }) =>
   await expect(page.getByText('Alder SMP', { exact: true })).toHaveCount(0)
   await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-backups-empty-desktop.png'), fullPage: true })
   await page.goto('/templates')
-  await expect(page.getByText('No templates available', { exact: true })).toBeVisible()
+  await expect(page.getByText('No templates saved', { exact: true })).toBeVisible()
   await expect(page.getByText('Survival community', { exact: true })).toHaveCount(0)
   await page.screenshot({ path: resolve(screenshotDir, 'stage-05g-templates-empty-desktop.png'), fullPage: true })
   expect(errors).toEqual([])
@@ -728,6 +730,109 @@ test('managed worlds and server history use isolated real-data API fixtures', as
   await expect(page.getByText('No machine samples saved')).toBeVisible()
 })
 
+test('operational notifications can be reviewed and marked read on desktop and mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  await mockLocalServer(page)
+  const eventId = 'server-action:fixture-start-failure'
+  const event = {
+    id: eventId, occurredAt: new Date().toISOString(), category: 'server', title: 'Server start failed',
+    description: 'The local process exited before the server became ready.', outcome: 'failure', source: 'server-action',
+    serverId: 'e03c1cf8-e2a1-4a4e-9de4-4536c7796091', serverName: 'Local Fixture', actor: null, redacted: false,
+  }
+  let readAt: string | null = null
+  await page.route('**/api/v1/notifications**', async (route) => {
+    if (route.request().method() === 'PATCH') readAt = new Date().toISOString()
+    return route.fulfill({ json: { items: [{ eventId, event, readAt }], unreadCount: readAt ? 0 : 1 } })
+  })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Notifications' }).click()
+  await expect(page.getByText('Server start failed')).toBeVisible()
+  await expect(page.getByText('1 unread')).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-06c-notifications-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.getByRole('button', { name: 'Mark read' }).click()
+  await expect(page.getByText('0 unread')).toBeVisible()
+  await expect(page.getByText('Read', { exact: true })).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'notifications mobile')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-06c-notifications-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('online-mode edits require stopped state and an explicit confirmation', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  const { serverId } = await mockLocalServer(page, 'stopped')
+  let propertyUpdate: Record<string, unknown> | null = null
+  let onlineModeEnabled = true
+  await page.route(`**/api/v1/admin/servers/${serverId}/properties`, async (route) => {
+    if (route.request().method() === 'PATCH') {
+      const input = route.request().postDataJSON() as Record<string, unknown>
+      propertyUpdate = input
+      const changes = Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'confirmOnlineModeChange'))
+      const current = { onlineMode: true, motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
+      const settings = { ...current, ...changes }
+      onlineModeEnabled = settings.onlineMode === false ? false : true
+      return route.fulfill({ json: { properties: { settings, unknownKeys: ['server-ip', 'level-seed'], backups: [], restartRequired: true } } })
+    }
+    return route.fulfill({ json: { properties: { settings: { onlineMode: onlineModeEnabled, motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }, unknownKeys: ['server-ip', 'level-seed'], backups: [], restartRequired: false } } })
+  })
+  await page.goto(`/servers/${serverId}/properties`)
+  await expect(page.getByLabel('Online mode')).toBeChecked()
+  await page.locator('.local-properties-grid .field').filter({ hasText: 'Online mode' }).locator('label.property-toggle').click()
+  await expect(page.getByRole('group', { name: 'Online-mode change' })).toContainText('different player UUIDs')
+  await expect(page.getByRole('group', { name: 'Online-mode change' })).toContainText('does not change MMSManager sign-in')
+  const save = page.getByRole('button', { name: 'Save properties' })
+  await expect(save).toBeDisabled()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-06c-online-mode-confirmation-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.getByLabel('I understand and confirm this change').check()
+  await expect(save).toBeEnabled()
+  await page.setViewportSize({ width: 390, height: 844 })
+  const confirmation = page.getByRole('group', { name: 'Online-mode change' })
+  await confirmation.scrollIntoViewIfNeeded()
+  await expectNoHorizontalOverflow(page, 'online-mode settings mobile')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-06c-online-mode-confirmation-mobile.png'), animations: 'disabled' })
+  await save.click()
+  await expect(page.getByText('Saved with a recovery copy.')).toBeVisible()
+  expect(propertyUpdate).toMatchObject({ onlineMode: false, confirmOnlineModeChange: true })
+})
+
+test('installation cancellation preserves partial files and reports a cancelled result', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await signIn(page)
+  const operationId = '7fc0b937-3e7f-4938-b432-5cc98a529e7c'
+  const now = new Date().toISOString()
+  let current = { id: operationId, name: 'Cancel Fixture', directoryName: 'cancel-fixture', software: 'vanilla', version: '1.21.4', status: 'pending', progress: 12, phase: 'downloading', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, error: null, partialDirectory: null, createdAt: now, updatedAt: now }
+  await page.route('**/api/v1/admin/java', (route) => route.fulfill({ json: { runtimes: [{ path: '/tmp/mmsmanager-e2e-java', version: '21.0.4', major: 21, vendor: 'OpenJDK', source: 'discovered' }] } }))
+  await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [], managedRoot: '/tmp/mmsmanager-stage6-e2e-servers', importRoots: ['/tmp/mmsmanager-stage6-e2e-servers'] } }))
+  await page.route('**/api/v1/admin/server-installs/catalog?*', (route) => {
+    const url = new URL(route.request().url())
+    return route.fulfill({ json: { software: 'vanilla', versions: ['1.21.4'], loaders: [], builds: [], installerVersion: null, requiredJavaMajor: url.searchParams.has('version') ? 21 : null } })
+  })
+  await page.route('**/api/v1/admin/server-installs', (route) => route.request().method() === 'POST'
+    ? route.fulfill({ status: 202, json: { operation: current } })
+    : route.fulfill({ json: { operations: [] } }))
+  await page.route(`**/api/v1/admin/server-installs/${operationId}**`, async (route) => {
+    if (route.request().method() === 'POST' && new URL(route.request().url()).pathname.endsWith('/cancel')) {
+      current = { ...current, status: 'failed', phase: 'failed', error: { code: 'INSTALL_CANCELLED', message: 'The installation was cancelled. Any files already created were preserved for review.' }, partialDirectory: '/tmp/mmsmanager-stage6-e2e-servers/cancel-fixture', updatedAt: new Date().toISOString() }
+    }
+    return route.fulfill({ json: { operation: current } })
+  })
+  await page.getByRole('button', { name: 'Create server', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Create server' })
+  await dialog.getByLabel('New directory name').fill('cancel-fixture')
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await expect(dialog.getByLabel('Minecraft release')).toBeEnabled()
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await dialog.getByRole('button', { name: 'Install server' }).click()
+  await expect(dialog.getByText('Installation in progress')).toBeVisible()
+  page.once('dialog', (confirm) => void confirm.accept())
+  await dialog.getByRole('button', { name: 'Cancel installation' }).click()
+  await expect(dialog.getByText('Installation cancelled')).toBeVisible()
+  await expect(dialog.getByText('Partial files were preserved for review under the managed root.')).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-06e-install-cancelled-desktop.png'), fullPage: true, animations: 'disabled' })
+})
+
 test('mobile dashboard, account screens and navigation fit a narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await signIn(page)
@@ -821,6 +926,9 @@ test('local accounts enforce administrator-only management and member access', a
   expect(forbiddenStatus).toBe(403)
   await page.goto('/profile')
   await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible()
+  await signOut(page)
+  await signIn(page, 'stage-admin', adminPassword)
+  await page.context().storageState({ path: browserSessionPath })
 })
 
 test('profile, avatar and personal preferences persist; password change revokes the session', async ({ page }) => {

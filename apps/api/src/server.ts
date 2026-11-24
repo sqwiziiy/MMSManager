@@ -40,6 +40,7 @@ async function main(): Promise<void> {
     webOrigin: getWebOrigin(),
     apiPort,
     secureCookies: secureCookiesEnabled(),
+    rateLimitMax: process.env['MMSMANAGER_E2E'] === '1' ? 5_000 : undefined,
   })
   await app.listen({ host: API_HOST, port: apiPort })
   collector.start()

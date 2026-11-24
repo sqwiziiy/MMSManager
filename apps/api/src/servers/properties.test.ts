@@ -88,6 +88,29 @@ describe('managed server.properties editor', () => {
     expect(opened.db.select().from(localServerRuntime).all()).toHaveLength(0)
   })
 
+  it('changes online mode only after explicit confirmation and a stopped-state recovery point', async () => {
+    expect((await manager.get(managedId)).settings.onlineMode).toBe(true)
+    await expect(manager.update(managedId, userId, { onlineMode: false })).rejects.toMatchObject({ code: 'ONLINE_MODE_CONFIRMATION_REQUIRED' })
+    await expect(manager.update(managedId, userId, { onlineMode: false }, { confirmOnlineModeChange: true })).rejects.toMatchObject({ code: 'ONLINE_MODE_REQUIRES_STOPPED' })
+    await opened.db.insert(localServerRuntime).values({ serverId: managedId, status: 'running', updatedAt: new Date().toISOString(), restartRequired: false }).run()
+    await expect(manager.update(managedId, userId, { onlineMode: false }, { confirmOnlineModeChange: true })).rejects.toMatchObject({ code: 'ONLINE_MODE_REQUIRES_STOPPED' })
+    await opened.db.update(localServerRuntime).set({ status: 'stopped', updatedAt: new Date().toISOString() }).where(eq(localServerRuntime.serverId, managedId)).run()
+
+    const changed = await manager.update(managedId, userId, { onlineMode: false }, { confirmOnlineModeChange: true })
+    expect(changed.settings.onlineMode).toBe(false)
+    expect(await readFile(join(managedDirectory, 'server.properties'), 'utf8')).toContain('online-mode=false')
+    expect(changed.backups).toHaveLength(1)
+    const recovery = await manager.previewRestore(managedId, changed.backups[0]!.id)
+    expect(recovery.changedSettings).toContainEqual({ key: 'online-mode', current: 'false', restored: 'true' })
+    const restored = await manager.restore(managedId, userId, changed.backups[0]!.id, recovery.currentSha256)
+    expect(restored.properties.settings.onlineMode).toBe(true)
+    expect(restored.recoveryBackupId).toBeTruthy()
+    const event = opened.db.select().from(localServerEvents).where(eq(localServerEvents.action, 'server-properties-updated')).get()
+    expect(event?.actorUserId).toBe(userId)
+    expect(event?.detail).toContain('onlineMode')
+    expect(event?.detail).not.toContain('false')
+  })
+
   it('previews a checksum-verified restore, preserves a new recovery point, and marks a running server for restart', async () => {
     await manager.update(managedId, userId, { motd: 'First saved version' })
     const selected = opened.db.select().from(localServerPropertiesBackups).where(eq(localServerPropertiesBackups.serverId, managedId)).get()!

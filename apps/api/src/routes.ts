@@ -7,6 +7,10 @@ import { timingSafeEqual } from 'node:crypto'
 import {
   adminUsersSchema,
   auditRecordsSchema,
+  activityQuerySchema,
+  activityResponseSchema,
+  notificationsResponseSchema,
+  notificationEventIdParamSchema,
   authMeSchema,
   bootstrapSchema,
   calendarQuerySchema,
@@ -36,7 +40,7 @@ import {
   serverPlayerActionResultSchema,
   serverModsInventoryResultSchema,
   serverPropertiesResultSchema,
-  serverPropertiesUpdateSchema,
+  serverPropertiesUpdateRequestSchema,
   serverPropertiesBackupIdParamSchema,
   serverPropertiesRestorePreviewResultSchema,
   serverPropertiesRestoreRequestSchema,
@@ -80,10 +84,16 @@ import {
   userUpdateSchema,
   workspacePreferencesSchema,
   serverImportPreviewSchema,
+  serverImportResultSchema,
   serverImportRegistrationSchema,
+  serverMetadataUpdateSchema,
   serverImportRequestSchema,
   serverInventorySchema,
   serverInstallRequestSchema,
+  serverTemplateIdParamSchema,
+  serverTemplateInputSchema,
+  serverTemplateListSchema,
+  serverTemplateResultSchema,
 } from '@mmsmanager/shared'
 import { API_HOST, WEB_ORIGIN } from './config.js'
 import type { AppDatabase } from './db/client.js'
@@ -106,6 +116,9 @@ import { ServerHistoryService } from './servers/history.js'
 import { ServerBackupError, ServerBackupService } from './servers/backups.js'
 import { ServerAutomationError, ServerAutomationService } from './servers/automation.js'
 import { ServerRuntimeSettingsError, ServerRuntimeSettingsService } from './servers/runtime.js'
+import { ActivityFeedError, ActivityFeedService } from './activity/feed.js'
+import { ServerTemplateError, ServerTemplateService } from './servers/templates.js'
+import { NotificationError, NotificationService } from './activity/notifications.js'
 
 class InvalidRequestError extends Error {}
 
@@ -217,11 +230,16 @@ export async function createApiApp(options: {
   webOrigin?: string
   apiPort?: number
   secureCookies?: boolean
+  rateLimitMax?: number
+  installFetch?: typeof fetch
   now?: () => number
 }): Promise<FastifyInstance> {
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, trustProxy: false })
   const history = new MachineHistoryService(options.db, options.timeZone, options.now)
-  const installs = new ServerInstallService(options.db, options.servers, options.javaRuntimes)
+  const activity = new ActivityFeedService(options.db)
+  const notifications = new NotificationService(options.db, activity, options.now)
+  const templates = new ServerTemplateService(options.db, options.now)
+  const installs = new ServerInstallService(options.db, options.servers, options.javaRuntimes, options.installFetch ? { fetch: options.installFetch } : {})
   await installs.prepare()
   const processes = options.processes ?? new ServerProcessManager(options.db, options.servers, options.now)
   await processes.prepare()
@@ -250,7 +268,7 @@ export async function createApiApp(options: {
   })
   await app.register(rateLimit, {
     global: true,
-    max: 600,
+    max: options.rateLimitMax ?? 600,
     timeWindow: '1 minute',
     errorResponseBuilder: () => ({ error: { code: 'RATE_LIMITED', message: 'Too many requests. Try again shortly.' } }),
   })
@@ -321,6 +339,12 @@ export async function createApiApp(options: {
   }
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof NotificationError) return reply.code(404).send({ error: { code: error.code, message: error.message } })
+    if (error instanceof ActivityFeedError) return reply.code(400).send({ error: { code: error.code, message: error.message } })
+    if (error instanceof ServerTemplateError) {
+      const status = error.code === 'TEMPLATE_NOT_FOUND' ? 404 : 409
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
     if (error instanceof ServerStatusError) return reply.code(404).send({ error: { code: error.code, message: error.message } })
     if (error instanceof ServerProcessError) {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
@@ -351,7 +375,7 @@ export async function createApiApp(options: {
     }
     if (error instanceof ServerPropertiesError) {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
-        : error.code.endsWith('_BUSY') || error.code.includes('_CONFLICT') || error.code.includes('_CHECKSUM_FAILED') || error.code.includes('_ROLLBACK_FAILED') ? 409
+        : error.code.endsWith('_BUSY') || error.code.includes('_CONFLICT') || error.code.includes('_CHECKSUM_FAILED') || error.code.includes('_ROLLBACK_FAILED') || error.code.startsWith('ONLINE_MODE_') ? 409
           : error.code.endsWith('_UNAVAILABLE') ? 503 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
@@ -375,13 +399,17 @@ export async function createApiApp(options: {
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
     if (error instanceof ServerInstallError) {
-      const status = error.code === 'INSTALL_LIMIT' ? 409 : error.code.endsWith('_UNAVAILABLE') || error.code === 'PROVIDER_UNAVAILABLE' ? 502 : error.code === 'PAPER_CONTACT_REQUIRED' ? 503 : 400
+      const status = error.code === 'INSTALL_LIMIT' || error.code === 'INSTALL_NOT_RUNNING' ? 409
+        : error.code === 'INSTALL_NOT_FOUND' ? 404
+          : error.code.endsWith('_UNAVAILABLE') || error.code === 'PROVIDER_UNAVAILABLE' ? 502
+            : error.code === 'PAPER_CONTACT_REQUIRED' ? 503 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
     if (error instanceof ServerInventoryError) {
       const duplicate = error.code === 'duplicate'
-      return reply.code(duplicate ? 409 : 400).send({
-        error: { code: duplicate ? 'SERVER_ALREADY_REGISTERED' : 'SERVER_PATH_REJECTED', message: error.message },
+      const status = duplicate ? 409 : error.code === 'not-found' ? 404 : 400
+      return reply.code(status).send({
+        error: { code: duplicate ? 'SERVER_ALREADY_REGISTERED' : error.code === 'not-found' ? 'SERVER_NOT_FOUND' : 'SERVER_PATH_REJECTED', message: error.message },
       })
     }
     if (error instanceof JavaRuntimeError) {
@@ -534,6 +562,28 @@ export async function createApiApp(options: {
   })
   app.get('/api/v1/admin/audit', { preHandler: requireAdmin }, async () => auditRecordsSchema.parse(options.auth.listAuditEvents()))
 
+  app.get('/api/v1/templates', { preHandler: requireAuth }, async () => serverTemplateListSchema.parse({ templates: templates.list() }))
+  app.post('/api/v1/admin/templates', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const input = parse(serverTemplateInputSchema, request.body)
+    const template = templates.create(input, request.principal!.userId)
+    return reply.code(201).send(serverTemplateResultSchema.parse({ template }))
+  })
+  app.patch('/api/v1/admin/templates/:templateId', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(serverTemplateIdParamSchema, request.params)
+    const input = parse(serverTemplateInputSchema, request.body)
+    return serverTemplateResultSchema.parse({ template: templates.update(params.templateId, input, request.principal!.userId) })
+  })
+  app.post('/api/v1/admin/templates/:templateId/duplicate', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(serverTemplateIdParamSchema, request.params)
+    const template = templates.duplicate(params.templateId, request.principal!.userId)
+    return reply.code(201).send(serverTemplateResultSchema.parse({ template }))
+  })
+  app.delete('/api/v1/admin/templates/:templateId', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(serverTemplateIdParamSchema, request.params)
+    templates.delete(params.templateId, request.principal!.userId)
+    return reply.code(204).send()
+  })
+
   app.get('/api/v1/admin/servers', { preHandler: requireAdmin }, async () => serverInventorySchema.parse({
     servers: await options.servers.list(),
     managedRoot: options.servers.managedRoot,
@@ -554,6 +604,11 @@ export async function createApiApp(options: {
     const server = await options.servers.registerImport(input, request.principal!.userId)
     return reply.code(201).send({ server })
   })
+  app.patch('/api/v1/admin/servers/:serverId/metadata', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverMetadataUpdateSchema, request.body)
+    return serverImportResultSchema.parse({ server: await options.servers.updateMetadata(params.serverId, input.name, request.principal!.userId) })
+  })
   app.get('/api/v1/admin/server-installs/catalog', { preHandler: requireAdmin }, async (request) => {
     const query = parse(installCatalogQuerySchema, request.query)
     return installCatalogSchema.parse(await installs.catalog(query.software, query.version))
@@ -564,6 +619,10 @@ export async function createApiApp(options: {
     const operation = installs.get(params.operationId)
     if (!operation) return reply.code(404).send({ error: { code: 'INSTALL_NOT_FOUND', message: 'The installation operation was not found.' } })
     return installOperationResultSchema.parse({ operation })
+  })
+  app.post('/api/v1/admin/server-installs/:operationId/cancel', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(installOperationIdSchema, request.params)
+    return reply.code(202).send(installOperationResultSchema.parse({ operation: installs.cancel(params.operationId) }))
   })
   app.post('/api/v1/admin/server-installs', { preHandler: requireAdminMutation }, async (request, reply) => {
     const input = parse(serverInstallRequestSchema, request.body)
@@ -709,8 +768,9 @@ export async function createApiApp(options: {
   })
   app.patch('/api/v1/admin/servers/:serverId/properties', { preHandler: requireAdminMutation }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
-    const update = parse(serverPropertiesUpdateSchema, request.body)
-    return serverPropertiesResultSchema.parse({ properties: await properties.update(params.serverId, request.principal!.userId, update) })
+    const input = parse(serverPropertiesUpdateRequestSchema, request.body)
+    const { confirmOnlineModeChange, ...update } = input
+    return serverPropertiesResultSchema.parse({ properties: await properties.update(params.serverId, request.principal!.userId, update, { confirmOnlineModeChange }) })
   })
   app.get('/api/v1/admin/servers/:serverId/properties/backups/:backupId/preview', { preHandler: requireAdmin }, async (request) => {
     const params = parse(serverPropertiesBackupIdParamSchema, request.params)
@@ -805,6 +865,16 @@ export async function createApiApp(options: {
     return javaRuntimeSchema.parse(await options.javaRuntimes.probe(input.path))
   })
 
+  app.get('/api/v1/activity', { preHandler: requireAuth }, async (request) => {
+    const query = parse(activityQuerySchema, request.query)
+    return activityResponseSchema.parse(activity.list(query, request.principal!.role))
+  })
+  app.get('/api/v1/notifications', { preHandler: requireAuth }, async (request) =>
+    notificationsResponseSchema.parse(notifications.list(request.principal!.userId, request.principal!.role)))
+  app.patch('/api/v1/notifications/:eventId/read', { preHandler: requireMutationAuth }, async (request) => {
+    const params = parse(notificationEventIdParamSchema, request.params)
+    return notificationsResponseSchema.parse(notifications.markRead(request.principal!.userId, request.principal!.role, params.eventId))
+  })
   app.get('/api/v1/machine/current', { preHandler: requireAuth }, async () => machineCurrentSchema.parse(history.getCurrent(options.collector.health)))
   app.get('/api/v1/machine/history', { preHandler: requireAuth }, async (request) => {
     const query = parse(historyQuerySchema, request.query)

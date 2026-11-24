@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ArrowRight, ArrowUpRight, CalendarDays, Cpu, HardDrive, Plus, RefreshCw, Server, Users, Wifi } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import type { LocalServerSummary } from '@mmsmanager/shared'
+import type { ActivityItem } from '@mmsmanager/shared'
 import { MetricTrack } from '../components/charts'
 import { Badge, Card, PageHeading } from '../components/ui'
 import { LiveResourceChart } from '../components/live-chart'
@@ -10,11 +11,13 @@ import { useAuth } from '../state/use-auth'
 import { useMachineMonitor } from '../state/use-machine-monitor'
 import { formatBytes, formatPercent, formatTimestamp } from '../lib/format'
 import { apiErrorMessage } from '../api/client'
+import { getActivity } from '../api/activity'
 
 export function DashboardPage({ onCreate }: { onCreate: () => void }) {
   const [registered, setRegistered] = useState<LocalServerSummary[]>([])
   const [serverLoading, setServerLoading] = useState(true)
   const [serverError, setServerError] = useState<string | null>(null)
+  const [recentEvents, setRecentEvents] = useState<ActivityItem[]>([])
   const { snapshot } = useAuth()
   const isAdmin = snapshot?.user.role === 'administrator'
   const loadServers = useCallback(async (signal?: AbortSignal) => {
@@ -27,6 +30,7 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
     } finally { setServerLoading(false) }
   }, [])
   useEffect(() => { const controller = new AbortController(); void loadServers(controller.signal); return () => controller.abort() }, [loadServers])
+  useEffect(() => { const controller = new AbortController(); void getActivity({ limit: 5 }, controller.signal).then((response) => setRecentEvents(response.events)).catch(() => undefined); return () => controller.abort() }, [])
   const running = registered.filter((server) => server.runtimeStatus === 'running').length
   const monitor = useMachineMonitor()
   const current = monitor.current
@@ -68,7 +72,7 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
 
       <Card className="activity-card">
         <div className="card-heading-row"><div><div className="card-kicker"><Wifi size={15} /> Server activity</div><h2>Recent events</h2></div><Link className="text-link" to="/activity">Activity log <ArrowRight size={14} /></Link></div>
-        <div className="local-server-empty">A server event timeline will appear after structured event collection is connected.</div>
+        {recentEvents.length ? <div className="activity-row-list">{recentEvents.map((event) => <div className="activity-row" key={event.id}><span className={`activity-marker ${event.outcome === 'failure' ? 'marker-warn' : event.outcome === 'success' ? 'marker-good' : ''}`} /><div><strong>{event.title}</strong><small>{event.serverName ?? event.category}</small></div><time>{new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(event.occurredAt))}</time></div>)}</div> : <div className="local-server-empty">No saved activity has been recorded yet.</div>}
       </Card>
 
       <Card className="machine-card">

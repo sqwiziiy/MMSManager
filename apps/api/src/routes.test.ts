@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { createServer } from 'node:net'
+import process from 'node:process'
 import { eq } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { API_HOST, WEB_ORIGIN } from './config.js'
 import { openDatabase } from './db/client.js'
-import { machineSamples, localServerRuntime, localServers } from './db/schema.js'
+import { auditEvents, localServerEvents, localServerStructuredEvents, machineSamples, localServerRuntime, localServers } from './db/schema.js'
 import { recordServerResourceSample, recordStructuredServerEvent } from './servers/history.js'
 import { AuthService } from './auth/service.js'
 import { AvatarStore } from './auth/avatar-store.js'
@@ -16,6 +18,8 @@ import type { SnapshotReader } from './machine/reader.js'
 import { createApiApp } from './routes.js'
 import { ServerRegistry } from './servers/registry.js'
 import { JavaRuntimeRegistry } from './servers/java.js'
+import type { JavaRuntime } from './servers/java.js'
+import { ServerProcessManager } from './servers/processes.js'
 
 const ADMIN_PASSWORD = 'synthetic admin passphrase 7fX!4pQz'
 const requestHeaders = { origin: WEB_ORIGIN, host: '127.0.0.1:4174' }
@@ -26,21 +30,28 @@ describe('authenticated local API', () => {
   let app: FastifyInstance
   let auth: AuthService
   let dataDirectory: string
+  let servers: ServerRegistry
+  let avatars: AvatarStore
+  let javaRuntimes: JavaRuntimeRegistry
+  let availableJavaRuntimes: JavaRuntime[]
+  let processManager: ServerProcessManager | null = null
 
   beforeEach(async () => {
+    processManager = null
     dataDirectory = await mkdtemp(join(tmpdir(), 'mmsmanager-routes-'))
     opened = await openDatabase({ path: join(dataDirectory, 'mmsmanager.sqlite') })
     const reader: SnapshotReader = { read: async () => { throw new Error('Not sampled') } }
     collector = new MachineCollector(opened.db, reader, 'Europe/Paris')
     auth = new AuthService(opened.native, dataDirectory, () => Date.parse('2026-11-23T12:00:00.000Z'))
     await auth.prepare()
-    const avatars = new AvatarStore(dataDirectory)
+    avatars = new AvatarStore(dataDirectory)
     await avatars.prepare()
-    const servers = new ServerRegistry(opened.db, dataDirectory, { MMSMANAGER_SERVER_ROOT: join(dataDirectory, 'servers') })
+    servers = new ServerRegistry(opened.db, dataDirectory, { MMSMANAGER_SERVER_ROOT: join(dataDirectory, 'servers') })
     await servers.prepare()
-    const javaRuntimes = new JavaRuntimeRegistry(async () => [{
+    availableJavaRuntimes = [{
       path: '/test/java-21/bin/java', version: '21.0.4', major: 21, vendor: 'OpenJDK', source: 'discovered',
-    }])
+    }]
+    javaRuntimes = new JavaRuntimeRegistry(async () => availableJavaRuntimes)
     app = await createApiApp({
       db: opened.db,
       collector,
@@ -57,6 +68,7 @@ describe('authenticated local API', () => {
 
   afterEach(async () => {
     await collector.stop()
+    await processManager?.shutdown()
     await app.close()
     opened.native.close()
     await rm(dataDirectory, { recursive: true, force: true })
@@ -298,6 +310,16 @@ describe('authenticated local API', () => {
       headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: installInput,
     })
     expect(installMissingCsrf.statusCode).toBe(403)
+    const cancelMissingCsrf = await app.inject({
+      method: 'POST', url: `/api/v1/admin/server-installs/${randomUUID()}/cancel`,
+      headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: {},
+    })
+    expect(cancelMissingCsrf.statusCode).toBe(403)
+    const memberCancel = await app.inject({
+      method: 'POST', url: `/api/v1/admin/server-installs/${randomUUID()}/cancel`,
+      headers: { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }, payload: {},
+    })
+    expect(memberCancel.statusCode).toBe(403)
   })
 
   it('enforces administrator and CSRF checks for lifecycle controls and managed properties', async () => {
@@ -370,6 +392,18 @@ describe('authenticated local API', () => {
     const restoredProperties = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/properties/backups/${backupId}/restore`, headers: adminHeaders, payload: { expectedCurrentSha256: restorePreview.json().preview.currentSha256 } })
     expect(restoredProperties.statusCode).toBe(200)
     expect(restoredProperties.json()).toMatchObject({ properties: { settings: { motd: 'Before' } }, recoveryBackupId: expect.any(String) })
+    const onlineModeConfirmationMissing = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { onlineMode: false } })
+    expect(onlineModeConfirmationMissing.statusCode).toBe(409)
+    expect(onlineModeConfirmationMissing.json()).toMatchObject({ error: { code: 'ONLINE_MODE_CONFIRMATION_REQUIRED' } })
+    await opened.db.update(localServerRuntime).set({ status: 'running', updatedAt: now }).where(eq(localServerRuntime.serverId, id)).run()
+    const onlineModeRunning = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { onlineMode: false, confirmOnlineModeChange: true } })
+    expect(onlineModeRunning.statusCode).toBe(409)
+    expect(onlineModeRunning.json()).toMatchObject({ error: { code: 'ONLINE_MODE_REQUIRES_STOPPED' } })
+    await opened.db.update(localServerRuntime).set({ status: 'stopped', updatedAt: now }).where(eq(localServerRuntime.serverId, id)).run()
+    const onlineModeSaved = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { onlineMode: false, confirmOnlineModeChange: true } })
+    expect(onlineModeSaved.statusCode).toBe(200)
+    expect(onlineModeSaved.json().properties.settings.onlineMode).toBe(false)
+    expect(await readFile(join(managedDirectory, 'server.properties'), 'utf8')).toContain('online-mode=false')
 
     const unauthenticated = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/start`, headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: {} })
     expect(unauthenticated.statusCode).toBe(401)
@@ -513,4 +547,210 @@ describe('authenticated local API', () => {
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/worlds`, headers: { ...requestHeaders, cookie: cookieHeader } })).statusCode).toBe(403)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/server-history/day?scope=${serverId}&date=2026-11-23`, headers: { ...requestHeaders, cookie: cookieHeader } })).statusCode).toBe(403)
   })
+
+  it('serves persisted activity and safe templates with role-checked mutations', async () => {
+    expect((await app.inject({ method: 'GET', url: '/api/v1/activity' })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/notifications' })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/templates' })).statusCode).toBe(401)
+    const admin = await bootstrapAdmin()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader }
+    const created = await app.inject({ method: 'POST', url: '/api/v1/admin/templates', headers: { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }, payload: {
+      name: 'Local Paper', software: 'paper', version: '1.21.4', minMemoryMb: 1024, maxMemoryMb: 4096,
+    } })
+    expect(created.statusCode, created.body).toBe(201)
+    expect(created.json().template).not.toHaveProperty('directory')
+    expect(created.json().template).not.toHaveProperty('javaPath')
+    expect(created.json().template).not.toHaveProperty('eulaAccepted')
+    expect((await app.inject({ method: 'GET', url: '/api/v1/templates', headers: adminHeaders })).json().templates).toHaveLength(1)
+    const serverId = randomUUID()
+    const at = '2026-11-23T12:00:00.000Z'
+    await opened.db.insert(localServers).values({ id: serverId, name: 'Imported fixture', directory: join(dataDirectory, 'unused-import-fixture'), source: 'imported', software: 'unknown', version: null, jarName: null, javaPath: null, javaMajor: null, requiredJavaMajor: null, minMemoryMb: 512, maxMemoryMb: 1024, jvmOptionsJson: '{"collector":"default","maxGCPauseMs":null,"parallelGcThreads":null,"alwaysPreTouch":false,"disableExplicitGc":false}', startScriptSha256: null, port: null, eula: 'unknown', managed: false, worldFolders: '[]', createdBy: null, createdAt: at, updatedAt: at })
+    await opened.db.insert(localServerEvents).values({ serverId, action: 'server-backup-schedule-failed', outcome: 'failure', occurredAt: at, detail: '/private/fixture/path' })
+    await opened.db.insert(localServerStructuredEvents).values({ serverId, occurredAt: at, category: 'server', eventType: 'server_crashed', description: 'The owned server process exited unexpectedly.', confidence: 'high', source: 'panel-process' })
+    await opened.db.insert(localServerRuntime).values({ serverId, status: 'crashed', updatedAt: at, restartRequired: true })
+    await opened.db.insert(auditEvents).values({ action: 'login.failed', outcome: 'failure', occurredAt: at })
+    const metadata = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${serverId}/metadata`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }, payload: { name: 'Renamed fixture' } })
+    expect(metadata.statusCode).toBe(200)
+    expect(metadata.json().server).toMatchObject({ id: serverId, name: 'Renamed fixture', source: 'imported', managed: false })
+    const adminActivity = await app.inject({ method: 'GET', url: '/api/v1/activity?category=security', headers: adminHeaders })
+    expect(adminActivity.statusCode).toBe(200)
+    expect(adminActivity.json().events).toContainEqual(expect.objectContaining({ title: 'Administrator setup completed', source: 'audit' }))
+    expect((await app.inject({ method: 'GET', url: '/api/v1/activity?limit=101', headers: adminHeaders })).statusCode).toBe(400)
+    const adminNotificationsResponse = await app.inject({ method: 'GET', url: '/api/v1/notifications', headers: adminHeaders })
+    expect(adminNotificationsResponse.statusCode).toBe(200)
+    expect(adminNotificationsResponse.json().items.map((item: { event: { title: string } }) => item.event.title)).toEqual(expect.arrayContaining(['Scheduled backup failed', 'Server process crash observed', 'Server restart required', 'Sign-in attempt failed']))
+    expect(JSON.stringify(adminNotificationsResponse.json())).not.toContain('/private/fixture/path')
+
+    const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
+    await auth.createUser(principal, { username: 'activity-reader', displayName: 'Activity Reader', password: 'synthetic member passphrase 8P!m4Rd3', role: 'member' })
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'activity-reader', password: 'synthetic member passphrase 8P!m4Rd3' } })
+    const cookies = login.headers['set-cookie']
+    const cookieList = (Array.isArray(cookies) ? cookies : [cookies]).filter((item): item is string => typeof item === 'string')
+    const memberCookieHeader = cookieList.map((item) => item.split(';')[0]).join('; ')
+    const memberCsrf = cookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const memberTemplates = await app.inject({ method: 'GET', url: '/api/v1/templates', headers: { ...requestHeaders, cookie: memberCookieHeader } })
+    expect(memberTemplates.statusCode).toBe(200)
+    expect(memberTemplates.json().templates).toHaveLength(1)
+    const memberActivity = await app.inject({ method: 'GET', url: '/api/v1/activity?category=security', headers: { ...requestHeaders, cookie: memberCookieHeader } })
+    expect(memberActivity.statusCode).toBe(200)
+    expect(memberActivity.json().events).toEqual([])
+    const memberNotificationsResponse = await app.inject({ method: 'GET', url: '/api/v1/notifications', headers: { ...requestHeaders, cookie: memberCookieHeader } })
+    expect(memberNotificationsResponse.statusCode).toBe(200)
+    expect(memberNotificationsResponse.json().items.map((item: { event: { title: string } }) => item.event.title)).toEqual(expect.arrayContaining(['Scheduled backup failed', 'Server process crash observed', 'Server restart required']))
+    expect(JSON.stringify(memberNotificationsResponse.json())).not.toContain('Sign-in attempt failed')
+    expect(JSON.stringify(memberNotificationsResponse.json())).not.toContain('/private/fixture/path')
+    const memberFailure = memberNotificationsResponse.json().items.find((item: { event: { title: string } }) => item.event.title === 'Scheduled backup failed')
+    const missingCsrf = await app.inject({ method: 'PATCH', url: `/api/v1/notifications/${encodeURIComponent(memberFailure.eventId)}/read`, headers: { ...requestHeaders, cookie: memberCookieHeader, 'content-type': 'application/json' }, payload: {} })
+    expect(missingCsrf.statusCode).toBe(403)
+    const memberRead = await app.inject({ method: 'PATCH', url: `/api/v1/notifications/${encodeURIComponent(memberFailure.eventId)}/read`, headers: { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }, payload: {} })
+    expect(memberRead.statusCode).toBe(200)
+    expect(memberRead.json().items.find((item: { eventId: string }) => item.eventId === memberFailure.eventId).readAt).toBeTruthy()
+    const adminSecurityId = adminNotificationsResponse.json().items.find((item: { event: { title: string } }) => item.event.title === 'Sign-in attempt failed').eventId
+    const deniedRead = await app.inject({ method: 'PATCH', url: `/api/v1/notifications/${encodeURIComponent(adminSecurityId)}/read`, headers: { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }, payload: {} })
+    expect(deniedRead.statusCode).toBe(404)
+    const memberMutation = await app.inject({ method: 'POST', url: '/api/v1/admin/templates', headers: { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }, payload: {
+      name: 'Unauthorized copy', software: 'vanilla', version: '1.21.4', minMemoryMb: 1024, maxMemoryMb: 2048,
+    } })
+    expect(memberMutation.statusCode).toBe(403)
+    expect((await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${serverId}/metadata`, headers: { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }, payload: { name: 'Member rename' } })).statusCode).toBe(403)
+  })
+
+  it('runs a provider-fixture install through real routes, filesystem and a fake owned process', async () => {
+    const fakeServerScript = join(dataDirectory, 'fixture-server.cjs')
+    const fakeJavaPath = join(dataDirectory, 'fixture-java')
+    await writeFile(fakeServerScript, [
+      "console.log('Starting fixture Minecraft server')",
+      "console.log('Done (0.12s)! For help, type \\\"help\\\"')",
+      "let pending = ''",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', chunk => {",
+      "  pending += chunk",
+      "  const lines = pending.split('\\n')",
+      "  pending = lines.pop() ?? ''",
+      "  for (const line of lines) {",
+      "    if (line === 'list') console.log('There are 2 of a max of 20 players online: Alex_123, MiraWoods')",
+      "    else if (line === 'stop') { console.log('Stopping server'); setTimeout(() => process.exit(0), 20) }",
+      "    else if (line.startsWith('say ')) console.log('[Server] ' + line.slice(4))",
+      "  }",
+      "})",
+    ].join('\n'))
+    await writeFile(fakeJavaPath, `#!/bin/sh\nexec '${process.execPath}' '${fakeServerScript}'\n`)
+    await chmod(fakeJavaPath, 0o700)
+    availableJavaRuntimes = [{ path: fakeJavaPath, version: '21.0.0-fixture', major: 21, vendor: 'Fixture', source: 'discovered' }]
+    await javaRuntimes.scan()
+
+    const artifact = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('synthetic Paper artifact for integration coverage')])
+    const sha256 = createHash('sha256').update(artifact).digest('hex')
+    const artifactUrl = 'https://fill-data.papermc.io/v3/objects/fixture/paper.jar'
+    const versionMetadataUrl = 'https://piston-meta.mojang.com/v1/packages/fixture/1.21.4.json'
+    const fixtureFetch: typeof fetch = async (input) => {
+      const url = String(input)
+      if (url.includes('version_manifest_v2.json')) {
+        return new Response(JSON.stringify({ versions: [{ id: '1.21.4', type: 'release', url: versionMetadataUrl }] }), {
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url === versionMetadataUrl) {
+        return new Response(JSON.stringify({ javaVersion: { majorVersion: 21 } }), { headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/projects/paper/versions/1.21.4/builds')) {
+        return new Response(JSON.stringify([{
+          channel: 'STABLE', id: 123,
+          downloads: { 'server:default': { url: artifactUrl, size: artifact.byteLength, checksums: { sha256 } } },
+        }]), { headers: { 'content-type': 'application/json' } })
+      }
+      if (url === artifactUrl) {
+        return new Response(artifact, { headers: { 'content-type': 'application/java-archive', 'content-length': String(artifact.byteLength) } })
+      }
+      throw new Error(`Unexpected fixture provider request: ${url}`)
+    }
+
+    await app.close()
+    processManager = new ServerProcessManager(opened.db, servers, Date.now, {
+      stopTimeoutMs: 1_000, readinessTimeoutMs: 2_000, shutdownTimeoutMs: 1_000,
+    })
+    app = await createApiApp({
+      db: opened.db, collector, timeZone: 'Europe/Paris', auth, avatars, servers, javaRuntimes,
+      processes: processManager, installFetch: fixtureFetch, webOrigin: WEB_ORIGIN, apiPort: 4174,
+      now: () => Date.parse('2026-11-23T12:00:00.000Z'),
+    })
+
+    const setup = await bootstrapAdmin()
+    const logout = await app.inject({ method: 'POST', url: '/api/v1/auth/logout', headers: { ...requestHeaders, cookie: setup.cookieHeader, 'x-mms-csrf': setup.csrfToken, 'content-type': 'application/json' }, payload: {} })
+    expect(logout.statusCode).toBe(200)
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'owner', password: ADMIN_PASSWORD } })
+    expect(login.statusCode).toBe(200)
+    const setCookies = login.headers['set-cookie']
+    const cookieList = (Array.isArray(setCookies) ? setCookies : [setCookies]).filter((item): item is string => typeof item === 'string')
+    const cookieHeader = cookieList.map((item) => item.split(';')[0]).join('; ')
+    const csrfToken = cookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const adminHeaders = { ...requestHeaders, cookie: cookieHeader, 'x-mms-csrf': csrfToken, 'content-type': 'application/json' }
+
+    const portServer = createServer()
+    await new Promise<void>((resolveListen, rejectListen) => {
+      portServer.once('error', rejectListen)
+      portServer.listen(0, '127.0.0.1', resolveListen)
+    })
+    const port = (portServer.address() as { port: number }).port
+    await new Promise<void>((resolveClose, rejectClose) => portServer.close((error) => error ? rejectClose(error) : resolveClose()))
+    const install = await app.inject({ method: 'POST', url: '/api/v1/admin/server-installs', headers: adminHeaders, payload: {
+      name: 'Fixture Paper', directoryName: 'fixture-paper', software: 'paper', version: '1.21.4', paperBuild: 123,
+      javaPath: fakeJavaPath, minMemoryMb: 512, maxMemoryMb: 1024, port, eulaAccepted: true,
+    } })
+    expect(install.statusCode).toBe(202)
+    const operationId = install.json().operation.id as string
+    let operation: Record<string, unknown> | undefined
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const current = await app.inject({ method: 'GET', url: `/api/v1/admin/server-installs/${operationId}`, headers: { ...requestHeaders, cookie: cookieHeader } })
+      operation = current.json().operation as Record<string, unknown>
+      if (operation['status'] === 'completed' || operation['status'] === 'failed') break
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
+    }
+    expect(operation, JSON.stringify(operation)).toMatchObject({ status: 'completed', serverId: expect.any(String) })
+    const serverId = operation?.['serverId'] as string
+    const serverDirectory = join(dataDirectory, 'servers', 'fixture-paper')
+    expect(await readFile(join(serverDirectory, 'server.jar'))).toEqual(artifact)
+    expect(await readFile(join(serverDirectory, 'eula.txt'), 'utf8')).toContain('eula=true')
+    expect(opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()).toMatchObject({ source: 'created', managed: true, eula: 'accepted' })
+
+    const started = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/start`, headers: adminHeaders, payload: {} })
+    expect(started.statusCode).toBe(202)
+    let runtime: Record<string, unknown> | undefined
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const current = await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/runtime`, headers: { ...requestHeaders, cookie: cookieHeader } })
+      runtime = current.json().runtime as Record<string, unknown>
+      if (runtime['status'] === 'running' || runtime['status'] === 'failed') break
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
+    }
+    expect(runtime).toMatchObject({ status: 'running', ready: true })
+    const players = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/players`, headers: { ...requestHeaders, cookie: cookieHeader } })
+    expect(players.json().players).toMatchObject({ state: 'authoritative', names: ['Alex_123', 'MiraWoods'] })
+    const command = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/console`, headers: adminHeaders, payload: { command: 'say integration fixture' } })
+    expect(command.statusCode).toBe(202)
+    let consoleText = ''
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const current = await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console`, headers: { ...requestHeaders, cookie: cookieHeader } })
+      consoleText = JSON.stringify(current.json())
+      if (consoleText.includes('integration fixture')) break
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
+    }
+    expect(consoleText).toContain('integration fixture')
+
+    const restarted = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restart`, headers: adminHeaders, payload: {} })
+    expect(restarted.statusCode).toBe(200)
+    expect(restarted.json().runtime).toMatchObject({ status: 'running', ready: true })
+    const stopped = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/stop`, headers: adminHeaders, payload: {} })
+    expect(stopped.statusCode).toBe(200)
+    runtime = undefined
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const current = await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/runtime`, headers: { ...requestHeaders, cookie: cookieHeader } })
+      runtime = current.json().runtime as Record<string, unknown>
+      if (runtime['status'] === 'stopped' || runtime['status'] === 'crashed') break
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
+    }
+    expect(runtime).toMatchObject({ status: 'stopped' })
+    const activity = await app.inject({ method: 'GET', url: '/api/v1/activity?limit=100', headers: { ...requestHeaders, cookie: cookieHeader } })
+    expect(activity.statusCode).toBe(200)
+    expect(activity.json().events.some((item: { title?: string }) => item.title === 'Server readiness observed')).toBe(true)
+  }, 20_000)
 })

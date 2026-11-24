@@ -28,6 +28,7 @@ export default defineConfig({
       MMSMANAGER_TIME_ZONE: 'Europe/Paris',
       MMSMANAGER_API_PORT: '4184',
       MMSMANAGER_WEB_PORT: '5184',
+      MMSMANAGER_E2E: '1',
     },
   },
 })

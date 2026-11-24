@@ -11,6 +11,7 @@ import { ApiRequestError } from '../api/auth'
 import { Badge, Button, Card, Field, PageHeading, SectionHeading } from '../components/ui'
 import { useAuth } from '../state/use-auth'
 import { useMachineMonitor } from '../state/use-machine-monitor'
+import { NotificationsPanel } from '../components/notifications'
 
 type Notice = { tone: 'ok' | 'error'; message: string }
 
@@ -339,10 +340,10 @@ export function SettingsPage() {
     <NoticeBar notice={notice} />
     <div className="settings-layout account-settings-layout"><nav className="settings-nav" aria-label="Settings sections">{tabList.map((name) => <button key={name} className={name === tab ? 'selected' : ''} onClick={() => setTab(name)}>{name === 'Workspace' ? <Users size={16} /> : name === 'Personal' ? <CircleUserRound size={16} /> : <AlertCircle size={16} />}{name}</button>)}</nav>
       <Card className="settings-content account-settings-content">
-        <div className="settings-content-heading"><div><h2>{tab}</h2><p>{tab === 'Workspace' ? 'Shared defaults for the single local workspace' : tab === 'Personal' ? 'Saved to your account and applied on this device' : 'External delivery and alert preferences are not connected'}</p></div><Badge tone={tab === 'Notifications' ? 'neutral' : 'good'}>{tab === 'Notifications' ? 'Coming soon' : 'Persistent'}</Badge></div>
+        <div className="settings-content-heading"><div><h2>{tab}</h2><p>{tab === 'Workspace' ? 'Shared defaults for the single local workspace' : tab === 'Personal' ? 'Saved to your account and applied on this device' : 'Saved operational alerts for your local account'}</p></div><Badge tone="good">{tab === 'Notifications' ? 'In-app' : 'Persistent'}</Badge></div>
         {tab === 'Workspace' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveWorkspace(event)}><Field label="Workspace name"><input required maxLength={60} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} /></Field><Field label="Default landing page"><select value={workspaceLanding} onChange={(event) => setWorkspaceLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-readonly-row"><div><strong>Machine history timezone</strong><small>Configured when the local collector starts; raw timestamps remain UTC.</small></div><span>{monitor.current?.timeZone ?? 'Unavailable'}</span></div><div className="settings-footer"><span>Workspace changes apply for all local users.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save workspace'}</Button></div></form>}
         {tab === 'Personal' && <form className="account-settings-form" onSubmit={(event) => void savePersonal(event)}><div className="settings-row account-settings-row"><div><strong>Compact navigation</strong><small>Remember a narrower sidebar for your account.</small></div><label className="account-switch"><input aria-label="Compact navigation" type="checkbox" checked={compactNavigation} onChange={(event) => setCompactNavigation(event.target.checked)} /><span aria-hidden="true" /></label></div><Field label="Default landing page"><select value={personalLanding} onChange={(event) => setPersonalLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-footer"><span>Saved to your profile.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save preferences'}</Button></div></form>}
-        {tab === 'Notifications' && <div className="settings-rows"><div className="settings-row"><div><strong>Server and player alerts</strong><small>Delivery will be added with local server management.</small></div><Badge>Coming soon</Badge></div><div className="settings-row"><div><strong>Backup summaries</strong><small>No backup service is connected.</small></div><Badge>Coming soon</Badge></div></div>}
+        {tab === 'Notifications' && <NotificationsPanel />}
       </Card>
     </div>
   </div>

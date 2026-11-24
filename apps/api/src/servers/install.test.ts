@@ -4,7 +4,7 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
-import { users } from '../db/schema.js'
+import { localServerEvents, users } from '../db/schema.js'
 import { openDatabase } from '../db/client.js'
 import { JavaRuntimeRegistry } from './java.js'
 import { ServerInstallService } from './install.js'
@@ -123,6 +123,52 @@ describe('official local server installation', () => {
     expect(failed).toMatchObject({ status: 'failed', error: { code: 'CHECKSUM_MISMATCH' }, partialDirectory: join(root, 'bad-archive') })
     expect(await readdir(join(root, 'bad-archive'))).toContain('server.jar.part')
     expect(await servers.list()).toHaveLength(0)
+  })
+
+  it('cancels an in-flight fixture download and preserves partial bytes without recording an install failure', async () => {
+    let artifactRequested!: () => void
+    const requested = new Promise<void>((resolve) => { artifactRequested = resolve })
+    const fetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input)
+      if (url === 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json') return Response.json({ versions: [{ id: '1.21.4', type: 'release', url: 'https://piston-meta.mojang.com/version.json' }] })
+      if (url === 'https://piston-meta.mojang.com/version.json') return Response.json({ id: '1.21.4', javaVersion: { majorVersion: 21 }, downloads: { server: { url: 'https://piston-data.mojang.com/server.jar', sha1, size: jarBytes.byteLength } } })
+      if (url === 'https://piston-data.mojang.com/server.jar') {
+        artifactRequested()
+        const signal = init?.signal
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(jarBytes.subarray(0, 4))
+            const abort = () => controller.error(new DOMException('Fixture fetch aborted', 'AbortError'))
+            if (signal?.aborted) abort()
+            else signal?.addEventListener('abort', abort, { once: true })
+          },
+        })
+        return new Response(body, { status: 200, headers: { 'content-type': 'application/java-archive', 'content-length': String(jarBytes.byteLength) } })
+      }
+      throw new Error(`Unexpected fixture URL: ${url}`)
+    }
+    const service = new ServerInstallService(opened.db, servers, java, { fetch })
+    await service.prepare()
+    const operation = await service.create({
+      name: 'Cancelled fixture', directoryName: 'cancelled-fixture', software: 'vanilla', version: '1.21.4',
+      javaPath: java.list()[0]!.path, minMemoryMb: 1024, maxMemoryMb: 2048, port: await availablePort(), eulaAccepted: true,
+    }, userId)
+    await requested
+    const partialPath = join(root, 'cancelled-fixture', 'server.jar.part')
+    let partialBytes = Buffer.alloc(0)
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try { partialBytes = await readFile(partialPath) } catch { /* Wait until the fixture stream writes its first chunk. */ }
+      if (partialBytes.byteLength === 4) break
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    expect(partialBytes).toEqual(jarBytes.subarray(0, 4))
+
+    service.cancel(operation.id)
+    const cancelled = await waitFor(service, operation.id)
+    expect(cancelled).toMatchObject({ status: 'failed', error: { code: 'INSTALL_CANCELLED' }, partialDirectory: join(root, 'cancelled-fixture') })
+    expect(await readFile(partialPath)).toEqual(jarBytes.subarray(0, 4))
+    expect(await servers.list()).toHaveLength(0)
+    expect(opened.db.select().from(localServerEvents).all()).toMatchObject([{ action: 'server-install-cancelled', outcome: 'success' }])
   })
 
   it('blocks untrusted provider metadata before it can fetch an external host', async () => {

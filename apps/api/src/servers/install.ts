@@ -58,6 +58,7 @@ export async function isLoopbackPortAvailable(port: number): Promise<boolean> {
 
 export class ServerInstallService {
   private readonly active = new Set<string>()
+  private readonly abortControllers = new Map<string, AbortController>()
   private readonly fetchImpl: FetchLike
   private readonly now: () => number
   private readonly env: NodeJS.ProcessEnv
@@ -92,6 +93,18 @@ export class ServerInstallService {
   get(operationId: string): InstallOperation | null {
     const row = this.db.select().from(serverInstallOperations).where(eq(serverInstallOperations.id, operationId)).get()
     return row ? this.toPublic(row) : null
+  }
+
+  cancel(operationId: string): InstallOperation {
+    const operation = this.get(operationId)
+    if (!operation) throw new ServerInstallError('INSTALL_NOT_FOUND', 'The installation operation was not found.')
+    if (!['pending', 'downloading', 'validating'].includes(operation.status)) {
+      throw new ServerInstallError('INSTALL_NOT_RUNNING', 'This installation is no longer running.')
+    }
+    const controller = this.abortControllers.get(operationId)
+    if (!controller) throw new ServerInstallError('INSTALL_NOT_RUNNING', 'The running installation cannot be cancelled from this API process.')
+    controller.abort()
+    return this.get(operationId)!
   }
 
   list(): InstallOperation[] {
@@ -146,17 +159,22 @@ export class ServerInstallService {
       partialDirectory: null, createdAt: at, updatedAt: at,
     }).run()
     this.active.add(id)
-    void this.run(id, input, actorUserId).finally(() => this.active.delete(id))
+    const controller = new AbortController()
+    this.abortControllers.set(id, controller)
+    void this.run(id, input, actorUserId, controller.signal).finally(() => {
+      this.active.delete(id)
+      this.abortControllers.delete(id)
+    })
     return this.get(id)!
   }
 
-  private async run(id: string, input: ServerInstallRequest, actorUserId: string): Promise<void> {
+  private async run(id: string, input: ServerInstallRequest, actorUserId: string, signal: AbortSignal): Promise<void> {
     let partialDirectory: string | null = null
     try {
       await this.update(id, { status: 'pending', progress: 4, phase: 'validating-selection' })
       const runtime = this.javaRuntimes.list().find((candidate) => candidate.path === input.javaPath)
       if (!runtime) throw new ServerInstallError('JAVA_NOT_VERIFIED', 'Scan or probe this Java runtime before selecting it.')
-      const artifact = await this.resolveArtifact(input)
+      const artifact = await this.resolveArtifact(input, signal)
       if (runtime.major !== artifact.javaMajor && runtime.major < artifact.javaMajor) {
         throw new ServerInstallError('JAVA_VERSION_UNSUPPORTED', `Minecraft ${input.version} requires Java ${artifact.javaMajor} or newer; the selected runtime is Java ${runtime.major}.`)
       }
@@ -190,7 +208,8 @@ export class ServerInstallService {
         status: 'downloading', progress: 10, phase: 'downloading', artifactUrl: artifact.url,
         artifactSize: artifact.expectedSize,
       })
-      const download = await this.downloadArtifact(id, artifact, join(finalDirectory, 'server.jar.part'))
+      const download = await this.downloadArtifact(id, artifact, join(finalDirectory, 'server.jar.part'), signal)
+      if (signal.aborted) throw new ServerInstallError('INSTALL_CANCELLED', 'The installation was cancelled. Created files were preserved for review.')
       await this.update(id, { status: 'validating', progress: 86, phase: 'validating-artifact', artifactSha1: download.sha1, artifactSha256: download.sha256 })
       const jarPartial = join(finalDirectory, 'server.jar.part')
       const jarFinal = join(finalDirectory, 'server.jar')
@@ -239,7 +258,9 @@ export class ServerInstallService {
         }).where(eq(serverInstallOperations.id, id)).run()
       })
     } catch (error) {
-      const failure = error instanceof ServerInstallError
+      const failure = signal.aborted
+        ? new ServerInstallError('INSTALL_CANCELLED', 'The installation was cancelled. Any files already created were preserved for review.')
+        : error instanceof ServerInstallError
         ? error
         : new ServerInstallError('INSTALL_FAILED', 'The installation failed. Any panel-created partial directory was preserved for inspection.')
       const at = new Date(this.now()).toISOString()
@@ -248,13 +269,14 @@ export class ServerInstallService {
         partialDirectory, updatedAt: at,
       }).where(eq(serverInstallOperations.id, id)).run()
       this.db.insert(localServerEvents).values({
-        serverId: null, actorUserId, action: 'server-install-failed', outcome: 'failure', occurredAt: at,
+        serverId: null, actorUserId, action: failure.code === 'INSTALL_CANCELLED' ? 'server-install-cancelled' : 'server-install-failed',
+        outcome: failure.code === 'INSTALL_CANCELLED' ? 'success' : 'failure', occurredAt: at,
         detail: JSON.stringify({ operationId: id, software: input.software, version: input.version, code: failure.code, partialDirectory }),
       }).run()
     }
   }
 
-  private async resolveArtifact(input: ServerInstallRequest): Promise<Artifact> {
+  private async resolveArtifact(input: ServerInstallRequest, signal?: AbortSignal): Promise<Artifact> {
     let provider: string
     let url: string
     let expectedSize: number | null = null
@@ -262,7 +284,7 @@ export class ServerInstallService {
     let checksum: string | null = null
     if (input.software === 'vanilla') {
       provider = 'Mojang'
-      const metadata = await this.mojangVersion(input.version)
+      const metadata = await this.mojangVersion(input.version, signal)
       const downloads = isRecord(metadata['downloads']) ? metadata['downloads'] : null
       const server = downloads && isRecord(downloads['server']) ? downloads['server'] : null
       url = stringValue(server?.['url']) ?? ''
@@ -274,8 +296,8 @@ export class ServerInstallService {
     } else if (input.software === 'fabric') {
       provider = 'Fabric Meta'
       const [loaders, installers] = await Promise.all([
-        this.getJson(`${FABRIC_META}/versions/loader/${encodeURIComponent(input.version)}`, ['meta.fabricmc.net']),
-        this.getJson(`${FABRIC_META}/versions/installer`, ['meta.fabricmc.net']),
+        this.getJson(`${FABRIC_META}/versions/loader/${encodeURIComponent(input.version)}`, ['meta.fabricmc.net'], undefined, signal),
+        this.getJson(`${FABRIC_META}/versions/installer`, ['meta.fabricmc.net'], undefined, signal),
       ])
       const loader = Array.isArray(loaders) ? loaders.find((entry) => isRecord(entry) && isRecord(entry['loader']) && entry['loader']['version'] === input.loaderVersion && entry['loader']['stable'] === true) : undefined
       const installer = Array.isArray(installers) ? installers.find((entry) => isRecord(entry) && entry['version'] === input.installerVersion && entry['stable'] === true) : undefined
@@ -284,7 +306,7 @@ export class ServerInstallService {
       checkDomain(url, ['meta.fabricmc.net'])
     } else {
       provider = 'PaperMC Downloads Service v3'
-      const builds = await this.getJson(`${PAPER_API}/projects/paper/versions/${encodeURIComponent(input.version)}/builds`, ['fill.papermc.io'], this.paperUserAgent())
+      const builds = await this.getJson(`${PAPER_API}/projects/paper/versions/${encodeURIComponent(input.version)}/builds`, ['fill.papermc.io'], this.paperUserAgent(), signal)
       const stable = Array.isArray(builds) ? builds.filter((entry) => isRecord(entry) && entry['channel'] === 'STABLE') : []
       const build = stable.find((entry) => isRecord(entry) && entry['id'] === (input.paperBuild ?? stable[0]?.['id']))
       const downloads = isRecord(build) && isRecord(build['downloads']) ? build['downloads'] : null
@@ -297,26 +319,26 @@ export class ServerInstallService {
       checkDomain(url, ['fill-data.papermc.io', 'fill.papermc.io'])
     }
     if (expectedSize !== null && expectedSize > MAX_ARTIFACT_BYTES) throw new ServerInstallError('ARTIFACT_TOO_LARGE', 'The official provider artifact exceeds the 256 MiB installation limit.')
-    const javaMajor = await this.requiredJavaMajor(input.version)
+    const javaMajor = await this.requiredJavaMajor(input.version, signal)
     return { provider, url, expectedSize, checksumType, checksum, javaMajor }
   }
 
-  private async requiredJavaMajor(version: string): Promise<number> {
-    const metadata = await this.mojangVersion(version)
+  private async requiredJavaMajor(version: string, signal?: AbortSignal): Promise<number> {
+    const metadata = await this.mojangVersion(version, signal)
     const javaVersion = isRecord(metadata['javaVersion']) ? metadata['javaVersion'] : null
     const major = javaVersion ? positiveInteger(javaVersion['majorVersion']) : null
     if (!major) throw new ServerInstallError('JAVA_REQUIREMENT_UNKNOWN', `Mojang metadata does not declare the Java requirement for Minecraft ${version}; installation is blocked until compatibility can be verified.`)
     return major
   }
 
-  private async mojangVersion(version: string): Promise<Record<string, unknown>> {
-    const manifest = await this.getJson(MANIFEST_URL, ['piston-meta.mojang.com'])
+  private async mojangVersion(version: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const manifest = await this.getJson(MANIFEST_URL, ['piston-meta.mojang.com'], undefined, signal)
     const versions = isRecord(manifest) && Array.isArray(manifest['versions']) ? manifest['versions'] : []
     const record = versions.find((item) => isRecord(item) && item['id'] === version && item['type'] === 'release')
     const metadataUrl = isRecord(record) ? stringValue(record['url']) : null
     if (!metadataUrl) throw new ServerInstallError('VERSION_UNAVAILABLE', `Minecraft release ${version} is not available in the official Mojang manifest.`)
     checkDomain(metadataUrl, ['piston-meta.mojang.com', 'launchermeta.mojang.com'])
-    const metadata = await this.getJson(metadataUrl, ['piston-meta.mojang.com', 'launchermeta.mojang.com'])
+    const metadata = await this.getJson(metadataUrl, ['piston-meta.mojang.com', 'launchermeta.mojang.com'], undefined, signal)
     if (!isRecord(metadata)) throw new ServerInstallError('PROVIDER_METADATA_INVALID', 'Mojang returned invalid version metadata.')
     return metadata
   }
@@ -326,11 +348,13 @@ export class ServerInstallService {
     return manifest['versions'].filter((entry) => isRecord(entry) && entry['type'] === 'release' && typeof entry['id'] === 'string' && /^\d{1,3}(?:\.\d{1,3}){1,3}$/.test(entry['id'])).map((entry) => (entry as Record<string, unknown>)['id'] as string).slice(0, 100)
   }
 
-  private async getJson(url: string, allowedHosts: string[], userAgent = 'MMSManager/0.2.0'): Promise<unknown> {
+  private async getJson(url: string, allowedHosts: string[], userAgent = 'MMSManager/0.2.0', signal?: AbortSignal): Promise<unknown> {
     let current = url
     for (let redirects = 0; redirects <= REDIRECT_LIMIT; redirects += 1) {
       checkDomain(current, allowedHosts)
-      const response = await this.fetchImpl(current, { headers: { Accept: 'application/json', 'User-Agent': userAgent }, signal: AbortSignal.timeout(15_000), redirect: 'manual' })
+      const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000)
+      const response = await this.fetchImpl(current, { headers: { Accept: 'application/json', 'User-Agent': userAgent }, signal: requestSignal, redirect: 'manual' })
+      if (signal?.aborted) throw new ServerInstallError('INSTALL_CANCELLED', 'The installation was cancelled.')
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get('location')
         if (!location || redirects === REDIRECT_LIMIT) throw new ServerInstallError('PROVIDER_REDIRECT_REJECTED', 'The provider returned too many redirects.')
@@ -355,14 +379,16 @@ export class ServerInstallService {
     return `MMSManager/0.2.0 (${contact})`
   }
 
-  private async downloadArtifact(id: string, artifact: Artifact, path: string): Promise<{ size: number; sha1: string; sha256: string }> {
+  private async downloadArtifact(id: string, artifact: Artifact, path: string, signal?: AbortSignal): Promise<{ size: number; sha1: string; sha256: string }> {
     const hosts = artifact.provider === 'Mojang' ? ['piston-data.mojang.com', 'launcher.mojang.com']
       : artifact.provider === 'Fabric Meta' ? ['meta.fabricmc.net'] : ['fill-data.papermc.io', 'fill.papermc.io']
     let current = artifact.url
     let response: Response | null = null
     for (let redirects = 0; redirects <= REDIRECT_LIMIT; redirects += 1) {
       checkDomain(current, hosts)
-      response = await this.fetchImpl(current, { headers: { Accept: 'application/java-archive, application/octet-stream' }, signal: AbortSignal.timeout(120_000), redirect: 'manual' })
+      const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000)
+      response = await this.fetchImpl(current, { headers: { Accept: 'application/java-archive, application/octet-stream' }, signal: requestSignal, redirect: 'manual' })
+      if (signal?.aborted) throw new ServerInstallError('INSTALL_CANCELLED', 'The installation was cancelled.')
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get('location')
         if (!location || redirects === REDIRECT_LIMIT) throw new ServerInstallError('DOWNLOAD_REDIRECT_REJECTED', 'The artifact download returned too many redirects.')
@@ -389,25 +415,29 @@ export class ServerInstallService {
     let size = 0
     try {
       const reader = response.body.getReader()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (!value) continue
-        size += value.byteLength
-        if (size > MAX_ARTIFACT_BYTES || artifact.expectedSize !== null && size > artifact.expectedSize) {
-          await reader.cancel()
-          throw new ServerInstallError('ARTIFACT_SIZE_MISMATCH', 'The artifact exceeded its official size or the 256 MiB limit.')
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          if (!value) continue
+          size += value.byteLength
+          if (size > MAX_ARTIFACT_BYTES || artifact.expectedSize !== null && size > artifact.expectedSize) {
+            await reader.cancel()
+            throw new ServerInstallError('ARTIFACT_SIZE_MISMATCH', 'The artifact exceeded its official size or the 256 MiB limit.')
+          }
+          if (firstBytes.length < 4) firstBytes.push(...value.subarray(0, 4 - firstBytes.length))
+          sha1.update(value)
+          sha256.update(value)
+          let offset = 0
+          while (offset < value.byteLength) {
+            const written = await handle.write(value, offset, value.byteLength - offset, size - value.byteLength + offset)
+            offset += written.bytesWritten
+          }
+          const progress = length ? Math.min(82, 10 + Math.floor(size / length * 72)) : Math.min(80, 10 + Math.floor(size / (64 * 1024 * 1024) * 16))
+          await this.update(id, { status: 'downloading', progress, phase: 'downloading' })
         }
-        if (firstBytes.length < 4) firstBytes.push(...value.subarray(0, 4 - firstBytes.length))
-        sha1.update(value)
-        sha256.update(value)
-        let offset = 0
-        while (offset < value.byteLength) {
-          const written = await handle.write(value, offset, value.byteLength - offset, size - value.byteLength + offset)
-          offset += written.bytesWritten
-        }
-        const progress = length ? Math.min(82, 10 + Math.floor(size / length * 72)) : Math.min(80, 10 + Math.floor(size / (64 * 1024 * 1024) * 16))
-        await this.update(id, { status: 'downloading', progress, phase: 'downloading' })
+      } finally {
+        if (signal?.aborted) await reader.cancel().catch(() => undefined)
       }
       if (size === 0 || firstBytes.join(',') !== '80,75,3,4') throw new ServerInstallError('ARTIFACT_TYPE_REJECTED', 'The downloaded file does not have a valid Java archive header.')
       if (length !== null && length !== size || artifact.expectedSize !== null && artifact.expectedSize !== size) throw new ServerInstallError('ARTIFACT_SIZE_MISMATCH', 'The completed artifact length did not match provider metadata.')

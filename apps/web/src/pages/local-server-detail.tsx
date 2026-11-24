@@ -10,7 +10,7 @@ import type { LocalServerSummary, ServerConsoleEntry, ServerModEntry, ServerMods
 import {
   confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getServerConsole, getServerProperties, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, previewServerPropertiesRestore, restoreServerFileRecovery, restoreServerProperties, restoreTrashedServerFile, sendPlayerAction,
   sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer, updateServerProperties,
-  getServerMods, uploadServerMod, uploadServerFile, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile,
+  getServerMods, uploadServerMod, uploadServerFile, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
 } from '../api/servers'
 import { useAuth } from '../state/use-auth'
 import { Badge, Button, Card, ComingSoon, SectionHeading } from '../components/ui'
@@ -34,6 +34,7 @@ const tabs = [
 ]
 
 const propertyFields: { key: keyof ServerPropertySettings; label: string; kind: 'text' | 'number' | 'select' | 'switch'; options?: string[]; min?: number; max?: number; suffix?: string }[] = [
+  { key: 'onlineMode', label: 'Online mode', kind: 'switch' },
   { key: 'motd', label: 'Message of the day', kind: 'text' },
   { key: 'gameMode', label: 'Default game mode', kind: 'select', options: ['survival', 'creative', 'adventure', 'spectator'] },
   { key: 'difficulty', label: 'Difficulty', kind: 'select', options: ['peaceful', 'easy', 'normal', 'hard'] },
@@ -58,6 +59,13 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [displayName, setDisplayName] = useState(server.name)
+  const [nameDraft, setNameDraft] = useState(server.name)
+  const [nameDialogOpen, setNameDialogOpen] = useState(false)
+  const [nameSaving, setNameSaving] = useState(false)
+  const [nameError, setNameError] = useState<string | null>(null)
+
+  useEffect(() => { setDisplayName(server.name); setNameDraft(server.name) }, [server.id, server.name])
 
   const refreshRuntime = useCallback(async () => {
     try {
@@ -103,6 +111,18 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     } finally { setBusy(false) }
   }
 
+  async function saveName(event: FormEvent) {
+    event.preventDefault()
+    const name = nameDraft.trim()
+    if (!name || name === displayName || nameSaving) return
+    setNameSaving(true); setNameError(null)
+    try {
+      const updated = await updateServerMetadata(server.id, { name })
+      setDisplayName(updated.name); setNameDialogOpen(false)
+    } catch (issue) { setNameError(issue instanceof Error ? issue.message : 'The server name could not be saved.') }
+    finally { setNameSaving(false) }
+  }
+
   const status = runtime?.status ?? server.runtimeStatus ?? 'unavailable'
   const statusTone = status === 'running' ? 'good' : status === 'crashed' || status === 'error' ? 'danger' : status === 'external/unmanaged' ? 'warn' : 'neutral'
   const isManaged = server.source === 'created' && server.managed
@@ -112,8 +132,9 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   const canConfirmStopped = isAdmin && isManaged && status === 'external/unmanaged'
   return <div className="page-stack server-detail-page local-detail-page">
     <div className="server-detail-heading">
-      <div className="server-detail-identity"><span className="local-server-icon detail-server-icon"><Server size={19} /></span><div><div className="server-detail-title"><h1>{server.name}</h1><Badge tone={statusTone}>{statusLabel(status)}</Badge></div><p>{server.software === 'unknown' ? 'Unknown software' : `${capitalize(server.software)}${server.version ? ` ${server.version}` : ''}`} <span>·</span> {server.port ? `127.0.0.1:${server.port}` : 'No game port detected'}</p></div></div>
+      <div className="server-detail-identity"><span className="local-server-icon detail-server-icon"><Server size={19} /></span><div><div className="server-detail-title"><h1>{displayName}</h1><Badge tone={statusTone}>{statusLabel(status)}</Badge></div><p>{server.software === 'unknown' ? 'Unknown software' : `${capitalize(server.software)}${server.version ? ` ${server.version}` : ''}`} <span>·</span> {server.port ? `127.0.0.1:${server.port}` : 'No game port detected'}</p></div></div>
       <div className="server-actions">
+        {isAdmin && <Button kind="quiet" icon={PencilLine} onClick={() => { setNameDraft(displayName); setNameError(null); setNameDialogOpen(true) }}>Edit name</Button>}
         {isAdmin && (canStart ? <Button kind="primary" icon={Play} disabled={busy} onClick={() => void runAction('start')}>Start server</Button>
           : canStop ? <Button kind="danger" icon={Square} disabled={busy} onClick={() => void runAction('stop')}>Stop server</Button>
             : canConfirmStopped ? <Button icon={CircleCheck} disabled={busy} onClick={() => void runAction('confirm')}>Confirm it has stopped</Button>
@@ -121,12 +142,12 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
         <Button icon={RefreshCw} disabled={!canRestart || busy} onClick={() => void runAction('restart')}>{busy && status === 'running' ? 'Restarting…' : 'Restart'}</Button>
       </div>
     </div>
-    <div className="server-detail-tabs" role="navigation" aria-label={`${server.name} pages`}>
+    <div className="server-detail-tabs" role="navigation" aria-label={`${displayName} pages`}>
       {tabs.map(({ id, label, icon: Icon }) => <NavLink key={id} to={`/servers/${server.id}/${id}`} className={section === id ? 'active' : ''}>
-        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups', 'runtime', 'automation'].includes(id) && <span className="tab-preview-dot" />}
+        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups', 'runtime', 'automation', 'access'].includes(id) && <span className="tab-preview-dot" />}
       </NavLink>)}
     </div>
-    <div className="server-section-heading"><div><p className="eyebrow">{server.name} / {active.label}</p><h2>{sectionTitle(section)}</h2></div><Badge tone="good">Local registry</Badge></div>
+    <div className="server-section-heading"><div><p className="eyebrow">{displayName} / {active.label}</p><h2>{sectionTitle(section)}</h2></div><Badge tone="good">Local registry</Badge></div>
     {(runtimeError || actionError) && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{actionError ?? runtimeError}</span><Button icon={RefreshCw} onClick={() => void refreshRuntime()}>Retry</Button></div>}
     {runtime?.errorMessage && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{runtime.errorMessage}</span></div>}
     {runtime?.restartRequired && <div className="local-restart-banner" role="status"><RefreshCw size={16} /><span><strong>Restart required</strong><small>Server properties changed while this process was running. The new values take effect after the next start.</small></span></div>}
@@ -135,7 +156,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     {section === 'mods' && <LocalMods serverId={server.id} software={server.software} managed={isManaged} isAdmin={isAdmin} runtimeStatus={status} />}
     {section === 'console' && <LocalConsole serverId={server.id} runtime={runtime} isAdmin={isAdmin} />}
     {section === 'logs' && <LocalLogs serverId={server.id} />}
-    {section === 'properties' && isAdmin && <LocalProperties serverId={server.id} managed={isManaged} />}
+    {section === 'properties' && isAdmin && <LocalProperties serverId={server.id} managed={isManaged} runtimeStatus={runtime?.status ?? 'unavailable'} />}
     {section === 'properties' && !isAdmin && <LockedDetail title="Administrator access required" text="Server properties are visible only to workspace administrators." />}
     {section === 'files' && isAdmin && <LocalFiles serverId={server.id} managed={isManaged} runtimeStatus={status} />}
     {section === 'files' && !isAdmin && <LockedDetail title="Administrator access required" text="Server files may contain credentials or private world data. Access is limited to workspace administrators." />}
@@ -144,7 +165,9 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     {section === 'backups' && <LocalServerBackups serverId={server.id} serverName={server.name} managed={isManaged} isAdmin={isAdmin} runtimeStatus={status} />}
     {section === 'runtime' && <LocalServerRuntime serverId={server.id} managed={isManaged} isAdmin={isAdmin} />}
     {section === 'automation' && <LocalServerAutomation serverId={server.id} managed={isManaged} isAdmin={isAdmin} />}
-    {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups', 'runtime', 'automation'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
+    {section === 'access' && <LocalAccessPolicy server={{ ...server, name: displayName }} isAdmin={isAdmin} />}
+    {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups', 'runtime', 'automation', 'access'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
+    {nameDialogOpen && <div className="local-file-dialog-backdrop"><section className="local-file-dialog server-name-dialog" role="dialog" aria-modal="true" aria-labelledby="server-name-dialog-title"><div className="local-file-dialog-heading"><span className="local-backup-icon"><PencilLine size={16} /></span><div><h3 id="server-name-dialog-title">Edit server name</h3><p>Only the display name changes. Server files and history stay in place.</p></div></div><form onSubmit={(event) => void saveName(event)}><label className="server-name-field">Server name<input autoFocus required maxLength={60} value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} /></label>{nameError && <div className="local-inline-error" role="alert">{nameError}</div>}<div className="local-file-dialog-actions"><Button type="button" disabled={nameSaving} onClick={() => setNameDialogOpen(false)}>Cancel</Button><Button kind="primary" icon={nameSaving ? RefreshCw : Check} disabled={nameSaving || !nameDraft.trim() || nameDraft.trim() === displayName}>{nameSaving ? 'Saving…' : 'Save name'}</Button></div></form></section></div>}
   </div>
 }
 
@@ -337,13 +360,14 @@ function LocalLogs({ serverId }: { serverId: string }) {
   </Card>
 }
 
-function LocalProperties({ serverId, managed }: { serverId: string; managed: boolean }) {
+function LocalProperties({ serverId, managed, runtimeStatus }: { serverId: string; managed: boolean; runtimeStatus: string }) {
   const [properties, setProperties] = useState<ServerPropertiesResponse | null>(null)
   const [draft, setDraft] = useState<ServerPropertySettings | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const [confirmOnlineMode, setConfirmOnlineMode] = useState(false)
   const [restorePreview, setRestorePreview] = useState<ServerPropertiesRestorePreview | null>(null)
   const [restoreBusy, setRestoreBusy] = useState(false)
   const [restoreError, setRestoreError] = useState<string | null>(null)
@@ -360,8 +384,11 @@ function LocalProperties({ serverId, managed }: { serverId: string; managed: boo
   }, [serverId])
   useEffect(() => { const controller = new AbortController(); void reload(controller.signal); return () => controller.abort() }, [reload])
   const dirty = useMemo(() => Boolean(properties && draft && JSON.stringify(properties.settings) !== JSON.stringify(draft)), [draft, properties])
+  const onlineModeChanged = Boolean(properties && draft && properties.settings.onlineMode !== draft.onlineMode)
+  const onlineModeStopped = runtimeStatus === 'stopped'
   function setValue(key: keyof ServerPropertySettings, value: string | number | boolean) {
     setDraft((current) => current ? { ...current, [key]: value } as ServerPropertySettings : current)
+    if (key === 'onlineMode') setConfirmOnlineMode(false)
     setSaved(false)
   }
   async function save(event: FormEvent) {
@@ -370,8 +397,8 @@ function LocalProperties({ serverId, managed }: { serverId: string; managed: boo
     setSaving(true); setError(null); setSaved(false)
     const changes = Object.fromEntries(Object.entries(draft).filter(([key, value]) => properties.settings[key as keyof ServerPropertySettings] !== value)) as Partial<ServerPropertySettings>
     try {
-      const result = await updateServerProperties(serverId, changes)
-      setProperties(result); setDraft(result.settings); setSaved(true)
+      const result = await updateServerProperties(serverId, changes, onlineModeChanged && confirmOnlineMode)
+      setProperties(result); setDraft(result.settings); setSaved(true); setConfirmOnlineMode(false)
     } catch (issue) { setError(issue instanceof Error ? issue.message : 'Properties could not be saved.') }
     finally { setSaving(false) }
   }
@@ -400,9 +427,11 @@ function LocalProperties({ serverId, managed }: { serverId: string; managed: boo
       {item.kind === 'text' && <input aria-label={item.label} value={String(draft[item.key])} maxLength={120} onChange={(event) => setValue(item.key, event.target.value)} />}
       {item.kind === 'number' && <div className="property-number-input"><input aria-label={item.label} type="number" value={Number(draft[item.key])} min={item.min} max={item.max} onChange={(event) => setValue(item.key, event.target.value === '' ? item.min ?? 0 : Number(event.target.value))} /><span>{item.suffix}</span></div>}
       {item.kind === 'select' && <select aria-label={item.label} value={String(draft[item.key])} onChange={(event) => setValue(item.key, event.target.value)}>{item.options?.map((option) => <option key={option} value={option}>{capitalize(option)}</option>)}</select>}
-      {item.kind === 'switch' && <label className="property-toggle"><input type="checkbox" aria-label={item.label} checked={Boolean(draft[item.key])} onChange={(event) => setValue(item.key, event.target.checked)} /><span /><strong>{draft[item.key] ? 'Enabled' : 'Disabled'}</strong></label>}
-      {item.suffix || item.key === 'motd' ? <span className="field-hint">{item.suffix ? `${item.min}–${item.max} ${item.suffix}` : 'Up to 120 characters'}</span> : null}
-    </div>)}</div><div className="local-properties-footer"><span>{dirty ? 'Unsaved changes' : 'All changes are saved'}</span><div><Button type="button" disabled={!dirty || saving} onClick={() => setDraft(properties.settings)}>Discard</Button><Button kind="primary" icon={saving ? RefreshCw : Check} disabled={!dirty || saving} type="submit">{saving ? 'Saving…' : 'Save properties'}</Button></div></div></form>
+      {item.kind === 'switch' && <label className="property-toggle"><input type="checkbox" aria-label={item.label} checked={Boolean(draft[item.key])} disabled={item.key === 'onlineMode' && !onlineModeStopped} onChange={(event) => setValue(item.key, event.target.checked)} /><span /><strong>{draft[item.key] ? 'Enabled' : 'Disabled'}</strong></label>}
+      {item.suffix || item.key === 'motd' || item.key === 'onlineMode' ? <span className="field-hint">{item.suffix ? `${item.min}–${item.max} ${item.suffix}` : item.key === 'motd' ? 'Up to 120 characters' : 'Changes require a stopped server.'}</span> : null}
+    </div>)}</div>
+    {onlineModeChanged && <div className="online-mode-confirmation" role="group" aria-labelledby="online-mode-change-title"><div><AlertTriangle size={16} /><div><strong id="online-mode-change-title">Online-mode change</strong><p>Current: {properties.settings.onlineMode ? 'Enabled' : 'Disabled'} · Pending: {draft.onlineMode ? 'Enabled' : 'Disabled'}. Changing this may create different player UUIDs and separate existing inventories, advancements and permissions from those identities. Disabling it weakens Minecraft account verification. No player data is migrated, and this does not change MMSManager sign-in.</p>{!onlineModeStopped && <small>The server must be confirmed stopped before this setting can change.</small>}</div></div><label><input type="checkbox" checked={confirmOnlineMode} disabled={!onlineModeStopped} onChange={(event) => setConfirmOnlineMode(event.target.checked)} /> I understand and confirm this change</label></div>}
+    <div className="local-properties-footer"><span>{dirty ? 'Unsaved changes' : 'All changes are saved'}</span><div><Button type="button" disabled={!dirty || saving} onClick={() => { setDraft(properties.settings); setConfirmOnlineMode(false) }}>Discard</Button><Button kind="primary" icon={saving ? RefreshCw : Check} disabled={!dirty || saving || (onlineModeChanged && (!onlineModeStopped || !confirmOnlineMode))} type="submit">{saving ? 'Saving…' : 'Save properties'}</Button></div></div></form>
   </Card><div className="local-properties-side">
     {properties.restartRequired && <div className="local-restart-banner"><RefreshCw size={16} /><span><strong>Restart required</strong><small>Changes will be applied at the next server start.</small></span></div>}
     <Card><SectionHeading title="Protected and preserved" description="Network and unrecognized properties are not editable here." /><div className="local-protected-setting"><LockKeyhole size={15} /><span><strong>Local network bind</strong><small>127.0.0.1 is preserved from the managed installation.</small></span></div><div className="local-unknown-setting"><strong>{properties.unknownKeys.length} other properties preserved</strong><span>{properties.unknownKeys.length ? properties.unknownKeys.slice(0, 12).join(' · ') : 'No additional keys found'}{properties.unknownKeys.length > 12 ? ' …' : ''}</span></div></Card>
@@ -752,4 +781,11 @@ function ComingSoonDetail({ section, serverName }: { section: string; serverName
   const item = tabs.find((tab) => tab.id === section)
   const Icon = item?.icon ?? FileText
   return <div className="preview-section-layout"><Card className="preview-section-card"><div className="preview-section-header"><span className="preview-section-icon"><Icon size={20} /></span><div><h3>{sectionTitle(section)}</h3><p>Real {section} data is not available in this stage.</p></div><ComingSoon /></div><div className="local-coming-soon-message"><span className="local-server-icon"><Icon size={19} /></span><strong>{item?.label ?? 'Server tools'}</strong><span>The local page navigation is ready. This feature will be connected in a later stage.</span></div><div className="preview-section-footer"><span>Server: {serverName} · local registry</span><Link to="/servers">All servers <ChevronRight size={14} /></Link></div></Card><div className="local-detail-callout"><Shield size={15} /><span>There is no mock player, mod, world, file, backup or automation data attached to this real server.</span></div></div>
+}
+
+function LocalAccessPolicy({ server, isAdmin }: { server: LocalServerSummary; isAdmin: boolean }) {
+  return <div className="local-access-layout"><Card className="local-access-card"><div className="local-access-heading"><span><Shield size={19} /></span><div><div className="card-kicker">Read only access view</div><h3>{server.name}</h3><p>{isAdmin ? 'You are an Administrator in this local workspace.' : 'You are a Member in this local workspace.'}</p></div><Badge tone={isAdmin ? 'good' : 'neutral'}>{isAdmin ? 'Administrator' : 'Member'}</Badge></div>
+    <div className="local-access-grid"><div><strong>Workspace visibility</strong><p>All enabled local workspace accounts can see this registered server and its non-sensitive status pages.</p></div><div><strong>Administrator controls</strong><p>Only Administrators can start, stop or restart a managed server, edit properties, manage files, worlds, backups, runtime and schedules.</p></div><div><strong>Imported folders</strong><p>{server.source === 'imported' ? 'This folder is imported and remains read only, including for Administrators.' : 'Panel-created instances are managed only while their process identity and folder checks remain valid.'}</p></div></div>
+    <div className="local-detail-callout"><LockKeyhole size={15} /><span>This project uses workspace roles only. Per-server member grants and access-control editing are not configured here.</span></div>
+  </Card><Card className="local-access-summary"><SectionHeading title="Visible pages" description="Current server-view permissions" /><div><span>Overview, console and process logs</span><Badge>Workspace</Badge></div><div><span>Player events and supported mod inventory</span><Badge>Workspace</Badge></div><div><span>Properties, files, worlds and recovery</span><Badge tone={isAdmin ? 'good' : 'warn'}>{isAdmin ? 'Administrator' : 'Restricted'}</Badge></div></Card></div>
 }
