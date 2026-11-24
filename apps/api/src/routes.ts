@@ -52,6 +52,12 @@ import {
   serverFileTrashRestoreSchema,
   serverFileWriteSchema,
   serverWorldsResultSchema,
+  serverBackupsResultSchema,
+  serverBackupCreateResultSchema,
+  serverBackupIdParamSchema,
+  serverBackupPreviewResultSchema,
+  serverBackupRestoreRequestSchema,
+  serverBackupRestoreResultSchema,
   serverHistoryCalendarQuerySchema,
   serverHistoryCalendarResultSchema,
   serverHistoryDayQuerySchema,
@@ -92,6 +98,7 @@ import { MAX_MOD_JAR_BYTES, ServerModsError, ServerModsService } from './servers
 import { MAX_SERVER_FILE_UPLOAD_BYTES, ServerFileService, ServerFilesError } from './servers/files.js'
 import { ServerWorldService, ServerWorldsError } from './servers/worlds.js'
 import { ServerHistoryService } from './servers/history.js'
+import { ServerBackupError, ServerBackupService } from './servers/backups.js'
 
 class InvalidRequestError extends Error {}
 
@@ -215,7 +222,9 @@ export async function createApiApp(options: {
   const serverStatus = new ServerStatusService(options.db, options.now)
   const mods = new ServerModsService(options.db, options.servers, processes, options.now)
   const files = new ServerFileService(options.db, options.servers, processes, options.now)
-  const worlds = new ServerWorldService(options.db, options.servers)
+  const backups = new ServerBackupService(options.db, options.servers, processes, options.now)
+  await backups.prepare()
+  const worlds = new ServerWorldService(options.db, options.servers, backups)
   const serverHistory = new ServerHistoryService(options.db, options.timeZone, options.now)
   const webOrigin = options.webOrigin ?? WEB_ORIGIN
   const apiPort = options.apiPort ?? 4174
@@ -303,8 +312,17 @@ export async function createApiApp(options: {
     if (error instanceof ServerStatusError) return reply.code(404).send({ error: { code: error.code, message: error.message } })
     if (error instanceof ServerProcessError) {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
-        : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') || error.code.endsWith('_NOT_RUNNING') || error.code.endsWith('_BUSY') || error.code === 'PROCESS_NOT_OWNED' || error.code === 'SERVER_NOT_PANEL_MANAGED' ? 409
+        : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') || error.code.endsWith('_NOT_RUNNING') || error.code.endsWith('_BUSY') || error.code.endsWith('_NOT_STOPPED') || error.code.includes('RECOVERY_REQUIRED') || error.code === 'PROCESS_NOT_OWNED' || error.code === 'SERVER_NOT_PANEL_MANAGED' ? 409
           : error.code.includes('UNAVAILABLE') ? 503 : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
+    if (error instanceof ServerBackupError) {
+      const status = error.code.endsWith('_NOT_FOUND') ? 404
+        : error.code.includes('TOO_LARGE') || error.code.includes('_LIMIT') ? 413
+          : error.code.includes('CONFLICT') || error.code.includes('CONFIRMATION_FAILED') || error.code.includes('NOT_STOPPED') || error.code.includes('NOT_MANAGED') || error.code.includes('UNSAFE') || error.code.includes('CHECKSUM') || error.code.includes('MISMATCH') || error.code.includes('RECOVERY_REQUIRED') || error.code === 'BACKUP_QUOTA_EXCEEDED' || error.code === 'SERVER_CHANGED_DURING_BACKUP' || error.code === 'BACKUP_INTERRUPTED' ? 409
+            : error.code.includes('DISK_SPACE') || error.code.includes('UNAVAILABLE') ? 503
+              : error.code.includes('TIMEOUT') ? 504
+                : ['BACKUP_FAILED', 'BACKUP_READ_FAILED', 'BACKUP_WRITE_FAILED', 'BACKUP_CLEANUP_FAILED', 'RESTORE_FAILED', 'RESTORE_ROLLBACK_FAILED'].includes(error.code) ? 500 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
     if (error instanceof ServerPropertiesError) {
@@ -606,6 +624,34 @@ export async function createApiApp(options: {
     const input = parse(serverCommandSchema, request.body)
     await processes.sendCommand(params.serverId, request.principal!.userId, input.command)
     return reply.code(202).send({ ok: true })
+  })
+  app.get('/api/v1/admin/servers/:serverId/backups', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverBackupsResultSchema.parse(await backups.list(params.serverId))
+  })
+  app.post('/api/v1/admin/servers/:serverId/backups', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(localServerIdSchema, request.params)
+    if (request.body && typeof request.body === 'object' && Object.keys(request.body as Record<string, unknown>).length !== 0) throw new InvalidRequestError('Backup creation does not accept request options.')
+    return reply.code(201).send(serverBackupCreateResultSchema.parse({ backup: await backups.create(params.serverId, request.principal!.userId) }))
+  })
+  app.get('/api/v1/admin/servers/:serverId/backups/:backupId/preview', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(serverBackupIdParamSchema, request.params)
+    return serverBackupPreviewResultSchema.parse({ preview: await backups.preview(params.serverId, params.backupId) })
+  })
+  app.get('/api/v1/admin/servers/:serverId/backups/:backupId/download', { preHandler: requireAdmin }, async (request, reply) => {
+    const params = parse(serverBackupIdParamSchema, request.params)
+    const download = await backups.openDownload(params.serverId, params.backupId)
+    reply.header('content-type', 'application/octet-stream')
+    reply.header('content-length', String(download.sizeBytes))
+    reply.header('content-disposition', `attachment; filename="mmsmanager-${params.serverId}-${params.backupId}.mmsbackup"`)
+    reply.header('cache-control', 'private, no-store')
+    reply.header('x-content-type-options', 'nosniff')
+    return reply.send(download.handle.createReadStream({ start: 0, autoClose: true }))
+  })
+  app.post('/api/v1/admin/servers/:serverId/backups/:backupId/restore', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(serverBackupIdParamSchema, request.params)
+    const input = parse(serverBackupRestoreRequestSchema, request.body)
+    return serverBackupRestoreResultSchema.parse(await backups.restore(params.serverId, request.principal!.userId, params.backupId, input.confirmation))
   })
   app.get('/api/v1/admin/servers/:serverId/properties', { preHandler: requireAdmin }, async (request) => {
     const params = parse(localServerIdSchema, request.params)

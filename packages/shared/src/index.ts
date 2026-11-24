@@ -554,6 +554,67 @@ export const serverWorldsSchema = z.object({
 }).strict()
 export const serverWorldsResultSchema = z.object({ worlds: serverWorldsSchema }).strict()
 
+export const serverBackupSchema = z.object({
+  id: z.string().uuid(),
+  serverId: z.string().uuid(),
+  kind: z.enum(['manual', 'pre-restore']),
+  createdAt: z.string().datetime({ offset: true }),
+  archiveSizeBytes: z.number().int().nonnegative(),
+  archiveSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  manifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  entryCount: z.number().int().nonnegative().max(100_000),
+  fileCount: z.number().int().nonnegative().max(100_000),
+  totalFileBytes: z.number().int().nonnegative(),
+  excludedCount: z.number().int().nonnegative(),
+}).strict()
+export const serverBackupsResultSchema = z.object({
+  serverId: z.string().uuid(),
+  items: z.array(serverBackupSchema).max(500),
+  truncated: z.boolean(),
+  storageUsedBytes: z.number().int().nonnegative(),
+  storageLimitBytes: z.number().int().positive(),
+  quotaWarning: z.boolean(),
+  runtimeStatus: z.enum(['stopped', 'starting', 'running', 'stopping', 'crashed', 'error', 'external/unmanaged', 'unavailable']),
+}).strict()
+export type ServerBackupsInventory = z.infer<typeof serverBackupsResultSchema>
+export const serverBackupCreateResultSchema = z.object({ backup: serverBackupSchema }).strict()
+export const serverBackupIdParamSchema = z.object({ serverId: z.string().uuid(), backupId: z.string().uuid() }).strict()
+export const serverBackupPreviewEntrySchema = z.object({
+  path: z.string().max(4096),
+  kind: z.enum(['file', 'directory']),
+  sizeBytes: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+}).strict()
+export const serverBackupExcludedPathSchema = z.object({
+  path: z.string().max(4096),
+  reason: z.enum(['private-panel-data', 'private-system-data', 'private-credential', 'symlink', 'hardlink', 'special-file', 'nested-mount', 'unsafe-path']),
+}).strict()
+export const serverBackupPreviewSchema = z.object({
+  backup: serverBackupSchema,
+  integrityValid: z.boolean(),
+  serverStopped: z.boolean(),
+  canRestore: z.boolean(),
+  confirmationText: z.string().max(300),
+  issue: z.string().max(300).nullable(),
+  entries: z.array(serverBackupPreviewEntrySchema).max(100),
+  entriesTruncated: z.boolean(),
+  excludedPaths: z.array(serverBackupExcludedPathSchema).max(50),
+  excludedPathsTruncated: z.boolean(),
+}).strict()
+export const serverBackupPreviewResultSchema = z.object({ preview: serverBackupPreviewSchema }).strict()
+export const serverBackupRestoreRequestSchema = z.object({ confirmation: z.string().min(1).max(300) }).strict()
+export const serverBackupRestoreResultSchema = z.object({
+  ok: z.literal(true),
+  restoreId: z.string().uuid(),
+  backupId: z.string().uuid(),
+  safetyBackupId: z.string().uuid(),
+  restoredFileCount: z.number().int().nonnegative().max(100_000),
+  restoredDirectoryCount: z.number().int().nonnegative().max(100_000),
+  restoredBytes: z.number().int().nonnegative(),
+  completedAt: z.string().datetime({ offset: true }),
+  rollbackCleanupPending: z.boolean(),
+}).strict()
+
 export const serverHistoryScopeSchema = z.union([z.literal('all'), z.string().uuid()])
 export const serverHistoryCalendarQuerySchema = z.object({
   scope: serverHistoryScopeSchema.default('all'),
@@ -709,6 +770,9 @@ export type ServerFileTrash = z.infer<typeof serverFileTrashSchema>
 export type ServerFileRecovery = z.infer<typeof serverFileRecoverySchema>
 export type ServerWorldEntry = z.infer<typeof serverWorldEntrySchema>
 export type ServerWorlds = z.infer<typeof serverWorldsSchema>
+export type ServerBackup = z.infer<typeof serverBackupSchema>
+export type ServerBackupPreview = z.infer<typeof serverBackupPreviewSchema>
+export type ServerBackupRestoreResult = z.infer<typeof serverBackupRestoreResultSchema>
 export type ServerHistoryCalendar = z.infer<typeof serverHistoryCalendarSchema>
 export type ServerHistoryCalendarDay = z.infer<typeof serverHistoryCalendarDaySchema>
 export type ServerHistoryScope = z.infer<typeof serverHistoryScopeSchema>

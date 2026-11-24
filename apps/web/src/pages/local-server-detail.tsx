@@ -14,6 +14,7 @@ import {
 } from '../api/servers'
 import { useAuth } from '../state/use-auth'
 import { Badge, Button, Card, ComingSoon, SectionHeading } from '../components/ui'
+import { LocalServerBackups } from './local-server-backups'
 
 const tabs = [
   { id: 'overview', label: 'Overview', icon: Activity },
@@ -116,7 +117,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     </div>
     <div className="server-detail-tabs" role="navigation" aria-label={`${server.name} pages`}>
       {tabs.map(({ id, label, icon: Icon }) => <NavLink key={id} to={`/servers/${server.id}/${id}`} className={section === id ? 'active' : ''}>
-        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds'].includes(id) && <span className="tab-preview-dot" />}
+        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups'].includes(id) && <span className="tab-preview-dot" />}
       </NavLink>)}
     </div>
     <div className="server-section-heading"><div><p className="eyebrow">{server.name} / {active.label}</p><h2>{sectionTitle(section)}</h2></div><Badge tone="good">Local registry</Badge></div>
@@ -134,7 +135,8 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     {section === 'files' && !isAdmin && <LockedDetail title="Administrator access required" text="Server files may contain credentials or private world data. Access is limited to workspace administrators." />}
     {section === 'worlds' && isAdmin && <LocalWorlds serverId={server.id} managed={isManaged} />}
     {section === 'worlds' && !isAdmin && <LockedDetail title="Administrator access required" text="World paths and storage details are available only to workspace administrators." />}
-    {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
+    {section === 'backups' && <LocalServerBackups serverId={server.id} serverName={server.name} managed={isManaged} isAdmin={isAdmin} runtimeStatus={status} />}
+    {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
   </div>
 }
 

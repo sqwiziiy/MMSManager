@@ -41,11 +41,11 @@ async function expectNoHorizontalOverflow(page: Page, route: string): Promise<vo
   expect(size.content, `horizontal overflow on ${route}`).toBeLessThanOrEqual(size.viewport)
 }
 
-async function mockLocalServer(page: Page) {
+async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   const serverId = 'e03c1cf8-e2a1-4a4e-9de4-4536c7796091'
   const backupId = 'c03c1cf8-e2a1-4a4e-9de4-4536c7796091'
   const now = new Date().toISOString()
-  const server = { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus: 'running' }
+  const server = { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus }
   let settings = { motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
   let restartRequired = false
   const properties = () => ({ settings, unknownKeys: ['online-mode', 'server-ip', 'level-seed'], backups: restartRequired ? [{ id: backupId, createdAt: now, sha256: 'a'.repeat(64) }] : [], restartRequired })
@@ -55,7 +55,7 @@ async function mockLocalServer(page: Page) {
   ], nextAfter: null }
   await page.route('**/api/v1/servers', (route) => route.fulfill({ json: { servers: [server] } }))
   await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [{ ...server, directory: '/tmp/mmsmanager-e2e/local-fixture', javaPath: '/tmp/fake-java' }], managedRoot: '/tmp/mmsmanager-e2e/servers', importRoots: ['/tmp/mmsmanager-e2e/servers'] } }))
-  await page.route(`**/api/v1/servers/${serverId}/runtime`, (route) => route.fulfill({ json: { runtime: { serverId, status: 'running', startedAt: now, uptimeSeconds: 153, memoryRssBytes: 536870912, cpuPercent: null, ready: true, playersOnline: null, eula: 'accepted', restartRequired, lastExitCode: null, errorMessage: null } } }))
+  await page.route(`**/api/v1/servers/${serverId}/runtime`, (route) => route.fulfill({ json: { runtime: { serverId, status: runtimeStatus, startedAt: runtimeStatus === 'running' ? now : null, uptimeSeconds: runtimeStatus === 'running' ? 153 : null, memoryRssBytes: null, cpuPercent: null, ready: runtimeStatus === 'running', playersOnline: null, eula: 'accepted', restartRequired, lastExitCode: null, errorMessage: null } } }))
   await page.route(`**/api/v1/servers/${serverId}/status`, (route) => route.fulfill({ json: { status: { serverId, checkedAt: now, source: 'local-status-ping', state: 'reachable', playersOnline: 3, playersMax: 20, versionName: 'Paper 1.21.4', description: 'Local fixture', latencyMs: 4, errorCode: null, authoritativePlayerList: false } } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/players`, (route) => route.fulfill({ json: { players: { serverId, state: 'authoritative', source: 'owned-console-list', sampledAt: now, names: ['FixturePlayer'], reason: null } } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/worlds`, (route) => route.fulfill({ json: { worlds: {
@@ -112,6 +112,31 @@ async function mockLocalServer(page: Page) {
     settings = { ...settings, motd: 'A previous fixture message' }
     restartRequired = true
     return route.fulfill({ json: { properties: properties(), recoveryBackupId: 'd03c1cf8-e2a1-4a4e-9de4-4536c7796091' } })
+  })
+
+  const serverBackupId = 'b03c1cf8-e2a1-4a4e-9de4-4536c7796091'
+  const safetyBackupId = 'a03c1cf8-e2a1-4a4e-9de4-4536c7796091'
+  const backupRecord = (id: string, kind: 'manual' | 'pre-restore') => ({ id, serverId, kind, createdAt: now, archiveSizeBytes: 512, archiveSha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64), entryCount: 3, fileCount: 2, totalFileBytes: 200, excludedCount: 0 })
+  let backupItems = [backupRecord(serverBackupId, 'manual')]
+  await page.route(`**/api/v1/admin/servers/${serverId}/backups**`, async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const path = url.pathname
+    if (path.endsWith('/preview')) return route.fulfill({ json: { preview: {
+      backup: backupItems.find((item) => item.id === path.split('/').at(-2)) ?? backupRecord(serverBackupId, 'manual'),
+      integrityValid: true, serverStopped: runtimeStatus === 'stopped', canRestore: runtimeStatus === 'stopped', confirmationText: 'RESTORE Local Fixture', issue: null,
+      entries: [{ path: 'server.properties', kind: 'file', sizeBytes: 64, sha256: 'c'.repeat(64) }, { path: 'world', kind: 'directory', sizeBytes: 0, sha256: null }, { path: 'world/level.dat', kind: 'file', sizeBytes: 136, sha256: 'd'.repeat(64) }],
+      entriesTruncated: false, excludedPaths: [], excludedPathsTruncated: false,
+    } } })
+    if (path.endsWith('/download')) return route.fulfill({ status: 200, headers: { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${serverBackupId}.mmsbackup"` }, body: Buffer.from('MMSBACK1 fixture archive') })
+    if (path.endsWith('/restore')) {
+      const input = request.postDataJSON() as { confirmation: string }
+      if (input.confirmation !== 'RESTORE Local Fixture') return route.fulfill({ status: 409, json: { error: { code: 'RESTORE_CONFIRMATION_FAILED', message: 'Type RESTORE Local Fixture exactly to confirm replacement.' } } })
+      backupItems = [backupItems[0]!, backupRecord(safetyBackupId, 'pre-restore')]
+      return route.fulfill({ json: { ok: true, restoreId: '903c1cf8-e2a1-4a4e-9de4-4536c7796091', backupId: serverBackupId, safetyBackupId, restoredFileCount: 2, restoredDirectoryCount: 1, restoredBytes: 200, completedAt: now, rollbackCleanupPending: false } })
+    }
+    if (request.method() === 'POST') return route.fulfill({ status: 201, json: { backup: backupRecord(serverBackupId, 'manual') } })
+    return route.fulfill({ json: { serverId, items: backupItems, truncated: false, storageUsedBytes: backupItems.length * 512, storageLimitBytes: 107374182400, quotaWarning: false, runtimeStatus } })
   })
 
   const filePath = 'config/server-note.txt'
@@ -448,6 +473,39 @@ test('local server detail and property controls fit a mobile viewport', async ({
   await expect(page.getByRole('heading', { name: 'Online identities' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'local server mobile players')
   await page.screenshot({ path: resolve(screenshotDir, 'stage-05a-local-players-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('managed server backups preview, download and restore at desktop and mobile widths', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  const { serverId } = await mockLocalServer(page, 'stopped')
+  await page.goto(`/servers/${serverId}/backups`)
+  await expect(page.getByRole('heading', { name: 'Private server snapshots' })).toBeVisible()
+  await expect(page.getByText('No auto-delete')).toBeVisible()
+  await expect(page.getByText('SHA-256 aaaaaaaaaaaaaaaa…')).toBeVisible()
+  const downloadEvent = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Download' }).click()
+  expect((await downloadEvent).suggestedFilename()).toContain('.mmsbackup')
+
+  await page.getByRole('button', { name: 'Preview restore' }).click()
+  const restoreDialog = page.getByRole('dialog', { name: 'Preview server restore' })
+  await expect(restoreDialog.getByText('Archive, manifest and per-file checksums verified.')).toBeVisible()
+  await expect(restoreDialog.getByText('world/level.dat')).toBeVisible()
+  const restoreButton = restoreDialog.getByRole('button', { name: 'Restore Local Fixture' })
+  await expect(restoreButton).toBeDisabled()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05e-backup-restore-preview-desktop.png'), fullPage: true })
+  await restoreDialog.locator('.local-backup-confirmation input').fill('RESTORE Local Fixture')
+  await expect(restoreButton).toBeEnabled()
+  await restoreButton.click()
+  await expect(page.getByText(/Restore complete · safety snapshot/)).toBeVisible()
+  await expect(page.getByText('Pre-restore safety')).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05e-backups-desktop.png'), fullPage: true })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/servers/${serverId}/backups`)
+  await expect(page.getByRole('heading', { name: 'Private server snapshots' })).toBeVisible()
+  await expectNoHorizontalOverflow(page, 'managed server backups mobile')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05e-backups-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('local Paper plugin inventory uploads and disables only acknowledged files', async ({ page }) => {

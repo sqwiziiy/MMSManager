@@ -7,7 +7,7 @@ import { eq } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { API_HOST, WEB_ORIGIN } from './config.js'
 import { openDatabase } from './db/client.js'
-import { machineSamples, localServers } from './db/schema.js'
+import { machineSamples, localServerRuntime, localServers } from './db/schema.js'
 import { recordServerResourceSample, recordStructuredServerEvent } from './servers/history.js'
 import { AuthService } from './auth/service.js'
 import { AvatarStore } from './auth/avatar-store.js'
@@ -390,6 +390,63 @@ describe('authenticated local API', () => {
     const multipartResponse = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/mods`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': `multipart/form-data; boundary=${boundary}` }, payload: multipartBody })
     expect(multipartResponse.statusCode).toBe(409)
     expect(multipartResponse.json()).toMatchObject({ error: { code: 'MODS_UNSUPPORTED' } })
+  })
+
+  it('protects server backup inventory, download and typed restore with stopped managed-server gates', async () => {
+    const admin = await bootstrapAdmin()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
+    const serverId = randomUUID()
+    const createdAt = '2026-11-23T12:00:00.000Z'
+    const directory = join(dataDirectory, 'servers', 'backup-fixture')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'server.properties'), 'level-name=world\n')
+    await writeFile(join(directory, 'server.jar'), 'synthetic jar data')
+    await mkdir(join(directory, 'world'), { recursive: true })
+    await writeFile(join(directory, 'world', 'level.dat'), 'fixture world bytes')
+    await opened.db.insert(localServers).values({
+      id: serverId, name: 'Backup Fixture', directory, source: 'created', software: 'vanilla', version: '1.21.4',
+      jarName: 'server.jar', javaPath: '/fixture/java', javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 2048,
+      port: 25565, eula: 'accepted', managed: true, worldFolders: JSON.stringify(['world']), createdBy: null, createdAt, updatedAt: createdAt,
+    }).run()
+    await opened.db.insert(localServerRuntime).values({
+      serverId, status: 'stopped', processPid: null, processStartMarker: null, processBootId: null, startedAt: null,
+      updatedAt: createdAt, lastExitCode: null, errorMessage: null, restartRequired: false,
+    }).run()
+
+    const route = `/api/v1/admin/servers/${serverId}/backups`
+    expect((await app.inject({ method: 'GET', url: route })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'POST', url: route, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: {} })).statusCode).toBe(403)
+    const created = await app.inject({ method: 'POST', url: route, headers: adminHeaders, payload: {} })
+    expect(created.statusCode, created.body).toBe(201)
+    const backupId = created.json().backup.id as string
+    const inventory = await app.inject({ method: 'GET', url: route, headers: adminHeaders })
+    expect(inventory.statusCode).toBe(200)
+    expect(inventory.json().items).toMatchObject([{ id: backupId, kind: 'manual', excludedCount: 0 }])
+    const worlds = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/worlds`, headers: adminHeaders })
+    expect(worlds.json().worlds.entries.find((entry: { path: string }) => entry.path === 'world')).toMatchObject({ backupAvailable: true })
+    const preview = await app.inject({ method: 'GET', url: `${route}/${backupId}/preview`, headers: adminHeaders })
+    expect(preview.statusCode).toBe(200)
+    expect(preview.json().preview).toMatchObject({ integrityValid: true, serverStopped: true, canRestore: true })
+    const download = await app.inject({ method: 'GET', url: `${route}/${backupId}/download`, headers: adminHeaders })
+    expect(download.statusCode).toBe(200)
+    expect(download.headers['content-disposition']).toContain(`${backupId}.mmsbackup`)
+    expect(Buffer.from(download.body).subarray(0, 8).toString()).toBe('MMSBACK1')
+    const rejectedRestore = await app.inject({ method: 'POST', url: `${route}/${backupId}/restore`, headers: adminHeaders, payload: { confirmation: 'restore Backup Fixture' } })
+    expect(rejectedRestore.statusCode).toBe(409)
+    expect(rejectedRestore.json()).toMatchObject({ error: { code: 'RESTORE_CONFIRMATION_FAILED' } })
+    const restored = await app.inject({ method: 'POST', url: `${route}/${backupId}/restore`, headers: adminHeaders, payload: { confirmation: 'RESTORE Backup Fixture' } })
+    expect(restored.statusCode, restored.body).toBe(200)
+    expect(restored.json()).toMatchObject({ ok: true, backupId, safetyBackupId: expect.any(String), rollbackCleanupPending: false })
+    expect(await readFile(join(directory, 'world', 'level.dat'), 'utf8')).toBe('fixture world bytes')
+    const finalInventory = await app.inject({ method: 'GET', url: route, headers: adminHeaders })
+    expect(finalInventory.json().items.map((item: { kind: string }) => item.kind).sort()).toEqual(['manual', 'pre-restore'])
+
+    const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
+    await auth.createUser(principal, { username: 'backup-member', displayName: 'Backup Member', password: 'synthetic member passphrase 3M!v9Ld2', role: 'member' })
+    const memberLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'backup-member', password: 'synthetic member passphrase 3M!v9Ld2' } })
+    const memberCookies = memberLogin.headers['set-cookie']
+    const memberCookieHeader = (Array.isArray(memberCookies) ? memberCookies : [memberCookies]).filter((item): item is string => typeof item === 'string').map((item) => item.split(';')[0]).join('; ')
+    expect((await app.inject({ method: 'GET', url: route, headers: { ...requestHeaders, cookie: memberCookieHeader } })).statusCode).toBe(403)
   })
 
   it('protects managed world and server-history endpoints and returns only scoped persisted records', async () => {

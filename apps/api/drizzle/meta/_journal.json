@@ -64,6 +64,13 @@
       "when": 1795463000000,
       "tag": "0008_stage_05d_world_event_history",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1795521600000,
+      "tag": "0009_stage_05e_server_backups",
+      "breakpoints": true
     }
   ]
 }

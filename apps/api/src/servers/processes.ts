@@ -5,10 +5,10 @@ import { spawn } from 'node:child_process'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
 import { dirname, join, resolve } from 'node:path'
-import { asc, desc, eq, gt, lt, and } from 'drizzle-orm'
+import { asc, desc, eq, gt, lt, and, sql } from 'drizzle-orm'
 import type { FileHandle } from 'node:fs/promises'
 import type { AppDatabase } from '../db/client.js'
-import { localServerConsoleEntries, localServerEvents, localServerRuntime, localServers } from '../db/schema.js'
+import { localServerBackupRestores, localServerConsoleEntries, localServerEvents, localServerRuntime, localServers } from '../db/schema.js'
 import type { ServerRuntime, ServerConsoleEntry, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
 import { isLoopbackPortAvailable } from './install.js'
@@ -342,6 +342,29 @@ export class ServerProcessManager {
     try { return await operation(running) } finally { this.fileMutations.delete(serverId) }
   }
 
+  /** Holds the shared start/file-operation lock and permits archive work only for a known stopped managed server. */
+  async withStoppedServerOperation<T>(serverId: string, operation: () => Promise<T>, allowPendingRestore = false): Promise<T> {
+    if (this.starting.has(serverId) || this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'Another server start or file operation is already in progress.')
+    const server = this.serverRow(serverId)
+    this.requirePanelManaged(server)
+    this.fileMutations.add(serverId)
+    try {
+      const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+      if (runtime?.status !== undefined && runtime.status !== 'stopped') {
+        throw new ServerProcessError('SERVER_NOT_STOPPED', `Backup and restore require a stopped server; its current state is ${runtime.status}.`)
+      }
+      if (this.children.has(serverId) || this.starting.has(serverId)) {
+        throw new ServerProcessError('SERVER_NOT_STOPPED', 'Backup and restore require a stopped server with no owned process.')
+      }
+      if (!allowPendingRestore) {
+        const unresolved = this.db.select({ id: localServerBackupRestores.id }).from(localServerBackupRestores)
+          .where(and(eq(localServerBackupRestores.serverId, serverId), sql`${localServerBackupRestores.status} IN ('prepared', 'recovery-required')`)).get()
+        if (unresolved) throw new ServerProcessError('SERVER_RESTORE_RECOVERY_REQUIRED', 'A previous restore needs recovery before another backup operation can run.')
+      }
+      return await operation()
+    } finally { this.fileMutations.delete(serverId) }
+  }
+
   async start(serverId: string, actorUserId: string): Promise<ServerRuntime> {
     if (this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'A server file operation is in progress.')
     if (this.starting.has(serverId)) throw new ServerProcessError('SERVER_ALREADY_STARTING', 'A start request is already being processed for this server.')
@@ -356,6 +379,9 @@ export class ServerProcessManager {
   private async startReserved(serverId: string, actorUserId: string): Promise<ServerRuntime> {
     const server = this.serverRow(serverId)
     this.requirePanelManaged(server)
+    const unresolvedRestore = this.db.select({ id: localServerBackupRestores.id }).from(localServerBackupRestores)
+      .where(and(eq(localServerBackupRestores.serverId, serverId), sql`${localServerBackupRestores.status} IN ('prepared', 'recovery-required')`)).get()
+    if (unresolvedRestore) throw new ServerProcessError('SERVER_RESTORE_RECOVERY_REQUIRED', 'This server cannot start until its pending restore operation is recovered.')
     if (server.eula !== 'accepted') throw new ServerProcessError('EULA_NOT_ACCEPTED', 'Accept the Minecraft EULA in the installation flow before starting this server.')
     if (this.children.has(serverId)) throw new ServerProcessError('SERVER_ALREADY_RUNNING', 'MMSManager already owns a process for this server.')
     const existing = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()

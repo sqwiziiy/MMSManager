@@ -23,10 +23,14 @@ import {
   serverPropertiesRestorePreviewResultSchema,
   serverPropertiesRestoreResultSchema,
   serverWorldsResultSchema,
+  serverBackupsResultSchema,
+  serverBackupCreateResultSchema,
+  serverBackupPreviewResultSchema,
+  serverBackupRestoreResultSchema,
   serverHistoryCalendarResultSchema,
   serverHistoryDayResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult } from '@mmsmanager/shared'
 import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 
@@ -118,6 +122,36 @@ export async function getServerInstall(operationId: string, signal?: AbortSignal
 export async function getServerRuntime(serverId: string, signal?: AbortSignal): Promise<ServerRuntime> {
   const response = await request(`/api/v1/servers/${encodeURIComponent(serverId)}/runtime`, serverRuntimeResultSchema, { signal })
   return response.runtime
+}
+
+export async function getServerBackups(serverId: string, signal?: AbortSignal): Promise<ServerBackupsInventory> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/backups`, serverBackupsResultSchema, { signal })
+}
+
+export async function createServerBackup(serverId: string): Promise<ServerBackup> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/backups`, serverBackupCreateResultSchema, { method: 'POST', body: JSON.stringify({}) })
+  return response.backup
+}
+
+export async function previewServerBackup(serverId: string, backupId: string): Promise<ServerBackupPreview> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/backups/${encodeURIComponent(backupId)}/preview`, serverBackupPreviewResultSchema)
+  return response.preview
+}
+
+export async function restoreServerBackup(serverId: string, backupId: string, confirmation: string): Promise<ServerBackupRestoreResult> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/backups/${encodeURIComponent(backupId)}/restore`, serverBackupRestoreResultSchema, { method: 'POST', body: JSON.stringify({ confirmation }) })
+}
+
+export async function downloadServerBackup(serverId: string, backupId: string): Promise<Blob> {
+  const response = await fetch(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/backups/${encodeURIComponent(backupId)}/download`, {
+    method: 'GET', credentials: 'same-origin', headers: { accept: 'application/octet-stream' },
+  })
+  if (response.status === 401) window.dispatchEvent(new Event('mmsmanager:session-expired'))
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: { message?: unknown } } | null
+    throw new Error(typeof body?.error?.message === 'string' ? body.error.message : 'The backup download could not be completed.')
+  }
+  return response.blob()
 }
 
 export async function getServerConsole(serverId: string, after = 0, signal?: AbortSignal): Promise<{ entries: ServerConsoleEntry[]; nextAfter: number | null }> {

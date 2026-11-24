@@ -386,6 +386,50 @@ export const localServerFileRecoveries = sqliteTable('local_server_file_recoveri
   index('local_server_file_recoveries_server_time_idx').on(table.serverId, table.createdAt),
 ])
 
+export const localServerBackups = sqliteTable('local_server_backups', {
+  id: text('id').primaryKey(),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  kind: text('kind', { enum: ['manual', 'pre-restore'] }).notNull(),
+  directoryName: text('directory_name').notNull(),
+  createdAt: text('created_at').notNull(),
+  archiveSizeBytes: integer('archive_size_bytes').notNull(),
+  manifestSizeBytes: integer('manifest_size_bytes').notNull(),
+  worldPathsJson: text('world_paths_json').notNull(),
+  archiveSha256: text('archive_sha256').notNull(),
+  manifestSha256: text('manifest_sha256').notNull(),
+  entryCount: integer('entry_count').notNull(),
+  fileCount: integer('file_count').notNull(),
+  totalFileBytes: integer('total_file_bytes').notNull(),
+  excludedCount: integer('excluded_count').notNull(),
+}, (table) => [
+  uniqueIndex('local_server_backups_directory_unique').on(table.serverId, table.directoryName),
+  index('local_server_backups_server_time_idx').on(table.serverId, table.createdAt),
+  check('local_server_backups_kind_check', sql`${table.kind} IN ('manual', 'pre-restore')`),
+  check('local_server_backups_archive_size_check', sql`${table.archiveSizeBytes} >= 0`),
+  check('local_server_backups_manifest_size_check', sql`${table.manifestSizeBytes} >= 0`),
+  check('local_server_backups_entry_count_check', sql`${table.entryCount} >= 0 AND ${table.fileCount} >= 0 AND ${table.excludedCount} >= 0`),
+  check('local_server_backups_total_bytes_check', sql`${table.totalFileBytes} >= 0`),
+])
+
+export const localServerBackupRestores = sqliteTable('local_server_backup_restores', {
+  id: text('id').primaryKey(),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  backupId: text('backup_id').notNull().references(() => localServerBackups.id),
+  safetyBackupId: text('safety_backup_id').notNull().references(() => localServerBackups.id),
+  actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  startedAt: text('started_at').notNull(),
+  completedAt: text('completed_at'),
+  status: text('status', { enum: ['prepared', 'completed', 'rolled-back', 'recovery-required'] }).notNull(),
+  stagingName: text('staging_name').notNull(),
+  rollbackName: text('rollback_name').notNull(),
+  errorCode: text('error_code'),
+}, (table) => [
+  index('local_server_backup_restores_server_time_idx').on(table.serverId, table.startedAt),
+  index('local_server_backup_restores_status_idx').on(table.status, table.startedAt),
+  check('local_server_backup_restores_status_check', sql`${table.status} IN ('prepared', 'completed', 'rolled-back', 'recovery-required')`),
+])
+
 export const localServerStatusSamples = sqliteTable('local_server_status_samples', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),

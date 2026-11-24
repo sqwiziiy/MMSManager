@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test'
 
 const dataDirectory = process.env['MMSMANAGER_DATA_DIR']
+const chromiumPath = process.env['MMSMANAGER_E2E_CHROMIUM_PATH']
 if (!dataDirectory?.startsWith('/tmp/mmsmanager-stage3-e2e-')) {
   throw new Error('Run browser checks with the web package e2e script so test data stays isolated.')
 }
@@ -14,6 +15,7 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:5184',
     browserName: 'chromium',
     headless: true,
+    launchOptions: chromiumPath ? { executablePath: chromiumPath } : {},
     trace: 'retain-on-failure',
   },
   webServer: {

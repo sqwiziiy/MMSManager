@@ -6,6 +6,7 @@ import type { AppDatabase } from '../db/client.js'
 import { localServers } from '../db/schema.js'
 import type { ServerWorldEntry, ServerWorlds } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
+import type { ServerBackupService } from './backups.js'
 
 const MAX_PROPERTIES_BYTES = 65_536
 const MAX_WORLD_DEPTH = 32
@@ -50,7 +51,7 @@ function configuredWorldFolders(value: string): string[] {
 }
 
 export class ServerWorldService {
-  constructor(private readonly db: AppDatabase, private readonly servers: ServerRegistry) {}
+  constructor(private readonly db: AppDatabase, private readonly servers: ServerRegistry, private readonly backups?: Pick<ServerBackupService, 'hasWorldSnapshot'>) {}
 
   async get(serverId: string): Promise<ServerWorlds> {
     const server = this.db.select().from(localServers).where(eq(localServers.id, serverId)).get()
@@ -89,7 +90,7 @@ export class ServerWorldService {
     }
     if (candidates.size > MAX_WORLDS) throw new ServerWorldsError('WORLD_LIMIT', 'The registered world folder list exceeds the safe inventory limit.')
     const entries: ServerWorldEntry[] = []
-    for (const [path, dimension] of candidates) entries.push(await this.inspectWorld(directory, serverStat.dev, path, dimension))
+    for (const [path, dimension] of candidates) entries.push(await this.inspectWorld(serverId, directory, serverStat.dev, path, dimension))
     return { serverId, status: 'available', levelName, levelNameSource, entries, reason: null }
   }
 
@@ -112,7 +113,7 @@ export class ServerWorldService {
     } finally { await handle.close() }
   }
 
-  private async inspectWorld(serverDirectory: string, serverDevice: number, path: string, dimension: ServerWorldEntry['dimension']): Promise<ServerWorldEntry> {
+  private async inspectWorld(serverId: string, serverDirectory: string, serverDevice: number, path: string, dimension: ServerWorldEntry['dimension']): Promise<ServerWorldEntry> {
     const parts = path.split('/')
     const absolute = join(serverDirectory, ...parts)
     const base = { name: parts.at(-1)!, path, dimension, backupAvailable: false }
@@ -187,6 +188,7 @@ export class ServerWorldService {
     return {
       ...base,
       state: complete ? 'available' : 'incomplete',
+      backupAvailable: await this.backups?.hasWorldSnapshot(serverId, path) ?? false,
       sizeBytes,
       sizeComplete: complete,
       modifiedAt: new Date(modifiedMs).toISOString(),
