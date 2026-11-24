@@ -21,6 +21,7 @@ describe('panel-owned local server processes', () => {
   let manager: ServerProcessManager
   let userId: string
   let managedId: string
+  let stubbornId: string
   let importedId: string
   let javaPath: string
 
@@ -39,7 +40,11 @@ if [ "$1" = "-version" ]; then printf 'openjdk version "21.0.4" 2024-07-16\\n' >
 printf '[Server thread/INFO]: Starting fixture\\n'
 ( sleep 0.05; printf '[Server thread/INFO]: Done (0.1s)! For help, type "help"\\n'; printf '[Server thread/INFO]: MiraWoods joined the game\\n' ) &
 while IFS= read -r line; do
-  if [ "$line" = "stop" ]; then printf '[Server thread/INFO]: Stopping server.\\n'; exit 0; fi
+  if [ "$line" = "stop" ]; then
+    printf '[Server thread/INFO]: Stopping server.\\n'
+    if [ "$4" = "ignore-stop.jar" ]; then exec /usr/bin/sleep 60; fi
+    exit 0
+  fi
   if [ "$line" = "list" ]; then printf '[Server thread/INFO]: There are 2 of a max of 20 players online: MiraWoods, Alex_123\\n'; continue; fi
   if [ "$line" = "kick MiraWoods" ]; then printf '[Server thread/INFO]: Kicked MiraWoods from the game\\n'; continue; fi
   if [ "$line" = "whitelist list" ]; then printf '[Server thread/INFO]: There are no whitelisted players.\\n'; continue; fi
@@ -49,18 +54,24 @@ done
     await chmod(javaPath, 0o700)
     managedId = randomUUID()
     importedId = randomUUID()
+    stubbornId = randomUUID()
     const managedDirectory = join(root, 'managed-fixture')
     const importedDirectory = join(root, 'imported-fixture')
+    const stubbornDirectory = join(root, 'stubborn-fixture')
     await mkdir(managedDirectory)
     await mkdir(importedDirectory)
+    await mkdir(stubbornDirectory)
     await writeFile(join(managedDirectory, 'server.jar'), Buffer.from([0x50, 0x4b, 3, 4]))
     await writeFile(join(importedDirectory, 'server.jar'), Buffer.from([0x50, 0x4b, 3, 4]))
+    await writeFile(join(stubbornDirectory, 'ignore-stop.jar'), Buffer.from([0x50, 0x4b, 3, 4]))
     const port = await availablePort()
+    const stubbornPort = await availablePort()
     await opened.db.insert(localServers).values([
       { id: managedId, name: 'Managed Fixture', directory: managedDirectory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath, javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
       { id: importedId, name: 'Imported Fixture', directory: importedDirectory, source: 'imported', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath, javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: null, eula: 'accepted', managed: false, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
+      { id: stubbornId, name: 'Stubborn Fixture', directory: stubbornDirectory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'ignore-stop.jar', javaPath, javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: stubbornPort, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
     ]).run()
-    manager = new ServerProcessManager(opened.db, registry)
+    manager = new ServerProcessManager(opened.db, registry, Date.now, { stopTimeoutMs: 1000, readinessTimeoutMs: 1500, shutdownTimeoutMs: 1000 })
     await manager.prepare()
   })
 
@@ -92,6 +103,15 @@ done
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 10))
     }
     throw new Error(`Timed out waiting for ${target}`)
+  }
+
+  async function waitForServerStatus(serverId: string, target: 'running' | 'stopped', attempts = 200) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const runtime = await manager.get(serverId)
+      if (runtime.status === target) return runtime
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10))
+    }
+    throw new Error(`Timed out waiting for ${serverId} to become ${target}`)
   }
 
   it('starts only a panel-created server, waits for readiness, forwards commands and stops gracefully', async () => {
@@ -154,6 +174,38 @@ done
     await waitForStatus('running')
     await manager.stop(managedId, userId)
     await waitForStatus('stopped')
+  })
+
+  it('times out restart safely and keeps an unresponsive child owned without force-killing it', async () => {
+    await manager.start(stubbornId, userId)
+    await waitForServerStatus(stubbornId, 'running')
+    const pid = opened.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, stubbornId)).get()?.processPid
+    expect(pid).toBeTypeOf('number')
+    await expect(manager.restart(stubbornId, userId)).rejects.toMatchObject({ code: 'RESTART_STOP_TIMEOUT' })
+    expect(await manager.get(stubbornId)).toMatchObject({ status: 'stopping', ready: false })
+    expect(opened.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, stubbornId)).get()?.processPid).toBe(pid)
+    await expect(manager.start(stubbornId, userId)).rejects.toMatchObject({ code: 'SERVER_ALREADY_RUNNING' })
+    process.kill(pid!, 'SIGTERM')
+    await waitForServerStatus(stubbornId, 'stopped')
+  })
+
+  it('bounds API shutdown and releases its pipes without killing an unresponsive child', async () => {
+    await manager.start(stubbornId, userId)
+    await waitForServerStatus(stubbornId, 'running')
+    const pid = opened.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, stubbornId)).get()?.processPid
+    expect(pid).toBeTypeOf('number')
+    const beforeShutdown = Date.now()
+    await manager.shutdown()
+    expect(Date.now() - beforeShutdown).toBeLessThan(1400)
+    expect(await manager.get(stubbornId)).toMatchObject({ status: 'external/unmanaged', ready: false })
+    expect(opened.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, stubbornId)).get()?.processPid).toBe(pid)
+    expect(() => process.kill(pid!, 0)).not.toThrow()
+    process.kill(pid!, 'SIGTERM')
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try { process.kill(pid!, 0) } catch { break }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10))
+    }
+    expect(await manager.get(stubbornId)).toMatchObject({ status: 'external/unmanaged', ready: false })
   })
 
   it('sets restart-required after changing Fabric files on a running owned process', async () => {

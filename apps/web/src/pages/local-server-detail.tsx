@@ -9,12 +9,14 @@ import { Link, NavLink, useLocation } from 'react-router-dom'
 import type { LocalServerSummary, ServerConsoleEntry, ServerModEntry, ServerModsInventory, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertySettings, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds } from '@mmsmanager/shared'
 import {
   confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getServerConsole, getServerProperties, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, previewServerPropertiesRestore, restoreServerFileRecovery, restoreServerProperties, restoreTrashedServerFile, sendPlayerAction,
-  sendLocalServerCommand, startLocalServer, stopLocalServer, updateServerProperties,
+  sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer, updateServerProperties,
   getServerMods, uploadServerMod, uploadServerFile, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile,
 } from '../api/servers'
 import { useAuth } from '../state/use-auth'
 import { Badge, Button, Card, ComingSoon, SectionHeading } from '../components/ui'
 import { LocalServerBackups } from './local-server-backups'
+import { LocalServerRuntime } from './local-server-runtime'
+import { LocalServerAutomation } from './local-server-automation'
 
 const tabs = [
   { id: 'overview', label: 'Overview', icon: Activity },
@@ -83,14 +85,17 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     return () => { active = false; window.clearInterval(timer) }
   }, [server.id])
 
-  async function runAction(action: 'start' | 'stop' | 'confirm') {
+  async function runAction(action: 'start' | 'stop' | 'confirm' | 'restart') {
+    if (action === 'restart' && !window.confirm('Restart this panel-owned process? MMSManager will wait for graceful exit, then start it and wait up to 90 seconds for readiness. It will not force-kill the process.')) return
     setBusy(true)
     setActionError(null)
     try {
       const next = action === 'start' ? await startLocalServer(server.id)
         : action === 'stop' ? await stopLocalServer(server.id)
-          : await confirmLocalServerStopped(server.id)
+          : action === 'confirm' ? await confirmLocalServerStopped(server.id)
+            : await restartLocalServer(server.id)
       setRuntime(next)
+      if (action === 'restart') window.dispatchEvent(new Event('mmsmanager:server-restarted'))
       await refreshRuntime()
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'The server action could not be completed.')
@@ -103,6 +108,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   const isManaged = server.source === 'created' && server.managed
   const canStart = isAdmin && isManaged && ['stopped', 'crashed', 'error'].includes(status) && server.eula === 'accepted' && Boolean(server.jarName && server.javaMajor)
   const canStop = isAdmin && isManaged && ['running', 'starting'].includes(status)
+  const canRestart = isAdmin && isManaged && status === 'running'
   const canConfirmStopped = isAdmin && isManaged && status === 'external/unmanaged'
   return <div className="page-stack server-detail-page local-detail-page">
     <div className="server-detail-heading">
@@ -112,12 +118,12 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
           : canStop ? <Button kind="danger" icon={Square} disabled={busy} onClick={() => void runAction('stop')}>Stop server</Button>
             : canConfirmStopped ? <Button icon={CircleCheck} disabled={busy} onClick={() => void runAction('confirm')}>Confirm it has stopped</Button>
               : <Button disabled title={server.eula !== 'accepted' ? 'EULA acceptance is required' : 'This action is not available in the current state'}>{status === 'starting' ? 'Starting…' : status === 'stopping' ? 'Stopping…' : 'Start unavailable'}</Button>)}
-        <Button disabled title="Restart will be available in a later stage" icon={RefreshCw}>Restart</Button>
+        <Button icon={RefreshCw} disabled={!canRestart || busy} onClick={() => void runAction('restart')}>{busy && status === 'running' ? 'Restarting…' : 'Restart'}</Button>
       </div>
     </div>
     <div className="server-detail-tabs" role="navigation" aria-label={`${server.name} pages`}>
       {tabs.map(({ id, label, icon: Icon }) => <NavLink key={id} to={`/servers/${server.id}/${id}`} className={section === id ? 'active' : ''}>
-        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups'].includes(id) && <span className="tab-preview-dot" />}
+        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups', 'runtime', 'automation'].includes(id) && <span className="tab-preview-dot" />}
       </NavLink>)}
     </div>
     <div className="server-section-heading"><div><p className="eyebrow">{server.name} / {active.label}</p><h2>{sectionTitle(section)}</h2></div><Badge tone="good">Local registry</Badge></div>
@@ -136,7 +142,9 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     {section === 'worlds' && isAdmin && <LocalWorlds serverId={server.id} managed={isManaged} />}
     {section === 'worlds' && !isAdmin && <LockedDetail title="Administrator access required" text="World paths and storage details are available only to workspace administrators." />}
     {section === 'backups' && <LocalServerBackups serverId={server.id} serverName={server.name} managed={isManaged} isAdmin={isAdmin} runtimeStatus={status} />}
-    {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
+    {section === 'runtime' && <LocalServerRuntime serverId={server.id} managed={isManaged} isAdmin={isAdmin} />}
+    {section === 'automation' && <LocalServerAutomation serverId={server.id} managed={isManaged} isAdmin={isAdmin} />}
+    {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups', 'runtime', 'automation'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
   </div>
 }
 

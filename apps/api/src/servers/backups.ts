@@ -26,6 +26,7 @@ export class ServerBackupError extends Error {
 }
 
 type BackupKind = 'manual' | 'pre-restore'
+type BackupOrigin = 'manual' | 'scheduled' | 'system'
 type ExclusionReason = 'private-panel-data' | 'private-system-data' | 'private-credential' | 'symlink' | 'hardlink' | 'special-file' | 'nested-mount' | 'unsafe-path'
 type ManifestEntry = { path: string; kind: 'file' | 'directory'; sizeBytes: number; mode: number; modifiedAtMs: number; sha256: string | null }
 type ExcludedEntry = { path: string; reason: ExclusionReason }
@@ -182,10 +183,10 @@ export class ServerBackupService {
     }
   }
 
-  async create(serverId: string, actorUserId: string, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void } = {}) {
+  async create(serverId: string, actorUserId: string | null, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void; origin?: 'manual' | 'scheduled' } = {}) {
     return this.processes.withStoppedServerOperation(serverId, async () => {
       const server = await this.safeServerDirectory(serverId)
-      return this.createSnapshot(server, actorUserId, 'manual', options)
+      return this.createSnapshot(server, actorUserId, 'manual', options.origin ?? 'manual', options)
     })
   }
 
@@ -278,7 +279,7 @@ export class ServerBackupService {
       }
       const selected = this.backupRow(serverId, backupId)
       const { manifest } = await this.verifyBackup(selected, null)
-      const safety = await this.createSnapshot(server, actorUserId, 'pre-restore')
+      const safety = await this.createSnapshot(server, actorUserId, 'pre-restore', 'system')
       const restoreId = randomUUID()
       const stageName = `.mmsmanager-restore-${restoreId}.stage`
       const rollbackName = `.mmsmanager-restore-${restoreId}.rollback`
@@ -349,17 +350,17 @@ export class ServerBackupService {
     })
   }
 
-  private async createSnapshot(server: { row: ServerRow; directory: string; root: string; rootDevice: number; rootInode: number; serverInode: number }, actorUserId: string, kind: BackupKind, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void } = {}) {
+  private async createSnapshot(server: { row: ServerRow; directory: string; root: string; rootDevice: number; rootInode: number; serverInode: number }, actorUserId: string | null, kind: BackupKind, origin: BackupOrigin, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void } = {}) {
     let release!: () => void
     const gate = new Promise<void>((resolveGate) => { release = resolveGate })
     const previous = this.snapshotQueue
     this.snapshotQueue = previous.then(() => gate, () => gate)
     await previous.catch(() => undefined)
-    try { return await this.writeSnapshot(server, actorUserId, kind, options) }
+    try { return await this.writeSnapshot(server, actorUserId, kind, origin, options) }
     finally { release() }
   }
 
-  private async writeSnapshot(server: { row: ServerRow; directory: string; root: string; rootDevice: number; rootInode: number; serverInode: number }, actorUserId: string, kind: BackupKind, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void } = {}) {
+  private async writeSnapshot(server: { row: ServerRow; directory: string; root: string; rootDevice: number; rootInode: number; serverInode: number }, actorUserId: string | null, kind: BackupKind, origin: BackupOrigin, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void } = {}) {
     const operationDeadline = Date.now() + MAX_SCAN_MS
     await this.assertSameServerDirectory(server)
     const scan = await this.scan(server, options.signal)
@@ -486,7 +487,7 @@ export class ServerBackupService {
       await rename(stageDirectory, finalDirectory)
       await this.syncDirectory(parent)
       const row = {
-        id, serverId: server.row.id, actorUserId, kind, directoryName: id, createdAt, archiveSizeBytes, manifestSizeBytes: manifestBytes.byteLength, worldPathsJson: JSON.stringify(worldPaths),
+        id, serverId: server.row.id, actorUserId, kind, origin, directoryName: id, createdAt, archiveSizeBytes, manifestSizeBytes: manifestBytes.byteLength, worldPathsJson: JSON.stringify(worldPaths),
         archiveSha256, manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'),
         entryCount: manifest.entryCount, fileCount, totalFileBytes, excludedCount: scan.excludedCount,
       }
@@ -494,8 +495,8 @@ export class ServerBackupService {
         this.db.transaction((tx) => {
           tx.insert(localServerBackups).values(row).run()
           tx.insert(localServerEvents).values({
-            serverId: server.row.id, actorUserId, action: kind === 'manual' ? 'server-backup-create' : 'server-backup-safety-copy', outcome: 'success', occurredAt: createdAt,
-            detail: JSON.stringify({ backupId: id, kind, archiveSizeBytes, entryCount: manifest.entryCount, fileCount, totalFileBytes, excludedCount: scan.excludedCount }),
+            serverId: server.row.id, actorUserId, action: origin === 'scheduled' ? 'server-backup-scheduled' : kind === 'manual' ? 'server-backup-create' : 'server-backup-safety-copy', outcome: 'success', occurredAt: createdAt,
+            detail: JSON.stringify({ backupId: id, kind, origin, archiveSizeBytes, entryCount: manifest.entryCount, fileCount, totalFileBytes, excludedCount: scan.excludedCount }),
           }).run()
         })
       } catch (error) {
@@ -510,7 +511,7 @@ export class ServerBackupService {
       await archiveHandle?.close().catch(() => undefined)
       let cleanupError: unknown = null
       try { await this.removeOwnedTree(stageDirectory, parent) } catch (failure) { cleanupError = failure }
-      this.recordEvent(server.row.id, actorUserId, kind === 'manual' ? 'server-backup-create' : 'server-backup-safety-copy', 'failure', { kind, code: error instanceof ServerBackupError ? error.code : 'BACKUP_FAILED' }, new Date(this.now()).toISOString())
+      this.recordEvent(server.row.id, actorUserId, origin === 'scheduled' ? 'server-backup-scheduled' : kind === 'manual' ? 'server-backup-create' : 'server-backup-safety-copy', 'failure', { kind, origin, code: error instanceof ServerBackupError ? error.code : 'BACKUP_FAILED' }, new Date(this.now()).toISOString())
       if (cleanupError) throw new ServerBackupError('BACKUP_CLEANUP_FAILED', `The backup did not complete, and its private staging directory could not be safely removed. It was not added to the backup inventory. ${cleanupError instanceof Error ? cleanupError.message : ''}`)
       if (error instanceof ServerBackupError) throw error
       throw new ServerBackupError('BACKUP_FAILED', 'The snapshot was not completed. No backup was added to the inventory.')
@@ -984,9 +985,9 @@ export class ServerBackupService {
     return Boolean(this.db.select({ id: localServerBackupRestores.id }).from(localServerBackupRestores)
       .where(and(eq(localServerBackupRestores.serverId, serverId), sql`${localServerBackupRestores.status} IN ('prepared', 'recovery-required')`)).get())
   }
-  private publicBackup(row: Pick<BackupRow, 'id' | 'serverId' | 'kind' | 'createdAt' | 'archiveSizeBytes' | 'archiveSha256' | 'manifestSha256' | 'entryCount' | 'fileCount' | 'totalFileBytes' | 'excludedCount'>) {
+  private publicBackup(row: Pick<BackupRow, 'id' | 'serverId' | 'kind' | 'origin' | 'createdAt' | 'archiveSizeBytes' | 'archiveSha256' | 'manifestSha256' | 'entryCount' | 'fileCount' | 'totalFileBytes' | 'excludedCount'>) {
     return {
-      id: row.id, serverId: row.serverId, kind: row.kind, createdAt: row.createdAt, archiveSizeBytes: row.archiveSizeBytes,
+      id: row.id, serverId: row.serverId, kind: row.kind, origin: row.origin, createdAt: row.createdAt, archiveSizeBytes: row.archiveSizeBytes,
       archiveSha256: row.archiveSha256, manifestSha256: row.manifestSha256, entryCount: row.entryCount, fileCount: row.fileCount,
       totalFileBytes: row.totalFileBytes, excludedCount: row.excludedCount,
     }

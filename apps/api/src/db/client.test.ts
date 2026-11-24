@@ -6,8 +6,8 @@ import Database from 'better-sqlite3'
 import { openDatabase } from './client.js'
 
 describe('SQLite migration recovery', () => {
-  it('applies the Stage 5D and 5E ledgers with bounded lookup indexes in a temporary database', async () => {
-    const temp = await mkdtemp(join(tmpdir(), 'mmsmanager-stage-5d-migration-'))
+  it('applies the Stage 5D–5F ledgers with bounded lookup indexes in a temporary database', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'mmsmanager-stage-5f-migration-'))
     const databasePath = join(temp, 'state.sqlite')
     try {
       const opened = await openDatabase({ path: databasePath })
@@ -15,18 +15,27 @@ describe('SQLite migration recovery', () => {
         const tables = opened.native.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => (row as { name: string }).name)
         const indexes = opened.native.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map((row) => (row as { name: string }).name)
         const backupColumns = opened.native.prepare("PRAGMA table_info('local_server_backups')").all().map((row) => (row as { name: string }).name)
+        const serverColumns = opened.native.prepare("PRAGMA table_info('local_servers')").all().map((row) => (row as { name: string }).name)
         expect(tables).toContain('local_server_structured_events')
         expect(tables).toContain('local_server_resource_samples')
         expect(tables).toContain('local_server_sessions')
         expect(tables).toContain('local_server_backups')
         expect(tables).toContain('local_server_backup_restores')
+        expect(tables).toContain('local_server_automation')
+        expect(tables).toContain('local_server_automation_jobs')
         expect(indexes).toContain('local_server_structured_events_server_time_idx')
         expect(indexes).toContain('local_server_resource_samples_server_minute_unique')
         expect(indexes).toContain('local_server_sessions_active_unique')
         expect(indexes).toContain('local_server_backups_server_time_idx')
         expect(indexes).toContain('local_server_backup_restores_status_idx')
+        expect(indexes).toContain('local_server_automation_jobs_time_idx')
+        expect(indexes).toContain('local_server_automation_jobs_status_idx')
         expect(backupColumns).toContain('manifest_size_bytes')
         expect(backupColumns).toContain('world_paths_json')
+        expect(backupColumns).toContain('origin')
+        expect(serverColumns).toContain('required_java_major')
+        expect(serverColumns).toContain('jvm_options_json')
+        expect(serverColumns).toContain('start_script_sha256')
         expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
       } finally { opened.native.close() }
     } finally {

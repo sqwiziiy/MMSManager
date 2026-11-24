@@ -28,6 +28,8 @@ import {
   serverConsoleQuerySchema,
   serverConsoleResponseSchema,
   serverRuntimeResultSchema,
+  serverRuntimeSettingsResultSchema,
+  serverRuntimeSettingsUpdateSchema,
   serverStatusResultSchema,
   serverPlayerListResultSchema,
   serverPlayerActionRequestSchema,
@@ -58,6 +60,9 @@ import {
   serverBackupPreviewResultSchema,
   serverBackupRestoreRequestSchema,
   serverBackupRestoreResultSchema,
+  serverAutomationResultSchema,
+  serverAutomationUpdateSchema,
+  serverAutomationJobIdParamSchema,
   serverHistoryCalendarQuerySchema,
   serverHistoryCalendarResultSchema,
   serverHistoryDayQuerySchema,
@@ -99,6 +104,8 @@ import { MAX_SERVER_FILE_UPLOAD_BYTES, ServerFileService, ServerFilesError } fro
 import { ServerWorldService, ServerWorldsError } from './servers/worlds.js'
 import { ServerHistoryService } from './servers/history.js'
 import { ServerBackupError, ServerBackupService } from './servers/backups.js'
+import { ServerAutomationError, ServerAutomationService } from './servers/automation.js'
+import { ServerRuntimeSettingsError, ServerRuntimeSettingsService } from './servers/runtime.js'
 
 class InvalidRequestError extends Error {}
 
@@ -218,12 +225,17 @@ export async function createApiApp(options: {
   await installs.prepare()
   const processes = options.processes ?? new ServerProcessManager(options.db, options.servers, options.now)
   await processes.prepare()
+  const runtimeSettings = new ServerRuntimeSettingsService(options.db, options.servers, processes, options.javaRuntimes, options.now)
   const properties = new ServerPropertiesManager(options.db, options.servers, options.now)
   const serverStatus = new ServerStatusService(options.db, options.now)
   const mods = new ServerModsService(options.db, options.servers, processes, options.now)
   const files = new ServerFileService(options.db, options.servers, processes, options.now)
   const backups = new ServerBackupService(options.db, options.servers, processes, options.now)
   await backups.prepare()
+  const automation = new ServerAutomationService(options.db, backups, options.timeZone, options.now)
+  await automation.prepare()
+  app.addHook('onReady', async () => { automation.start() })
+  app.addHook('onClose', async () => { await automation.stop() })
   const worlds = new ServerWorldService(options.db, options.servers, backups)
   const serverHistory = new ServerHistoryService(options.db, options.timeZone, options.now)
   const webOrigin = options.webOrigin ?? WEB_ORIGIN
@@ -312,8 +324,20 @@ export async function createApiApp(options: {
     if (error instanceof ServerStatusError) return reply.code(404).send({ error: { code: error.code, message: error.message } })
     if (error instanceof ServerProcessError) {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
-        : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') || error.code.endsWith('_NOT_RUNNING') || error.code.endsWith('_BUSY') || error.code.endsWith('_NOT_STOPPED') || error.code.includes('RECOVERY_REQUIRED') || error.code === 'PROCESS_NOT_OWNED' || error.code === 'SERVER_NOT_PANEL_MANAGED' ? 409
+        : error.code.includes('TIMEOUT') ? 504
+          : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') || error.code.endsWith('_NOT_RUNNING') || error.code.endsWith('_BUSY') || error.code.endsWith('_NOT_STOPPED') || error.code.includes('RECOVERY_REQUIRED') || error.code === 'PROCESS_NOT_OWNED' || error.code === 'SERVER_NOT_PANEL_MANAGED' || error.code === 'RESTART_NOT_RUNNING' ? 409
           : error.code.includes('UNAVAILABLE') ? 503 : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
+    if (error instanceof ServerRuntimeSettingsError) {
+      const status = error.code === 'SERVER_NOT_FOUND' ? 404
+        : error.code.endsWith('_BUSY') || error.code.includes('INCOMPATIBLE') || error.code.includes('NOT_PANEL_MANAGED') || error.code.includes('PATH_UNSAFE') ? 409
+          : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
+    if (error instanceof ServerAutomationError) {
+      const status = error.code === 'SERVER_NOT_FOUND' || error.code === 'AUTOMATION_JOB_NOT_FOUND' ? 404
+        : error.code.includes('NOT_PANEL_MANAGED') || error.code.includes('NOT_ACKNOWLEDGEABLE') ? 409 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
     if (error instanceof ServerBackupError) {
@@ -550,6 +574,15 @@ export async function createApiApp(options: {
     const params = parse(localServerIdSchema, request.params)
     return serverRuntimeResultSchema.parse({ runtime: await processes.get(params.serverId) })
   })
+  app.get('/api/v1/admin/servers/:serverId/runtime-settings', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverRuntimeSettingsResultSchema.parse({ settings: await runtimeSettings.get(params.serverId) })
+  })
+  app.put('/api/v1/admin/servers/:serverId/runtime-settings', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverRuntimeSettingsUpdateSchema, request.body)
+    return serverRuntimeSettingsResultSchema.parse({ settings: await runtimeSettings.update(params.serverId, request.principal!.userId, input) })
+  })
   app.get('/api/v1/servers/:serverId/status', { preHandler: requireAuth }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverStatusResultSchema.parse({ status: await serverStatus.get(params.serverId) })
@@ -615,6 +648,10 @@ export async function createApiApp(options: {
     const params = parse(localServerIdSchema, request.params)
     return serverRuntimeResultSchema.parse({ runtime: await processes.stop(params.serverId, request.principal!.userId) })
   })
+  app.post('/api/v1/admin/servers/:serverId/restart', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverRuntimeResultSchema.parse({ runtime: await processes.restart(params.serverId, request.principal!.userId) })
+  })
   app.post('/api/v1/admin/servers/:serverId/confirm-stopped', { preHandler: requireAdminMutation }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverRuntimeResultSchema.parse({ runtime: await processes.confirmStopped(params.serverId, request.principal!.userId) })
@@ -652,6 +689,19 @@ export async function createApiApp(options: {
     const params = parse(serverBackupIdParamSchema, request.params)
     const input = parse(serverBackupRestoreRequestSchema, request.body)
     return serverBackupRestoreResultSchema.parse(await backups.restore(params.serverId, request.principal!.userId, params.backupId, input.confirmation))
+  })
+  app.get('/api/v1/admin/servers/:serverId/automation', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverAutomationResultSchema.parse({ automation: await automation.get(params.serverId) })
+  })
+  app.put('/api/v1/admin/servers/:serverId/automation', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverAutomationUpdateSchema, request.body)
+    return serverAutomationResultSchema.parse({ automation: await automation.update(params.serverId, request.principal!.userId, input) })
+  })
+  app.post('/api/v1/admin/servers/:serverId/automation/jobs/:jobId/acknowledge', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(serverAutomationJobIdParamSchema, request.params)
+    return serverAutomationResultSchema.parse({ automation: await automation.acknowledge(params.serverId, params.jobId, request.principal!.userId) })
   })
   app.get('/api/v1/admin/servers/:serverId/properties', { preHandler: requireAdmin }, async (request) => {
     const params = parse(localServerIdSchema, request.params)

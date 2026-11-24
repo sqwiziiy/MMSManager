@@ -10,6 +10,8 @@ import {
   serverInventorySchema,
   serverConsoleResponseSchema,
   serverRuntimeResultSchema,
+  serverRuntimeSettingsResultSchema,
+  serverAutomationResultSchema,
   serverStatusResultSchema,
   serverPlayerListResultSchema,
   serverPlayerActionResultSchema,
@@ -30,7 +32,7 @@ import {
   serverHistoryCalendarResultSchema,
   serverHistoryDayResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult } from '@mmsmanager/shared'
 import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 
@@ -124,6 +126,31 @@ export async function getServerRuntime(serverId: string, signal?: AbortSignal): 
   return response.runtime
 }
 
+export async function getServerRuntimeSettings(serverId: string, signal?: AbortSignal): Promise<ServerRuntimeSettings> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/runtime-settings`, serverRuntimeSettingsResultSchema, { signal })
+  return response.settings
+}
+
+export async function updateServerRuntimeSettings(serverId: string, input: ServerRuntimeSettingsUpdate): Promise<ServerRuntimeSettings> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/runtime-settings`, serverRuntimeSettingsResultSchema, { method: 'PUT', body: JSON.stringify(input) })
+  return response.settings
+}
+
+export async function getServerAutomation(serverId: string, signal?: AbortSignal): Promise<ServerAutomation> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/automation`, serverAutomationResultSchema, { signal })
+  return response.automation
+}
+
+export async function updateServerAutomation(serverId: string, input: ServerAutomationUpdate): Promise<ServerAutomation> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/automation`, serverAutomationResultSchema, { method: 'PUT', body: JSON.stringify(input) })
+  return response.automation
+}
+
+export async function acknowledgeServerAutomationJob(serverId: string, jobId: string): Promise<ServerAutomation> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/automation/jobs/${encodeURIComponent(jobId)}/acknowledge`, serverAutomationResultSchema, { method: 'POST', body: JSON.stringify({}) })
+  return response.automation
+}
+
 export async function getServerBackups(serverId: string, signal?: AbortSignal): Promise<ServerBackupsInventory> {
   return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/backups`, serverBackupsResultSchema, { signal })
 }
@@ -166,6 +193,13 @@ export async function startLocalServer(serverId: string): Promise<ServerRuntime>
 
 export async function stopLocalServer(serverId: string): Promise<ServerRuntime> {
   const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/stop`, serverRuntimeResultSchema, { method: 'POST', body: JSON.stringify({}) })
+  return response.runtime
+}
+
+export async function restartLocalServer(serverId: string): Promise<ServerRuntime> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/restart`, serverRuntimeResultSchema, {
+    method: 'POST', body: JSON.stringify({}), signal: AbortSignal.timeout(125_000),
+  })
   return response.runtime
 }
 

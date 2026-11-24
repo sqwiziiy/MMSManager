@@ -71,6 +71,13 @@
       "when": 1795521600000,
       "tag": "0009_stage_05e_server_backups",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795608000000,
+      "tag": "0010_stage_05f_runtime_automation",
+      "breakpoints": true
     }
   ]
 }

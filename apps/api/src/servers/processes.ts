@@ -9,9 +9,11 @@ import { asc, desc, eq, gt, lt, and, sql } from 'drizzle-orm'
 import type { FileHandle } from 'node:fs/promises'
 import type { AppDatabase } from '../db/client.js'
 import { localServerBackupRestores, localServerConsoleEntries, localServerEvents, localServerRuntime, localServers } from '../db/schema.js'
+import { jvmOptionsSchema } from '@mmsmanager/shared'
 import type { ServerRuntime, ServerConsoleEntry, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
 import { isLoopbackPortAvailable } from './install.js'
+import { jvmArguments } from './runtime.js'
 import { finishServerSession, parseOwnedServerLogLine, recordServerResourceSample, recordStructuredServerEvent, startServerSession } from './history.js'
 
 const MAX_LOG_SEGMENT_BYTES = 16 * 1024 * 1024
@@ -36,6 +38,7 @@ type ManagedProcess = {
   launchId: string
   stopRequested: boolean
   spawnFailed: boolean
+  abandoned: boolean
   rawLogCapNotified: boolean
   closePromise: Promise<void>
   spawnRecorded: Promise<void>
@@ -143,6 +146,7 @@ async function readProcessCpuSnapshot(pid: number): Promise<{ marker: string; pr
 export class ServerProcessManager {
   private readonly children = new Map<string, ManagedProcess>()
   private readonly starting = new Set<string>()
+  private readonly lifecycleOperations = new Set<string>()
   private readonly fileMutations = new Set<string>()
   private readonly cpuSnapshots = new Map<string, { pid: number; marker: string; processTicks: number; systemTicks: number }>()
   private readonly playerQueries = new Map<string, { promise: Promise<ServerPlayerList>; resolve: (value: ServerPlayerList) => void; timer: NodeJS.Timeout }>()
@@ -157,6 +161,7 @@ export class ServerProcessManager {
     private readonly db: AppDatabase,
     private readonly servers: ServerRegistry,
     private readonly now: () => number = Date.now,
+    private readonly waits: { stopTimeoutMs?: number; readinessTimeoutMs?: number; shutdownTimeoutMs?: number } = {},
   ) {
     this.logsDirectory = join(servers.dataDirectory, 'server-logs')
   }
@@ -328,7 +333,7 @@ export class ServerProcessManager {
 
   /** Serializes safe server-file changes against start/stop and proves the running child is owned here. */
   async withServerFileMutation<T>(serverId: string, operation: (running: boolean) => Promise<T>): Promise<T> {
-    if (this.starting.has(serverId) || this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'Another server start or file operation is already in progress.')
+    if (this.lifecycleOperations.has(serverId) || this.starting.has(serverId) || this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'Another server lifecycle or file operation is already in progress.')
     const server = this.serverRow(serverId)
     this.requirePanelManaged(server)
     const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
@@ -344,7 +349,7 @@ export class ServerProcessManager {
 
   /** Holds the shared start/file-operation lock and permits archive work only for a known stopped managed server. */
   async withStoppedServerOperation<T>(serverId: string, operation: () => Promise<T>, allowPendingRestore = false): Promise<T> {
-    if (this.starting.has(serverId) || this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'Another server start or file operation is already in progress.')
+    if (this.lifecycleOperations.has(serverId) || this.starting.has(serverId) || this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'Another server lifecycle or file operation is already in progress.')
     const server = this.serverRow(serverId)
     this.requirePanelManaged(server)
     this.fileMutations.add(serverId)
@@ -368,11 +373,14 @@ export class ServerProcessManager {
   async start(serverId: string, actorUserId: string): Promise<ServerRuntime> {
     if (this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'A server file operation is in progress.')
     if (this.starting.has(serverId)) throw new ServerProcessError('SERVER_ALREADY_STARTING', 'A start request is already being processed for this server.')
+    if (this.lifecycleOperations.has(serverId)) throw new ServerProcessError('SERVER_OPERATION_BUSY', 'Another lifecycle operation is already in progress for this server.')
+    this.lifecycleOperations.add(serverId)
     this.starting.add(serverId)
     try {
       return await this.startReserved(serverId, actorUserId)
     } finally {
       this.starting.delete(serverId)
+      this.lifecycleOperations.delete(serverId)
     }
   }
 
@@ -391,6 +399,16 @@ export class ServerProcessManager {
         : `The server is currently ${existing.status}.`)
     }
     if (!server.javaPath || !server.jarName) throw new ServerProcessError('SERVER_CONFIGURATION_MISSING', 'Choose a verified Java runtime and server JAR before starting.')
+    if (server.requiredJavaMajor !== null && (server.javaMajor === null || server.javaMajor < server.requiredJavaMajor)) {
+      throw new ServerProcessError('JAVA_VERSION_INCOMPATIBLE', `This installation requires Java ${server.requiredJavaMajor} or newer. Update the selected runtime before starting.`)
+    }
+    let jvmOptions: unknown
+    try { jvmOptions = JSON.parse(server.jvmOptionsJson) } catch { throw new ServerProcessError('RUNTIME_OPTIONS_CORRUPT', 'Saved JVM options could not be read safely.') }
+    const parsedJvmOptions = jvmOptionsSchema.safeParse(jvmOptions)
+    if (!parsedJvmOptions.success) throw new ServerProcessError('RUNTIME_OPTIONS_CORRUPT', 'Saved JVM options are outside the supported typed format.')
+    if (parsedJvmOptions.data.collector === 'zgc' && (server.javaMajor ?? 0) < 17) {
+      throw new ServerProcessError('JVM_OPTION_INCOMPATIBLE', 'ZGC requires Java 17 or newer.')
+    }
     const directory = resolve(server.directory)
     const root = await realpath(this.servers.managedRoot)
     if (dirname(directory) !== root || await realpath(directory).catch(() => '') !== directory) {
@@ -414,7 +432,7 @@ export class ServerProcessManager {
     await this.addEntry(serverId, 'system', 'info', 'MMSManager is launching this panel-owned server process.')
     await this.event(serverId, actorUserId, 'server-start-requested', 'success', 'A panel-owned server process start was requested.')
 
-    const args = [`-Xms${server.minMemoryMb}M`, `-Xmx${server.maxMemoryMb}M`, '-jar', server.jarName, 'nogui']
+    const args = jvmArguments({ minMemoryMb: server.minMemoryMb, maxMemoryMb: server.maxMemoryMb, jvmOptions: parsedJvmOptions.data }, server.jarName)
     let child: ChildProcessWithoutNullStreams
     try {
       child = spawn(server.javaPath, args, {
@@ -429,7 +447,7 @@ export class ServerProcessManager {
       throw new ServerProcessError('JAVA_SPAWN_FAILED', 'Java could not be started with the selected executable.')
     }
     const managed: ManagedProcess = {
-      child, launchId, stopRequested: false, spawnFailed: false, rawLogCapNotified: false,
+      child, launchId, stopRequested: false, spawnFailed: false, abandoned: false, rawLogCapNotified: false,
       closePromise: Promise.resolve(), spawnRecorded: Promise.resolve(), sampleTimer: null, stdoutDecoder: new StringDecoder('utf8'), stderrDecoder: new StringDecoder('utf8'),
       stdoutPending: '', stderrPending: '', segments: { stdout: null, stderr: null },
       writeQueues: { stdout: Promise.resolve(), stderr: Promise.resolve() },
@@ -444,11 +462,17 @@ export class ServerProcessManager {
       child.stdout.on('data', (chunk: Buffer) => this.onOutput(serverId, managed, 'stdout', chunk))
       child.stderr.on('data', (chunk: Buffer) => this.onOutput(serverId, managed, 'stderr', chunk))
       child.once('error', () => {
+        if (managed.abandoned) return
         managed.spawnFailed = true
         if (managed.sampleTimer) clearInterval(managed.sampleTimer)
         void this.failStart(serverId, actorUserId, 'JAVA_SPAWN_FAILED', 'The selected Java process failed to start.')
       })
       child.once('close', (code) => {
+        if (managed.abandoned) {
+          if (this.children.get(serverId) === managed) this.children.delete(serverId)
+          resolveClose()
+          return
+        }
         void this.finish(serverId, actorUserId, managed, code).finally(resolveClose)
       })
     })
@@ -467,6 +491,13 @@ export class ServerProcessManager {
 
   async stop(serverId: string, actorUserId: string): Promise<ServerRuntime> {
     if (this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'A server file operation is in progress.')
+    if (this.lifecycleOperations.has(serverId)) throw new ServerProcessError('SERVER_OPERATION_BUSY', 'Another lifecycle operation is already in progress for this server.')
+    this.lifecycleOperations.add(serverId)
+    try { return await this.stopReserved(serverId, actorUserId) }
+    finally { this.lifecycleOperations.delete(serverId) }
+  }
+
+  private async stopReserved(serverId: string, actorUserId: string): Promise<ServerRuntime> {
     const server = this.serverRow(serverId)
     this.requirePanelManaged(server)
     const managed = this.children.get(serverId)
@@ -484,6 +515,73 @@ export class ServerProcessManager {
       if (error) void this.updateRuntime(serverId, { status: 'stopping', errorMessage: 'The stop request could not be written. No process was force-killed.' })
     })
     return this.get(serverId)
+  }
+
+  async restart(serverId: string, actorUserId: string): Promise<ServerRuntime> {
+    if (this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'A server file operation is in progress.')
+    if (this.lifecycleOperations.has(serverId) || this.starting.has(serverId)) throw new ServerProcessError('SERVER_OPERATION_BUSY', 'Another lifecycle operation is already in progress for this server.')
+    this.lifecycleOperations.add(serverId)
+    try {
+      const server = this.serverRow(serverId)
+      this.requirePanelManaged(server)
+      const managed = this.children.get(serverId)
+      const row = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+      if (!managed || !row || !['running', 'starting'].includes(row.status) || managed.stopRequested) {
+        throw new ServerProcessError('RESTART_NOT_RUNNING', 'Restart requires a ready or starting process that MMSManager still owns.')
+      }
+      await this.event(serverId, actorUserId, 'server-restart-requested', 'success', 'An orchestrated stop and start was requested for the panel-owned process.')
+      await this.stopReserved(serverId, actorUserId)
+      await this.waitForProcessExit(serverId, managed)
+      const stopped = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+      if (stopped?.status !== 'stopped' || this.children.has(serverId)) {
+        throw new ServerProcessError('RESTART_EXIT_UNCONFIRMED', 'The owned process did not reach a confirmed stopped state. No replacement process was started.')
+      }
+      await this.startReserved(serverId, actorUserId)
+      await this.waitForReadiness(serverId)
+      const result = await this.get(serverId)
+      await this.event(serverId, actorUserId, 'server-restart-completed', 'success', 'The replacement owned process reported Minecraft readiness.')
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The restart did not complete.'
+      await this.event(serverId, actorUserId, 'server-restart-failed', 'failure', message).catch(() => undefined)
+      throw error
+    } finally {
+      this.lifecycleOperations.delete(serverId)
+    }
+  }
+
+  private async waitForProcessExit(serverId: string, managed: ManagedProcess): Promise<void> {
+    const timeoutMs = this.waits.stopTimeoutMs ?? 30_000
+    let timer: NodeJS.Timeout | undefined
+    const timedOut = new Promise<'timeout'>((resolveTimeout) => {
+      timer = setTimeout(() => resolveTimeout('timeout'), timeoutMs)
+      timer.unref()
+    })
+    const result = await Promise.race([managed.closePromise.then(() => 'closed' as const), timedOut])
+    if (timer) clearTimeout(timer)
+    if (result === 'timeout') {
+      const message = `The graceful stop did not finish within ${Math.ceil(timeoutMs / 1000)} seconds. The process remains panel-owned and was not force-killed; check its console and retry after it exits.`
+      await this.updateRuntime(serverId, { status: 'stopping', errorMessage: message })
+      await this.addEntry(serverId, 'system', 'warn', 'Restart stopped waiting for graceful exit; the owned process was not force-killed.')
+      throw new ServerProcessError('RESTART_STOP_TIMEOUT', message)
+    }
+  }
+
+  private async waitForReadiness(serverId: string): Promise<void> {
+    const timeoutMs = this.waits.readinessTimeoutMs ?? 90_000
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const row = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+      if (row?.status === 'running') return
+      if (row?.status === 'crashed' || row?.status === 'error' || row?.status === 'stopped' || row?.status === 'external/unmanaged') {
+        throw new ServerProcessError('RESTART_START_FAILED', row.errorMessage ?? `The restarted process did not become ready (state: ${row.status}).`)
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, Math.min(100, Math.max(1, deadline - Date.now()))))
+    }
+    const message = `Minecraft readiness was not confirmed within ${Math.ceil(timeoutMs / 1000)} seconds. The new process remains panel-owned; inspect its console before retrying.`
+    await this.updateRuntime(serverId, { errorMessage: message })
+    await this.addEntry(serverId, 'system', 'warn', 'Restart readiness wait timed out; the new process remains owned and was not force-killed.')
+    throw new ServerProcessError('RESTART_READINESS_TIMEOUT', message)
   }
 
   async sendCommand(serverId: string, actorUserId: string, command: string): Promise<void> {
@@ -537,6 +635,7 @@ export class ServerProcessManager {
 
   async shutdown(): Promise<void> {
     const ids = [...this.children.keys()]
+    if (!ids.length) return
     await Promise.all(ids.map(async (serverId) => {
       const managed = this.children.get(serverId)
       if (!managed || managed.stopRequested) return
@@ -546,7 +645,32 @@ export class ServerProcessManager {
       await this.event(serverId, null, 'server-stop-requested', 'success', 'A graceful stop was requested during local API shutdown.')
       managed.child.stdin.write('stop\n', () => undefined)
     }))
-    await Promise.all(ids.map((serverId) => this.children.get(serverId)?.closePromise ?? Promise.resolve()))
+    const closeWait = Promise.all(ids.map((serverId) => this.children.get(serverId)?.closePromise ?? Promise.resolve()))
+    const timeoutMs = this.waits.shutdownTimeoutMs ?? 15_000
+    let timer: NodeJS.Timeout | undefined
+    const waitResult = await Promise.race([
+      closeWait.then(() => 'closed' as const),
+      new Promise<'timeout'>((resolveTimeout) => {
+        timer = setTimeout(() => resolveTimeout('timeout'), timeoutMs)
+        timer.unref()
+      }),
+    ])
+    if (timer) clearTimeout(timer)
+    if (waitResult === 'closed') return
+    for (const serverId of ids) {
+      const managed = this.children.get(serverId)
+      if (!managed) continue
+      managed.abandoned = true
+      this.children.delete(serverId)
+      const message = `The API shutdown wait reached ${Math.ceil(timeoutMs / 1000)} seconds. The server was not force-killed and will be treated as unmanaged until its stopped state is confirmed.`
+      await this.updateRuntime(serverId, { status: 'external/unmanaged', errorMessage: message })
+      finishServerSession(this.db, serverId, new Date(this.now()).toISOString(), 'interrupted')
+      await this.event(serverId, null, 'server-process-externalized', 'failure', message)
+      managed.child.stdin.destroy()
+      managed.child.stdout.destroy()
+      managed.child.stderr.destroy()
+      managed.child.unref()
+    }
   }
 
   private async recordSpawn(serverId: string, pid: number | null): Promise<void> {
@@ -556,6 +680,7 @@ export class ServerProcessManager {
   }
 
   private onOutput(serverId: string, managed: ManagedProcess, stream: OutputStream, chunk: Buffer): void {
+    if (managed.abandoned) return
     const queuedWrite = this.rawLogQueue.then(() => this.appendRaw(serverId, managed, stream, chunk))
     this.rawLogQueue = queuedWrite.catch(() => undefined)
     managed.writeQueues[stream] = this.rawLogQueue

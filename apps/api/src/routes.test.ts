@@ -315,6 +315,22 @@ describe('authenticated local API', () => {
       createdAt: now, updatedAt: now,
     }).run()
     const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
+    const runtimeSettings = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/runtime-settings`, headers: adminHeaders })
+    expect(runtimeSettings.statusCode).toBe(200)
+    expect(runtimeSettings.json().settings).toMatchObject({ serverId: id, compatibility: 'unknown', startScript: 'untracked', runtimeStatus: 'stopped' })
+    const automation = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/automation`, headers: adminHeaders })
+    expect(automation.statusCode).toBe(200)
+    expect(automation.json().automation).toMatchObject({ serverId: id, enabled: false, jobs: [] })
+    const automationWithoutCsrf = await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/automation`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: { enabled: true, frequency: 'daily', localTime: '14:30', weekday: null } })
+    expect(automationWithoutCsrf.statusCode).toBe(403)
+    const savedAutomation = await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/automation`, headers: adminHeaders, payload: { enabled: true, frequency: 'daily', localTime: '14:30', weekday: null } })
+    expect(savedAutomation.statusCode).toBe(200)
+    expect(savedAutomation.json().automation).toMatchObject({ enabled: true, frequency: 'daily', localTime: '14:30', timeZone: 'Europe/Paris', nextRunAt: '2026-11-23T13:30:00.000Z' })
+    const restartWithoutRunning = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/restart`, headers: adminHeaders, payload: {} })
+    expect(restartWithoutRunning.statusCode).toBe(409)
+    expect(restartWithoutRunning.json()).toMatchObject({ error: { code: 'RESTART_NOT_RUNNING' } })
+    const restartWithoutCsrf = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/restart`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: {} })
+    expect(restartWithoutCsrf.statusCode).toBe(403)
     const properties = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders })
     expect(properties.statusCode).toBe(200)
     expect(properties.json().properties.settings.motd).toBe('Before')
@@ -366,6 +382,10 @@ describe('authenticated local API', () => {
     const memberCsrf = memberCookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
     const memberHeaders = { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }
     expect(memberLogin.statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/runtime-settings`, headers: memberHeaders })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/automation`, headers: memberHeaders })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/automation`, headers: memberHeaders, payload: { enabled: false, frequency: 'daily', localTime: '14:30', weekday: null } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/restart`, headers: memberHeaders, payload: {} })).statusCode).toBe(403)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files`, headers: memberHeaders })).statusCode).toBe(403)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files/read?path=notes.txt`, headers: memberHeaders })).statusCode).toBe(403)
     expect((await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/files`, headers: memberHeaders, payload: { path: 'notes.txt', text: 'blocked', expectedSha256: savedText.json().sha256 } })).statusCode).toBe(403)

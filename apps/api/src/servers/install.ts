@@ -222,7 +222,10 @@ export class ServerInstallService {
         tx.insert(localServers).values({
           id: serverId, name: input.name, directory: finalDirectory, source: 'created',
           software: input.software, version: input.version, jarName: 'server.jar', javaPath: runtime.path,
-          javaMajor: runtime.major, minMemoryMb: input.minMemoryMb, maxMemoryMb: input.maxMemoryMb,
+          javaMajor: runtime.major, requiredJavaMajor: artifact.javaMajor,
+          minMemoryMb: input.minMemoryMb, maxMemoryMb: input.maxMemoryMb,
+          jvmOptionsJson: '{"collector":"default","maxGCPauseMs":null,"parallelGcThreads":null,"alwaysPreTouch":false,"disableExplicitGc":false}',
+          startScriptSha256: createHash('sha256').update(startScript).digest('hex'),
           port: input.port, eula: input.eulaAccepted ? 'accepted' : 'not-accepted', managed: true,
           worldFolders: '[]', createdBy: actorUserId, createdAt: at, updatedAt: at,
         }).run()

@@ -201,8 +201,11 @@ export const localServers = sqliteTable('local_servers', {
   jarName: text('jar_name'),
   javaPath: text('java_path'),
   javaMajor: integer('java_major'),
+  requiredJavaMajor: integer('required_java_major'),
   minMemoryMb: integer('min_memory_mb').notNull(),
   maxMemoryMb: integer('max_memory_mb').notNull(),
+  jvmOptionsJson: text('jvm_options_json').notNull().default('{"collector":"default","maxGCPauseMs":null,"parallelGcThreads":null,"alwaysPreTouch":false,"disableExplicitGc":false}'),
+  startScriptSha256: text('start_script_sha256'),
   port: integer('port'),
   eula: text('eula', { enum: ['accepted', 'not-accepted', 'unknown'] }).notNull(),
   managed: integer('managed', { mode: 'boolean' }).notNull().default(false),
@@ -391,6 +394,7 @@ export const localServerBackups = sqliteTable('local_server_backups', {
   serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
   actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
   kind: text('kind', { enum: ['manual', 'pre-restore'] }).notNull(),
+  origin: text('origin', { enum: ['manual', 'scheduled', 'system'] }).notNull().default('manual'),
   directoryName: text('directory_name').notNull(),
   createdAt: text('created_at').notNull(),
   archiveSizeBytes: integer('archive_size_bytes').notNull(),
@@ -406,6 +410,7 @@ export const localServerBackups = sqliteTable('local_server_backups', {
   uniqueIndex('local_server_backups_directory_unique').on(table.serverId, table.directoryName),
   index('local_server_backups_server_time_idx').on(table.serverId, table.createdAt),
   check('local_server_backups_kind_check', sql`${table.kind} IN ('manual', 'pre-restore')`),
+  check('local_server_backups_origin_check', sql`${table.origin} IN ('manual', 'scheduled', 'system')`),
   check('local_server_backups_archive_size_check', sql`${table.archiveSizeBytes} >= 0`),
   check('local_server_backups_manifest_size_check', sql`${table.manifestSizeBytes} >= 0`),
   check('local_server_backups_entry_count_check', sql`${table.entryCount} >= 0 AND ${table.fileCount} >= 0 AND ${table.excludedCount} >= 0`),
@@ -428,6 +433,48 @@ export const localServerBackupRestores = sqliteTable('local_server_backup_restor
   index('local_server_backup_restores_server_time_idx').on(table.serverId, table.startedAt),
   index('local_server_backup_restores_status_idx').on(table.status, table.startedAt),
   check('local_server_backup_restores_status_check', sql`${table.status} IN ('prepared', 'completed', 'rolled-back', 'recovery-required')`),
+])
+
+export const localServerAutomation = sqliteTable('local_server_automation', {
+  serverId: text('server_id').primaryKey().references(() => localServers.id, { onDelete: 'cascade' }),
+  backupEnabled: integer('backup_enabled', { mode: 'boolean' }).notNull().default(false),
+  frequency: text('frequency', { enum: ['daily', 'weekly'] }).notNull().default('daily'),
+  localTime: text('local_time').notNull().default('03:00'),
+  weekday: integer('weekday'),
+  timeZone: text('time_zone').notNull(),
+  nextRunAt: text('next_run_at'),
+  lastRunAt: text('last_run_at'),
+  lastStatus: text('last_status', { enum: ['completed', 'failed', 'missed'] }),
+  lastError: text('last_error'),
+  updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  check('local_server_automation_enabled_check', sql`${table.backupEnabled} IN (0, 1)`),
+  check('local_server_automation_frequency_check', sql`${table.frequency} IN ('daily', 'weekly')`),
+  check('local_server_automation_time_check', sql`${table.localTime} GLOB '[0-2][0-9]:[0-5][0-9]' AND substr(${table.localTime}, 1, 2) BETWEEN '00' AND '23'`),
+  check('local_server_automation_weekday_check', sql`${table.weekday} IS NULL OR (${table.weekday} >= 0 AND ${table.weekday} <= 6)`),
+  check('local_server_automation_frequency_weekday_check', sql`(${table.frequency} = 'daily' AND ${table.weekday} IS NULL) OR (${table.frequency} = 'weekly' AND ${table.weekday} IS NOT NULL)`),
+  check('local_server_automation_status_check', sql`${table.lastStatus} IS NULL OR ${table.lastStatus} IN ('completed', 'failed', 'missed')`),
+])
+
+export const localServerAutomationJobs = sqliteTable('local_server_automation_jobs', {
+  id: text('id').primaryKey(),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  kind: text('kind', { enum: ['backup'] }).notNull(),
+  scheduledFor: text('scheduled_for').notNull(),
+  status: text('status', { enum: ['running', 'completed', 'failed', 'missed'] }).notNull(),
+  startedAt: text('started_at'),
+  finishedAt: text('finished_at'),
+  backupId: text('backup_id').references(() => localServerBackups.id, { onDelete: 'set null' }),
+  errorMessage: text('error_message'),
+  acknowledgedAt: text('acknowledged_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('local_server_automation_jobs_schedule_unique').on(table.serverId, table.kind, table.scheduledFor),
+  index('local_server_automation_jobs_time_idx').on(table.serverId, table.createdAt),
+  index('local_server_automation_jobs_status_idx').on(table.status, table.createdAt),
+  check('local_server_automation_jobs_kind_check', sql`${table.kind} = 'backup'`),
+  check('local_server_automation_jobs_status_check', sql`${table.status} IN ('running', 'completed', 'failed', 'missed')`),
 ])
 
 export const localServerStatusSamples = sqliteTable('local_server_status_samples', {

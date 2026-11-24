@@ -374,6 +374,39 @@ export const serverRuntimeSchema = z.object({
   errorMessage: z.string().nullable(),
 }).strict()
 export const serverRuntimeResultSchema = z.object({ runtime: serverRuntimeSchema }).strict()
+export const jvmOptionsSchema = z.object({
+  collector: z.enum(['default', 'g1', 'zgc']),
+  maxGCPauseMs: z.number().int().min(50).max(1000).nullable(),
+  parallelGcThreads: z.number().int().min(1).max(64).nullable(),
+  alwaysPreTouch: z.boolean(),
+  disableExplicitGc: z.boolean(),
+}).strict().superRefine((value, context) => {
+  if (value.collector === 'default' && (value.maxGCPauseMs !== null || value.parallelGcThreads !== null)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['collector'], message: 'Choose a collector before setting collector-specific values.' })
+  }
+})
+export const serverRuntimeSettingsSchema = z.object({
+  serverId: z.string().uuid(),
+  javaPath: z.string().nullable(),
+  javaMajor: z.number().int().positive().nullable(),
+  requiredJavaMajor: z.number().int().positive().nullable(),
+  minMemoryMb: z.number().int().min(512).max(131072),
+  maxMemoryMb: z.number().int().min(512).max(131072),
+  jvmOptions: jvmOptionsSchema,
+  compatibility: z.enum(['compatible', 'unknown', 'incompatible']),
+  runtimeStatus: serverRuntimeStatusSchema,
+  restartRequired: z.boolean(),
+  startScript: z.enum(['synchronized', 'customized', 'missing', 'untracked']),
+}).strict()
+export const serverRuntimeSettingsResultSchema = z.object({ settings: serverRuntimeSettingsSchema }).strict()
+export const serverRuntimeSettingsUpdateSchema = z.object({
+  javaPath: z.string().trim().min(1).max(1024),
+  minMemoryMb: z.number().int().min(512).max(131072),
+  maxMemoryMb: z.number().int().min(512).max(131072),
+  jvmOptions: jvmOptionsSchema,
+}).strict().refine((value) => value.maxMemoryMb >= value.minMemoryMb, {
+  path: ['maxMemoryMb'], message: 'Maximum memory must be at least the minimum memory.',
+})
 export const serverStatusSchema = z.object({
   serverId: z.string().uuid(),
   checkedAt: z.string().datetime({ offset: true }),
@@ -558,6 +591,7 @@ export const serverBackupSchema = z.object({
   id: z.string().uuid(),
   serverId: z.string().uuid(),
   kind: z.enum(['manual', 'pre-restore']),
+  origin: z.enum(['manual', 'scheduled', 'system']),
   createdAt: z.string().datetime({ offset: true }),
   archiveSizeBytes: z.number().int().nonnegative(),
   archiveSha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -614,6 +648,46 @@ export const serverBackupRestoreResultSchema = z.object({
   completedAt: z.string().datetime({ offset: true }),
   rollbackCleanupPending: z.boolean(),
 }).strict()
+
+export const serverAutomationFrequencySchema = z.enum(['daily', 'weekly'])
+export const serverAutomationUpdateSchema = z.object({
+  enabled: z.boolean(),
+  frequency: serverAutomationFrequencySchema,
+  localTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+  weekday: z.number().int().min(0).max(6).nullable(),
+}).strict().superRefine((value, context) => {
+  if ((value.frequency === 'daily' && value.weekday !== null) || (value.frequency === 'weekly' && value.weekday === null)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['weekday'], message: 'Choose a weekday only for a weekly schedule.' })
+  }
+})
+export const serverAutomationJobSchema = z.object({
+  id: z.string().uuid(),
+  kind: z.literal('backup'),
+  scheduledFor: z.string().datetime({ offset: true }),
+  status: z.enum(['running', 'completed', 'failed', 'missed']),
+  startedAt: z.string().datetime({ offset: true }).nullable(),
+  finishedAt: z.string().datetime({ offset: true }).nullable(),
+  backupId: z.string().uuid().nullable(),
+  errorMessage: z.string().max(512).nullable(),
+  acknowledgedAt: z.string().datetime({ offset: true }).nullable(),
+  createdAt: z.string().datetime({ offset: true }),
+}).strict()
+export const serverAutomationSchema = z.object({
+  serverId: z.string().uuid(),
+  enabled: z.boolean(),
+  frequency: serverAutomationFrequencySchema,
+  localTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+  weekday: z.number().int().min(0).max(6).nullable(),
+  timeZone: z.string().min(1).max(100),
+  nextRunAt: z.string().datetime({ offset: true }).nullable(),
+  lastRunAt: z.string().datetime({ offset: true }).nullable(),
+  lastStatus: z.enum(['completed', 'failed', 'missed']).nullable(),
+  lastError: z.string().max(512).nullable(),
+  unacknowledgedCount: z.number().int().nonnegative(),
+  jobs: z.array(serverAutomationJobSchema).max(100),
+}).strict()
+export const serverAutomationResultSchema = z.object({ automation: serverAutomationSchema }).strict()
+export const serverAutomationJobIdParamSchema = z.object({ serverId: z.string().uuid(), jobId: z.string().uuid() }).strict()
 
 export const serverHistoryScopeSchema = z.union([z.literal('all'), z.string().uuid()])
 export const serverHistoryCalendarQuerySchema = z.object({
@@ -752,6 +826,9 @@ export type InstallCatalog = z.infer<typeof installCatalogSchema>
 export type ServerInstallRequest = z.infer<typeof serverInstallRequestSchema>
 export type InstallOperation = z.infer<typeof installOperationSchema>
 export type ServerRuntime = z.infer<typeof serverRuntimeSchema>
+export type JvmOptions = z.infer<typeof jvmOptionsSchema>
+export type ServerRuntimeSettings = z.infer<typeof serverRuntimeSettingsSchema>
+export type ServerRuntimeSettingsUpdate = z.infer<typeof serverRuntimeSettingsUpdateSchema>
 export type ServerStatus = z.infer<typeof serverStatusSchema>
 export type ServerPlayerList = z.infer<typeof serverPlayerListSchema>
 export type ServerPlayerAction = z.infer<typeof serverPlayerActionSchema>
@@ -773,6 +850,9 @@ export type ServerWorlds = z.infer<typeof serverWorldsSchema>
 export type ServerBackup = z.infer<typeof serverBackupSchema>
 export type ServerBackupPreview = z.infer<typeof serverBackupPreviewSchema>
 export type ServerBackupRestoreResult = z.infer<typeof serverBackupRestoreResultSchema>
+export type ServerAutomation = z.infer<typeof serverAutomationSchema>
+export type ServerAutomationUpdate = z.infer<typeof serverAutomationUpdateSchema>
+export type ServerAutomationJob = z.infer<typeof serverAutomationJobSchema>
 export type ServerHistoryCalendar = z.infer<typeof serverHistoryCalendarSchema>
 export type ServerHistoryCalendarDay = z.infer<typeof serverHistoryCalendarDaySchema>
 export type ServerHistoryScope = z.infer<typeof serverHistoryScopeSchema>

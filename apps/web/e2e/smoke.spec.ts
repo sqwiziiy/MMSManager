@@ -48,6 +48,19 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   const server = { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus }
   let settings = { motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
   let restartRequired = false
+  let runtimeSettings = {
+    serverId, javaPath: '/tmp/mmsmanager-e2e-java-21', javaMajor: 21, requiredJavaMajor: 21,
+    minMemoryMb: 1024, maxMemoryMb: 4096,
+    jvmOptions: { collector: 'default' as const, maxGCPauseMs: null, parallelGcThreads: null, alwaysPreTouch: false, disableExplicitGc: false },
+    compatibility: 'compatible' as const, runtimeStatus, restartRequired: false, startScript: 'synchronized' as const,
+  }
+  const missedJobId = 'd03c1cf8-e2a1-4a4e-9de4-4536c7796091'
+  let automation = {
+    serverId, enabled: false, frequency: 'daily' as const, localTime: '03:00', weekday: null,
+    timeZone: 'Europe/Paris', nextRunAt: null, lastRunAt: now, lastStatus: 'missed' as const,
+    lastError: 'The API was unavailable past the catch-up window. No backup was run.', unacknowledgedCount: 1,
+    jobs: [{ id: missedJobId, kind: 'backup' as const, scheduledFor: now, status: 'missed' as const, startedAt: null, finishedAt: now, backupId: null, errorMessage: 'The API was unavailable past the catch-up window. No backup was run.', acknowledgedAt: null, createdAt: now }],
+  }
   const properties = () => ({ settings, unknownKeys: ['online-mode', 'server-ip', 'level-seed'], backups: restartRequired ? [{ id: backupId, createdAt: now, sha256: 'a'.repeat(64) }] : [], restartRequired })
   const consoleResponse = { entries: [
     { id: 1, occurredAt: now, source: 'system', severity: 'info', message: 'MMSManager launched this local process.' },
@@ -55,6 +68,32 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   ], nextAfter: null }
   await page.route('**/api/v1/servers', (route) => route.fulfill({ json: { servers: [server] } }))
   await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [{ ...server, directory: '/tmp/mmsmanager-e2e/local-fixture', javaPath: '/tmp/fake-java' }], managedRoot: '/tmp/mmsmanager-e2e/servers', importRoots: ['/tmp/mmsmanager-e2e/servers'] } }))
+  await page.route('**/api/v1/admin/java', (route) => route.fulfill({ json: { runtimes: [{ path: '/tmp/mmsmanager-e2e-java-21', version: '21.0.4', major: 21, vendor: 'Temurin', source: 'discovered' }] } }))
+  await page.route(`**/api/v1/admin/servers/${serverId}/runtime-settings`, async (route) => {
+    if (route.request().method() === 'PUT') {
+      const input = route.request().postDataJSON() as Omit<typeof runtimeSettings, 'serverId' | 'javaMajor' | 'requiredJavaMajor' | 'compatibility' | 'runtimeStatus' | 'restartRequired' | 'startScript'>
+      runtimeSettings = { ...runtimeSettings, ...input, restartRequired: runtimeStatus === 'running' }
+      restartRequired = runtimeSettings.restartRequired
+    }
+    return route.fulfill({ json: { settings: { ...runtimeSettings, runtimeStatus } } })
+  })
+  await page.route(`**/api/v1/admin/servers/${serverId}/automation`, async (route) => {
+    if (route.request().method() === 'PUT') {
+      const input = route.request().postDataJSON() as Pick<typeof automation, 'enabled' | 'frequency' | 'localTime' | 'weekday'>
+      automation = { ...automation, ...input, nextRunAt: input.enabled ? new Date(Date.now() + 86_400_000).toISOString() : null }
+    }
+    return route.fulfill({ json: { automation } })
+  })
+  await page.route(`**/api/v1/admin/servers/${serverId}/automation/jobs/${missedJobId}/acknowledge`, (route) => {
+    automation = { ...automation, unacknowledgedCount: 0, jobs: automation.jobs.map((job) => job.id === missedJobId ? { ...job, acknowledgedAt: now } : job) }
+    return route.fulfill({ json: { automation } })
+  })
+  await page.route(`**/api/v1/admin/servers/${serverId}/restart`, (route) => {
+    runtimeStatus = 'running'
+    runtimeSettings = { ...runtimeSettings, runtimeStatus, restartRequired: false }
+    restartRequired = false
+    return route.fulfill({ json: { runtime: { serverId, status: runtimeStatus, startedAt: now, uptimeSeconds: 0, memoryRssBytes: null, cpuPercent: null, ready: true, playersOnline: null, eula: 'accepted', restartRequired: false, lastExitCode: 0, errorMessage: null } } })
+  })
   await page.route(`**/api/v1/servers/${serverId}/runtime`, (route) => route.fulfill({ json: { runtime: { serverId, status: runtimeStatus, startedAt: runtimeStatus === 'running' ? now : null, uptimeSeconds: runtimeStatus === 'running' ? 153 : null, memoryRssBytes: null, cpuPercent: null, ready: runtimeStatus === 'running', playersOnline: null, eula: 'accepted', restartRequired, lastExitCode: null, errorMessage: null } } }))
   await page.route(`**/api/v1/servers/${serverId}/status`, (route) => route.fulfill({ json: { status: { serverId, checkedAt: now, source: 'local-status-ping', state: 'reachable', playersOnline: 3, playersMax: 20, versionName: 'Paper 1.21.4', description: 'Local fixture', latencyMs: 4, errorCode: null, authoritativePlayerList: false } } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/players`, (route) => route.fulfill({ json: { players: { serverId, state: 'authoritative', source: 'owned-console-list', sampledAt: now, names: ['FixturePlayer'], reason: null } } }))
@@ -116,7 +155,7 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
 
   const serverBackupId = 'b03c1cf8-e2a1-4a4e-9de4-4536c7796091'
   const safetyBackupId = 'a03c1cf8-e2a1-4a4e-9de4-4536c7796091'
-  const backupRecord = (id: string, kind: 'manual' | 'pre-restore') => ({ id, serverId, kind, createdAt: now, archiveSizeBytes: 512, archiveSha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64), entryCount: 3, fileCount: 2, totalFileBytes: 200, excludedCount: 0 })
+  const backupRecord = (id: string, kind: 'manual' | 'pre-restore') => ({ id, serverId, kind, origin: kind === 'pre-restore' ? 'system' : 'manual', createdAt: now, archiveSizeBytes: 512, archiveSha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64), entryCount: 3, fileCount: 2, totalFileBytes: 200, excludedCount: 0 })
   let backupItems = [backupRecord(serverBackupId, 'manual')]
   await page.route(`**/api/v1/admin/servers/${serverId}/backups**`, async (route) => {
     const request = route.request()
@@ -473,6 +512,51 @@ test('local server detail and property controls fit a mobile viewport', async ({
   await expect(page.getByRole('heading', { name: 'Online identities' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'local server mobile players')
   await page.screenshot({ path: resolve(screenshotDir, 'stage-05a-local-players-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('runtime settings, safe restart and scheduled backup review work on desktop and mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  const { serverId } = await mockLocalServer(page)
+  await page.goto(`/servers/${serverId}/runtime`)
+  await expect(page.getByRole('heading', { name: 'Runtime profile' })).toBeVisible()
+  await expect(page.getByLabel('Selected Java executable')).toHaveValue('/tmp/mmsmanager-e2e-java-21')
+  await page.getByLabel('Minimum memory').fill('1536')
+  await page.getByLabel('Maximum memory').fill('6144')
+  await page.getByLabel('Garbage collector').selectOption('g1')
+  await page.getByLabel('Maximum GC pause').fill('200')
+  await page.getByRole('button', { name: 'Save runtime settings' }).click()
+  await expect(page.getByText('Settings saved. Restart required before the running process uses them.')).toBeVisible()
+  await expect(page.getByText('Restart required', { exact: true })).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05f-runtime-desktop.png'), fullPage: true })
+
+  page.once('dialog', (dialog) => void dialog.accept())
+  await page.getByRole('button', { name: 'Restart', exact: true }).click()
+  await expect(page.getByText('Restart required', { exact: true })).toHaveCount(0)
+
+  await page.getByRole('link', { name: 'Automation' }).click()
+  await expect(page.getByRole('heading', { name: 'Scheduled tasks' })).toBeVisible()
+  await expect(page.getByText('1 missed schedule need review.')).toBeVisible()
+  await page.getByRole('button', { name: 'Acknowledge' }).click()
+  await expect(page.getByText('Missed backup acknowledged. No backup was created for that time.')).toBeVisible()
+  await page.locator('.local-automation-toggle input').check()
+  await page.getByLabel('Frequency').selectOption('weekly')
+  await page.getByLabel('Backup weekday').selectOption('3')
+  await page.getByLabel('Backup local time').fill('04:15')
+  await page.getByRole('button', { name: 'Save schedule' }).click()
+  await expect(page.getByText('Schedule saved in Europe/Paris. The next backup will run only if the managed server is stopped.')).toBeVisible()
+  await expect(page.getByLabel('Frequency')).toHaveValue('weekly')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05f-automation-desktop.png'), fullPage: true })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/servers/${serverId}/runtime`)
+  await expect(page.getByRole('heading', { name: 'Runtime profile' })).toBeVisible()
+  await expectNoHorizontalOverflow(page, 'local server runtime mobile')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05f-runtime-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.goto(`/servers/${serverId}/automation`)
+  await expect(page.getByRole('heading', { name: 'Scheduled tasks' })).toBeVisible()
+  await expectNoHorizontalOverflow(page, 'local server automation mobile')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-05f-automation-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('managed server backups preview, download and restore at desktop and mobile widths', async ({ page }) => {

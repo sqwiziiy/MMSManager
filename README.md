@@ -61,6 +61,14 @@ The Worlds page inventories configured and default world folders for managed ser
 
 Backup archives and manifests live under `server-backups/` in the private MMSManager data directory, outside each live server folder. Each backup is capped at 20 GiB and all retained archive-plus-manifest bytes share a 100 GiB budget. The scanner streams files in bounded chunks, skips symlinks, hard links, special files, nested mounts, panel databases, environment files and credential-like paths, and lists exclusions in the restore preview. Existing backups are never automatically deleted. Backups, previews and restore require Administrator access; imported folders and running servers cannot be backed up or restored.
 
+## Runtime settings, restart and automation
+
+The Runtime page saves a checked Java executable, minimum/maximum heap and a small typed set of JVM tuning fields. Compatibility is checked against the Java minimum recorded by the installer, and ZGC requires Java 17 or newer. Arbitrary JVM argument strings are not accepted. MMSManager updates a generated `start.sh` only when its saved content hash and file identity still match; edited or untracked scripts are left alone. These settings never start or restart a server automatically.
+
+Restart is available only for a process still owned by MMSManager. It sends the graceful Minecraft `stop` command, waits up to 30 seconds for confirmed exit, then launches the configured runtime and waits up to 90 seconds for readiness. A timeout does not force-kill the child. API shutdown waits at most 15 seconds and marks a still-running child unmanaged rather than taking control of it.
+
+Automation supports persisted daily or weekly backups in the configured `MMSMANAGER_TIME_ZONE`. Schedules handle daylight-saving changes, run only through the stopped-server backup checks, and retain actual job outcomes. A run more than 10 minutes late is recorded as missed; it is not backfilled. Failed or interrupted tasks are not retried automatically, and missed tasks need Administrator acknowledgement. There are no scheduled restarts, automatic retention deletions or RCON controls. RCON remains an optional later capability.
+
 ## Checks
 
 ```sh
@@ -74,6 +82,6 @@ pnpm build
 
 - Machine metrics and history are real, read-only measurements from this local Linux host when available. The app does not inspect other machines.
 - The local server registry, Java version checks, Vanilla/Fabric/Paper installation, panel-owned start/stop, basic process console/logs, typed managed `server.properties` editing and backup restore, Fabric mods/Paper plugins and constrained managed-server file operations are local-only features. Imported folders remain read-only and unmanaged. File edits are bounded, recoverable and Admin-only.
-- Per-server CPU comes only from the verified owned process; status-ping player counts and process console identities show their own source and freshness. Fixed player actions are Admin-only and use response verification. Fabric mods and Paper plugins use the local file-backed manager; the managed-server Files page supports bounded, recoverable file operations. Worlds inventory and server history are read only; managed-server backup and restore are local, stopped-only Administrator actions. Automation, RCON and orchestrated restart remain `Coming soon` or disabled previews.
+- Per-server CPU comes only from the verified owned process; status-ping player counts and process console identities show their own source and freshness. Fixed player actions are Admin-only and use response verification. Fabric mods and Paper plugins use the local file-backed manager; the managed-server Files page supports bounded, recoverable file operations. Worlds inventory and server history are read only; managed-server backup and restore are local, stopped-only Administrator actions. Typed Runtime settings, safe owned-process Restart and persisted stopped-server backup schedules are real local features. Optional RCON and scheduled restarts are not implemented.
 - User creation, roles, profile, password, avatar and workspace/personal settings are backed by the local SQLite workspace. They do not control Minecraft permissions or server access.
-- No RCON, SSH, remote host, LAN API or arbitrary OS shell endpoint is included. Automation and orchestrated restart remain future work. The API and Vite remain loopback-only.
+- No RCON, SSH, remote host, LAN API or arbitrary OS shell endpoint is included. The API and Vite remain loopback-only.
