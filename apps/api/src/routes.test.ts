@@ -106,8 +106,9 @@ describe('authenticated local API', () => {
     expect(health.json()).toEqual({ service: 'mmsmanager-local-api', status: 'ok', setupRequired: true })
     const current = await app.inject({ method: 'GET', url: '/api/v1/machine/current' })
     const history = await app.inject({ method: 'GET', url: '/api/v1/machine/history?from=2026-11-23T00%3A00%3A00Z&to=2026-11-23T00%3A01%3A00Z' })
+    const storage = await app.inject({ method: 'GET', url: '/api/v1/machine/storage' })
     const players = await app.inject({ method: 'GET', url: '/api/v1/dashboard/players' })
-    expect([current.statusCode, history.statusCode, players.statusCode]).toEqual([401, 401, 401])
+    expect([current.statusCode, history.statusCode, storage.statusCode, players.statusCode]).toEqual([401, 401, 401, 401])
   })
 
   it('allows authenticated members to read the bounded dashboard player summary', async () => {
@@ -241,6 +242,11 @@ describe('authenticated local API', () => {
     const current = await app.inject({ method: 'GET', url: '/api/v1/machine/current', headers: { ...requestHeaders, cookie: session.cookieHeader } })
     expect(current.statusCode).toBe(200)
     expect(current.json().status).toBe('collecting')
+    const storage = await app.inject({ method: 'GET', url: '/api/v1/machine/storage', headers: { ...requestHeaders, cookie: session.cookieHeader } })
+    expect(storage.statusCode).toBe(200)
+    expect(storage.json()).toEqual({ volumes: [], history: [], historyRetentionDays: 30 })
+    const oversizedStorageHistory = await app.inject({ method: 'GET', url: '/api/v1/machine/storage?limit=501', headers: { ...requestHeaders, cookie: session.cookieHeader } })
+    expect(oversizedStorageHistory.statusCode).toBe(400)
     const day = await app.inject({ method: 'GET', url: '/api/v1/machine/day/2026-11-23', headers: { ...requestHeaders, cookie: session.cookieHeader } })
     expect(day.statusCode).toBe(200)
     expect(day.json().status).toBe('no-data')

@@ -4,9 +4,11 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { asc } from 'drizzle-orm'
 import { openDatabase } from '../db/client.js'
-import { machineDayRollups, machineEvents, machineMinuteRollups, machineSamples } from '../db/schema.js'
+import { machineDayRollups, machineEvents, machineMinuteRollups, machineSamples, machineStorageSamples } from '../db/schema.js'
 import { MachineCollector } from './collector.js'
 import type { CollectedSnapshot, SnapshotReader } from './reader.js'
+import { MachineStorageHistoryService } from './storage-history.js'
+import type { StorageVolumeReading } from './storage-volumes.js'
 
 let temporaryDirectory: string | undefined
 
@@ -15,12 +17,13 @@ afterEach(async () => {
   temporaryDirectory = undefined
 })
 
-function snapshot(cpu: number, usedMemory: number, storageUsed: number, received = 100, transmitted = 50): CollectedSnapshot {
+function snapshot(cpu: number, usedMemory: number, storageUsed: number, received = 100, transmitted = 50, storageVolumes?: CollectedSnapshot['storageVolumes']): CollectedSnapshot {
   return {
     host: {
       id: 'local', hostname: 'test-node', platform: 'linux', distro: 'Test Linux', release: '1.0',
       architecture: 'x64', cpuModel: 'Example CPU', coreCount: 4, uptimeSeconds: 1234, source: 'systeminformation',
     },
+    ...(storageVolumes ? { storageVolumes } : {}),
     sample: {
       cpuPercent: cpu,
       coreCount: 4,
@@ -144,6 +147,35 @@ describe('machine collector persistence', () => {
     expect(reopened.db.select().from(machineSamples).all()).toHaveLength(1)
     expect(reopened.db.select().from(machineDayRollups).get()?.memoryPeakUsedBytes).toBe(450)
     reopened.native.close()
+  })
+
+  it('persists role-labeled volumes transactionally and exposes bounded saved history', async () => {
+    const opened = await openDatabase({ path: ':memory:' })
+    const volume: StorageVolumeReading = {
+      id: 'a'.repeat(64), name: 'Server data', roles: ['server-data', 'application-data'],
+      usedBytes: 700, availableBytes: 300, totalBytes: 1000, usedPercent: 70,
+      collectedAt: '2026-11-23T10:00:00.000Z',
+    }
+    let now = Date.parse('2026-11-23T10:00:00.000Z')
+    const collector = new MachineCollector(opened.db, new QueueReader([
+      snapshot(20, 200, 300, 100, 50, [volume]),
+      snapshot(25, 220, 320, 120, 60, [volume]),
+    ]), 'UTC', 10_000, () => now)
+    await collector.collectOnce()
+    now += 10_000
+    await collector.collectOnce()
+
+    const saved = opened.db.select().from(machineStorageSamples).all()
+    const result = new MachineStorageHistoryService(opened.db, () => now).get({ limit: 500 })
+    expect(saved).toHaveLength(1)
+    expect(JSON.parse(saved[0]!.roles)).toEqual(['server-data', 'application-data'])
+    expect(result.volumes).toHaveLength(1)
+    expect(result.volumes[0]).toMatchObject({ id: volume.id, name: 'Server data', roles: ['server-data', 'application-data'], usedBytes: 700 })
+    expect(result.history[0]?.points).toHaveLength(1)
+    expect(result.history[0]?.points[0]).toMatchObject({ collectedAt: volume.collectedAt, usedPercent: 70 })
+    expect(result.historyRetentionDays).toBe(30)
+    expect(new MachineStorageHistoryService(opened.db, () => now).get({ limit: 500 }, []).volumes).toHaveLength(0)
+    opened.native.close()
   })
 
   it('retains daily rollups after deleting raw samples beyond the seven-day window', async () => {

@@ -163,6 +163,36 @@ export const machineCurrentSchema = z.object({
   provenance: z.literal('LOCAL_HOST'),
 })
 
+export const machineStorageRoleSchema = z.enum(['system', 'home', 'application-data', 'server-data', 'local'])
+export const machineStorageVolumeSchema = z.object({
+  id: z.string().regex(/^[a-f0-9]{64}$/),
+  name: z.string().min(1).max(64),
+  roles: z.array(machineStorageRoleSchema).min(1).max(5),
+  usedBytes: nullableBytes,
+  availableBytes: nullableBytes,
+  totalBytes: nullableBytes,
+  usedPercent: nullablePercent,
+  collectedAt: z.string().datetime({ offset: true }),
+})
+export const machineStoragePointSchema = z.object({
+  collectedAt: z.string().datetime({ offset: true }),
+  usedBytes: nullableBytes,
+  availableBytes: nullableBytes,
+  totalBytes: nullableBytes,
+  usedPercent: nullablePercent,
+})
+export const machineStorageSeriesSchema = z.object({
+  volumeId: z.string().regex(/^[a-f0-9]{64}$/),
+  name: z.string().min(1).max(64),
+  roles: z.array(machineStorageRoleSchema).min(1).max(5),
+  points: z.array(machineStoragePointSchema).max(500),
+})
+export const machineStorageSchema = z.object({
+  volumes: z.array(machineStorageVolumeSchema).max(100),
+  history: z.array(machineStorageSeriesSchema).max(100),
+  historyRetentionDays: z.literal(30),
+})
+
 export const machineResourcePointSchema = z.object({
   observedAt: z.string().datetime({ offset: true }),
   sampleCount: z.number().int().positive(),
@@ -889,6 +919,22 @@ export const historyQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(360),
 })
 
+export const machineStorageQuerySchema = z.object({
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+  volumeId: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(240),
+}).strict().superRefine((value, context) => {
+  const now = Date.now()
+  const from = value.from ? Date.parse(value.from) : now - 24 * 60 * 60 * 1000
+  const to = value.to ? Date.parse(value.to) : now
+  if (from > to) context.addIssue({ code: z.ZodIssueCode.custom, path: ['to'], message: 'The storage history end must follow its start.' })
+  if (to - from > 30 * 24 * 60 * 60 * 1000 || from < now - 30 * 24 * 60 * 60 * 1000) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['from'], message: 'Storage history is limited to the last thirty days.' })
+  }
+  if (to > now + 5 * 60 * 1000) context.addIssue({ code: z.ZodIssueCode.custom, path: ['to'], message: 'Storage history cannot extend into the future.' })
+})
+
 export const apiErrorSchema = z.object({
   error: z.object({ code: z.string(), message: z.string() }),
 })
@@ -897,6 +943,7 @@ export type MachineMetricSample = z.infer<typeof machineMetricSampleSchema>
 export type MachineHost = z.infer<typeof machineHostSchema>
 export type PublicHealth = z.infer<typeof publicHealthSchema>
 export type MachineCurrent = z.infer<typeof machineCurrentSchema>
+export type MachineStorage = z.infer<typeof machineStorageSchema>
 export type MachineResourcePoint = z.infer<typeof machineResourcePointSchema>
 export type MachineHistory = z.infer<typeof machineHistorySchema>
 export type MonitoringSettings = z.infer<typeof monitoringSettingsSchema>

@@ -10,6 +10,7 @@ import { mergeResourcePoints } from '../lib/resource-points'
 import { getDashboardPlayerSummary, getLocalServers } from '../api/servers'
 import { useAuth } from '../state/use-auth'
 import { useMachineMonitor } from '../state/use-machine-monitor'
+import { primaryStorageVolume, useMachineStorage } from '../state/use-machine-storage'
 import { formatBytes, formatPercent, formatTimestamp } from '../lib/format'
 import { apiErrorMessage } from '../api/client'
 import { getActivity } from '../api/activity'
@@ -57,6 +58,8 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
     }
   }, [serverLoading, players.pollIntervalMs, loadPlayerCount, loadServers])
   const monitor = useMachineMonitor()
+  const { storage } = useMachineStorage()
+  const primaryVolume = primaryStorageVolume(storage)
   const current = monitor.current
   const sample = current?.sample ?? null
   const timeZone = current?.timeZone ?? monitor.history?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -79,7 +82,7 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
         <div className="resource-card-body live-resource-body"><LiveResourceChart points={mergeResourcePoints(monitor.history?.points ?? [], monitor.livePoints, 24 * 60 * 60_000)} metric="cpuPercent" label="CPU utilization" timeZone={timeZone} bucketSeconds={monitor.history?.bucketSeconds} coveragePercent={monitor.history?.coveragePercent} rangeLabel="24h" /><div className="resource-breakdown"><div className="breakdown-title">Latest sample</div>
           <MachineMetricTrack label="CPU" value={sample?.cpuPercent ?? null} detail={`${sample?.coreCount ?? current?.host?.coreCount ?? '—'} cores`} tone="accent" />
           <MachineMetricTrack label="Memory" value={sample?.memory.usedPercent ?? null} detail={`${formatBytes(sample?.memory.usedBytes ?? null)} / ${formatBytes(sample?.memory.totalBytes ?? null)}`} tone="blue" />
-          <MachineMetricTrack label="Storage" value={sample?.storage?.usedPercent ?? null} detail={sample?.storage ? `${formatBytes(sample.storage.usedBytes)} / ${formatBytes(sample.storage.totalBytes)}` : 'Storage unavailable'} tone="amber" />
+          <MachineMetricTrack label={primaryVolume?.name ?? 'Server storage'} value={primaryVolume?.usedPercent ?? null} detail={primaryVolume ? `${formatBytes(primaryVolume.usedBytes)} / ${formatBytes(primaryVolume.totalBytes)}` : 'Volume reading unavailable'} tone="amber" />
         </div></div>
         <div className="resource-card-foot"><span><span className="legend-dot accent" />CPU utilization</span><span><span className="legend-dot muted" />Actual sample times</span><span className="source-note"><HardDrive size={13} />{sample ? `Sampled ${formatTimestamp(sample.collectedAt, timeZone)}` : 'Waiting for local API'}</span></div>
       </Card>

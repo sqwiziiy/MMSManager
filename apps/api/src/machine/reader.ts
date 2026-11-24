@@ -1,6 +1,8 @@
 import os from 'node:os'
 import si from 'systeminformation'
 import { TELEMETRY_SOURCE } from '../config.js'
+import { collectStorageVolumes } from './storage-volumes.js'
+import type { StoragePathConfig, StorageVolumeReading } from './storage-volumes.js'
 
 type NullableNumber = number | null
 
@@ -49,7 +51,7 @@ export type SampleSnapshot = {
   source: typeof TELEMETRY_SOURCE
 }
 
-export type CollectedSnapshot = { host: HostSnapshot; sample: SampleSnapshot }
+export type CollectedSnapshot = { host: HostSnapshot; sample: SampleSnapshot; storageVolumes?: StorageVolumeReading[] }
 
 export interface SnapshotReader {
   read(): Promise<CollectedSnapshot>
@@ -77,6 +79,8 @@ export class SystemInformationReader implements SnapshotReader {
   private diskCache: Awaited<ReturnType<typeof si.fsSize>>[number] | null = null
   private diskCacheAt = 0
   private diskCacheRequest: Promise<void> | null = null
+  private storagePaths: StoragePathConfig = {}
+  private storageVolumesCache: StorageVolumeReading[] = []
 
   constructor(diskRefreshMs = 30_000) {
     this.diskRefreshMs = diskRefreshMs
@@ -84,6 +88,11 @@ export class SystemInformationReader implements SnapshotReader {
 
   configureDiskRefresh(diskRefreshMs: number): void {
     this.diskRefreshMs = diskRefreshMs
+  }
+
+  configureStoragePaths(paths: StoragePathConfig): void {
+    this.storagePaths = paths
+    this.diskCacheAt = 0
   }
 
   async read(): Promise<CollectedSnapshot> {
@@ -196,7 +205,7 @@ export class SystemInformationReader implements SnapshotReader {
       source: TELEMETRY_SOURCE,
     }
 
-    return { host, sample }
+    return { host, sample, storageVolumes: this.storageVolumesCache }
   }
 
   private async refreshHostCache(): Promise<void> {
@@ -220,8 +229,12 @@ export class SystemInformationReader implements SnapshotReader {
     if (this.diskCacheAt > 0 && Date.now() - this.diskCacheAt < this.diskRefreshMs) return
     if (this.diskCacheRequest) return this.diskCacheRequest
     this.diskCacheRequest = (async () => {
-      const result = await Promise.allSettled([si.fsSize()])
-      const filesystems = result[0]?.status === 'fulfilled' ? result[0].value : null
+      const [fsSizeResult, volumeResult] = await Promise.allSettled([
+        si.fsSize(),
+        collectStorageVolumes({ paths: this.storagePaths }),
+      ])
+      const filesystems = fsSizeResult.status === 'fulfilled' ? fsSizeResult.value : null
+      if (volumeResult.status === 'fulfilled') this.storageVolumesCache = volumeResult.value
       const root = filesystems?.find((filesystem) => filesystem.mount === '/') ?? null
       if (root) this.diskCache = root
       else if (filesystems?.length === 0) this.diskCache = null

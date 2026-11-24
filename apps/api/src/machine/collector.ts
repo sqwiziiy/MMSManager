@@ -1,6 +1,6 @@
 import { lt, sql } from 'drizzle-orm'
 import type { SQL, SQLWrapper } from 'drizzle-orm'
-import { machines, machineDayRollups, machineEvents, machineMinuteRollups, machineSamples } from '../db/schema.js'
+import { machines, machineDayRollups, machineEvents, machineMinuteRollups, machineSamples, machineStorageSamples } from '../db/schema.js'
 import type { AppDatabase } from '../db/client.js'
 import { COLLECTOR_INTERVAL_MS, EVENT_RETENTION_DAYS, MINUTE_RETENTION_DAYS, RAW_RETENTION_DAYS } from '../config.js'
 import { dateInTimeZone, utcMinuteBucket } from '../time.js'
@@ -8,6 +8,7 @@ import type { CollectedSnapshot, SnapshotReader } from './reader.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000
+const STORAGE_RETENTION_DAYS = 30
 
 export type CollectorHealth = {
   running: boolean
@@ -122,6 +123,23 @@ function recordSampleAndRollups(
     const inserted = transaction.insert(machineSamples).values(sampleInsert(snapshot, timestamp, timeZone))
       .onConflictDoNothing().returning({ id: machineSamples.id }).all()
     if (!inserted.length) return false
+
+    for (const volume of snapshot.storageVolumes ?? []) {
+      transaction.insert(machineStorageSamples).values({
+        machineId: host.id,
+        volumeId: volume.id,
+        name: volume.name,
+        roles: JSON.stringify(volume.roles),
+        collectedAt: volume.collectedAt,
+        minuteStart: utcMinuteBucket(volume.collectedAt),
+        localDate: dateInTimeZone(Date.parse(volume.collectedAt), timeZone),
+        timeZone,
+        usedBytes: volume.usedBytes,
+        availableBytes: volume.availableBytes,
+        totalBytes: volume.totalBytes,
+        usedPercent: volume.usedPercent,
+      }).onConflictDoNothing().run()
+    }
 
     const localDate = dateInTimeZone(Date.parse(timestamp), timeZone)
     const minuteStart = utcMinuteBucket(timestamp)
@@ -372,10 +390,12 @@ export class MachineCollector {
     const rawCutoff = new Date(nowMs - RAW_RETENTION_DAYS * DAY_MS).toISOString()
     const minuteCutoff = new Date(nowMs - MINUTE_RETENTION_DAYS * DAY_MS).toISOString()
     const eventCutoff = new Date(nowMs - EVENT_RETENTION_DAYS * DAY_MS).toISOString()
+    const storageCutoff = new Date(nowMs - STORAGE_RETENTION_DAYS * DAY_MS).toISOString()
     this.db.transaction((transaction) => {
       transaction.delete(machineSamples).where(lt(machineSamples.collectedAt, rawCutoff)).run()
       transaction.delete(machineMinuteRollups).where(lt(machineMinuteRollups.minuteStart, minuteCutoff)).run()
       transaction.delete(machineEvents).where(lt(machineEvents.occurredAt, eventCutoff)).run()
+      transaction.delete(machineStorageSamples).where(lt(machineStorageSamples.collectedAt, storageCutoff)).run()
     })
   }
 }

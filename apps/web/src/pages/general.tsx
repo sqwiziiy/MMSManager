@@ -5,11 +5,12 @@ import {
   RefreshCw, Search, Server, Shield, Users, Wifi,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import type { LocalServerSummary, MachineHistory, ServerBackup } from '@mmsmanager/shared'
+import type { LocalServerSummary, MachineHistory, MachineResourcePoint, ServerBackup } from '@mmsmanager/shared'
 import type { ActivityCategory, ActivityItem } from '@mmsmanager/shared'
 import { MetricTrack } from '../components/charts'
 import { Badge, Button, Card, EmptyNote, PageHeading, SectionHeading } from '../components/ui'
 import { useMachineMonitor } from '../state/use-machine-monitor'
+import { primaryStorageVolume, useMachineStorage } from '../state/use-machine-storage'
 import { LiveResourceChart } from '../components/live-chart'
 import { mergeResourcePoints } from '../lib/resource-points'
 import { formatBytes, formatPercent, formatRate, formatTimestamp } from '../lib/format'
@@ -80,6 +81,8 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
 
 export function MachinePage() {
   const monitor = useMachineMonitor()
+  const { storage } = useMachineStorage()
+  const primaryVolume = primaryStorageVolume(storage)
   const [historyRange, setHistoryRange] = useState<'15m' | '1h' | '24h' | '7d'>(() => {
     const saved = window.localStorage.getItem('mmsmanager.machineHistoryRange')
     return saved === '15m' || saved === '1h' || saved === '7d' ? saved : '24h'
@@ -120,6 +123,25 @@ export function MachinePage() {
   const chartHistory = historyRange === '24h' ? monitor.history : selectedHistory ?? monitor.history
   const selectedRangeMs = historyRange === '15m' ? 15 * 60_000 : historyRange === '1h' ? 60 * 60_000 : historyRange === '24h' ? 24 * 60 * 60_000 : 7 * 24 * 60 * 60_000
   const chartPoints = mergeResourcePoints(chartHistory?.points ?? [], monitor.livePoints, selectedRangeMs)
+  const primaryVolumeHistory = storage?.history.find((item) => item.volumeId === primaryVolume?.id)
+  const storageChartPoints = useMemo<MachineResourcePoint[]>(() => (primaryVolumeHistory?.points ?? []).map((point) => ({
+    observedAt: point.collectedAt,
+    sampleCount: 1,
+    cpuPercent: null,
+    memoryUsedBytes: null,
+    memoryTotalBytes: null,
+    memoryPercent: null,
+    storageUsedBytes: point.usedBytes,
+    storageTotalBytes: point.totalBytes,
+    storagePercent: point.usedPercent,
+    rxBytesPerSecond: null,
+    txBytesPerSecond: null,
+  })), [primaryVolumeHistory])
+  const storageBucketSeconds = useMemo(() => {
+    const steps = storageChartPoints.slice(1).map((point, index) => Date.parse(point.observedAt) - Date.parse(storageChartPoints[index]!.observedAt)).filter((step) => step > 0).sort((left, right) => left - right)
+    const middle = steps[Math.floor(steps.length / 2)]
+    return middle ? Math.max(10, Math.round(middle / 1000)) : 30
+  }, [storageChartPoints])
 
   return <div className="page-stack">
     <PageHeading eyebrow={!connected ? current?.status === 'stale' ? 'Stale measurements' : 'Monitoring unavailable' : undefined} title="Machine" description="Host resources and recent measurements." actions={<Link className="button button-secondary" to="/machine/history"><CalendarDays size={15} /> Machine history</Link>} />
@@ -128,18 +150,46 @@ export function MachinePage() {
     <div className="overview-strip machine-overview-strip">
       <MachineOverviewNumber icon={Cpu} label="CPU utilization" value={formatPercent(sample?.cpuPercent ?? null)} detail={sample?.coreCount ? `${sample.coreCount} logical cores` : 'No CPU sample'} />
       <MachineOverviewNumber icon={MemoryStick} label="Memory used" value={formatBytes(sample?.memory.usedBytes ?? null)} detail={sample ? `${formatBytes(sample.memory.availableBytes)} available · ${formatBytes(sample.memory.totalBytes)} total` : 'No memory sample'} />
-      <MachineOverviewNumber icon={HardDrive} label="Primary storage" value={formatBytes(sample?.storage?.usedBytes ?? null)} detail={sample?.storage ? `${formatBytes(sample.storage.availableBytes)} available` : 'No storage sample'} />
+      <MachineOverviewNumber icon={HardDrive} label={primaryVolume?.name ?? 'Server storage'} value={formatBytes(primaryVolume?.usedBytes ?? null)} detail={primaryVolume ? `${formatBytes(primaryVolume.availableBytes)} available` : 'No volume reading'} />
       <MachineOverviewNumber icon={Wifi} label="Network receive" value={formatRate(sample?.network.rxBytesPerSecond ?? null)} detail={sample?.network.interface ?? 'Default interface unavailable'} />
     </div>
     <div className="machine-page-grid"><Card className="machine-chart-card"><div className="card-heading-row"><div><div className="card-kicker"><Activity size={15} /> Saved measurements</div><h2>Processor activity</h2></div><div className="history-chart-actions"><div className="history-range-controls" role="group" aria-label="History range">{(['15m', '1h', '24h', '7d'] as const).map((range) => <button key={range} type="button" aria-pressed={historyRange === range} className={historyRange === range ? 'selected' : ''} onClick={() => setHistoryRange(range)}>{range}</button>)}</div>{historyLoading && <span className="history-range-loading" role="status">Updating</span>}{monitor.apiStatus !== 'online' && <Badge tone="warn">Offline</Badge>}</div></div>{historyError && <div className="history-range-error" role="status">{historyError}</div>}<LiveResourceChart points={chartPoints} metric="cpuPercent" label="CPU utilization" timeZone={timeZone} bucketSeconds={chartHistory?.bucketSeconds} coveragePercent={chartHistory?.coveragePercent} rangeLabel={historyRange} /></Card>
       <Card className="machine-resource-card"><div className="card-heading-row"><div><div className="card-kicker"><MemoryStick size={15} /> Memory and load</div><h2>Host resources</h2></div>{!connected && <Badge tone="warn">Unavailable</Badge>}</div><div className="resource-breakdown full">
         <MachineMetricTrack label="CPU" value={sample?.cpuPercent ?? null} detail={host?.cpuModel ?? 'CPU model unavailable'} tone="accent" />
         <MachineMetricTrack label="Memory" value={sample?.memory.usedPercent ?? null} detail={`${formatBytes(sample?.memory.usedBytes ?? null)} used · ${formatBytes(sample?.memory.availableBytes ?? null)} available`} tone="blue" />
-        <MachineMetricTrack label="Storage" value={sample?.storage?.usedPercent ?? null} detail={sample?.storage ? `${formatBytes(sample.storage.usedBytes)} of ${formatBytes(sample.storage.totalBytes)}` : 'Storage unavailable'} tone="amber" />
+        <MachineMetricTrack label={primaryVolume?.name ?? 'Storage'} value={primaryVolume?.usedPercent ?? null} detail={primaryVolume ? `${formatBytes(primaryVolume.usedBytes)} of ${formatBytes(primaryVolume.totalBytes)}` : 'Volume reading unavailable'} tone="amber" />
       </div><p className="data-note"><CircleHelp size={14} /> Linux memory used is total minus MemAvailable; reclaimable cache stays in available memory.</p>
       <div className="load-average-row"><span>System load average</span><strong>{sample?.loadAverage ? `${sample.loadAverage.one.toFixed(2)} · ${sample.loadAverage.five.toFixed(2)} · ${sample.loadAverage.fifteen.toFixed(2)}` : 'Unavailable'}</strong><small>1, 5 and 15 minutes; not a CPU percentage</small></div></Card></div>
     <div className="machine-page-grid lower">
-      <Card><SectionHeading title="Storage" description="Available space on the machine running MMSManager." /><div className="volume-row"><div className="volume-heading"><span className="volume-icon"><Database size={17} /></span><div><strong>{sample?.storage?.device ? 'Primary volume' : 'Storage unavailable'}</strong><small>{sample?.storage ? 'System volume' : 'No current volume reading'}</small></div><span className="volume-space">{formatBytes(sample?.storage?.usedBytes ?? null)} <small>of {formatBytes(sample?.storage?.totalBytes ?? null)}</small></span></div>{sample?.storage && <><div className="volume-track"><span style={{ width: `${Math.round(sample.storage.usedPercent ?? 0)}%` }} /></div><div className="volume-footer"><span>{formatPercent(sample.storage.usedPercent)} used</span><span>{formatBytes(sample.storage.availableBytes)} available</span></div></>}</div></Card>
+      <Card>
+        <SectionHeading title="Storage volumes" description={`Local file systems used by the application and server data. Readings are saved for up to ${storage?.historyRetentionDays ?? 30} days.`} />
+        {storage?.volumes.length ? (
+          <div className="storage-volume-list">
+            {storage.volumes.map((volume) => (
+              <div className="volume-row" key={volume.id}>
+                <div className="volume-heading">
+                  <span className="volume-icon"><Database size={17} /></span>
+                  <div>
+                    <strong>{volume.name}</strong>
+                    <small>{volume.roles.map((role) => role === 'application-data' ? 'Application data' : role === 'server-data' ? 'Server data' : role === 'system' ? 'System' : role === 'home' ? 'Home' : 'Local').join(' · ')} · measured {formatTimestamp(volume.collectedAt, timeZone)}</small>
+                  </div>
+                  <span className="volume-space">{formatBytes(volume.usedBytes)} <small>of {formatBytes(volume.totalBytes)}</small></span>
+                </div>
+                {volume.usedPercent !== null && <>
+                  <div className="volume-track"><span style={{ width: `${Math.round(volume.usedPercent)}%` }} /></div>
+                  <div className="volume-footer"><span>{formatPercent(volume.usedPercent)} used</span><span>{formatBytes(volume.availableBytes)} available</span></div>
+                </>}
+              </div>
+            ))}
+          </div>
+        ) : <div className="local-server-empty">{storage ? 'No local volume readings are available.' : 'Local volume readings are unavailable.'}</div>}
+        {primaryVolumeHistory && <div className="storage-history-panel">
+          <div className="card-heading-row"><div><div className="card-kicker"><Activity size={15} /> Saved volume readings</div><h3>{primaryVolumeHistory.name} · last 24 hours</h3></div><Badge tone="neutral">SQLite history</Badge></div>
+          {storageChartPoints.length > 1
+            ? <LiveResourceChart points={storageChartPoints} metric="storagePercent" label="Space used" timeZone={timeZone} bucketSeconds={storageBucketSeconds} rangeLabel="24h" />
+            : <div className="local-server-empty">Saved volume history will appear as measurements accumulate.</div>}
+        </div>}
+      </Card>
       <Card><SectionHeading title="Network interface" description="Rates use sampled counters from the default interface." /><div className="network-detail-grid"><div><span>Interface</span><strong>{sample?.network.interface ?? 'Unavailable'}</strong></div><div><span>Receive</span><strong>{formatRate(sample?.network.rxBytesPerSecond ?? null)}</strong></div><div><span>Transmit</span><strong>{formatRate(sample?.network.txBytesPerSecond ?? null)}</strong></div><div><span>Sampled</span><strong>{formatTimestamp(sample?.collectedAt ?? null, timeZone)}</strong></div></div></Card>
     </div>
     <div className="machine-page-grid lower"><Card><SectionHeading title="Host summary" /><div className="machine-host-details"><div><span>Hostname</span><strong>{host?.hostname ?? 'Unavailable'}</strong></div><div><span>Operating system</span><strong>{host ? `${host.distro ?? host.platform} ${host.release ?? ''}` : 'Unavailable'}</strong></div><div><span>Architecture</span><strong>{host?.architecture ?? 'Unavailable'}</strong></div><div><span>CPU cores</span><strong>{host?.coreCount ?? 'Unavailable'}</strong></div><div><span>Uptime</span><strong>{host?.uptimeSeconds === null || host?.uptimeSeconds === undefined ? 'Unavailable' : `${Math.floor(host.uptimeSeconds / 3600)} h`}</strong></div></div></Card>

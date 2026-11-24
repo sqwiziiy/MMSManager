@@ -3,8 +3,9 @@ import {
   machineCurrentSchema,
   machineDaySchema,
   machineHistorySchema,
+  machineStorageSchema,
 } from '@mmsmanager/shared'
-import type { MachineCalendar, MachineCurrent, MachineDay, MachineHistory } from '@mmsmanager/shared'
+import type { MachineCalendar, MachineCurrent, MachineDay, MachineHistory, MachineStorage } from '@mmsmanager/shared'
 import { apiRequest } from './client'
 
 function readResponse<T>(url: string, schema: { parse: (value: unknown) => T }, signal?: AbortSignal): Promise<T> {
@@ -13,6 +14,10 @@ function readResponse<T>(url: string, schema: { parse: (value: unknown) => T }, 
 
 export function getMachineCurrent(signal?: AbortSignal): Promise<MachineCurrent> {
   return readResponse('/api/v1/machine/current', machineCurrentSchema, signal)
+}
+
+export function getMachineStorage(signal?: AbortSignal): Promise<MachineStorage> {
+  return readResponse('/api/v1/machine/storage', machineStorageSchema, signal)
 }
 
 export function getMachineHistory(from: Date, to: Date, limit = 360, signal?: AbortSignal): Promise<MachineHistory> {

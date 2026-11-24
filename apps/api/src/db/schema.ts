@@ -52,6 +52,25 @@ export const machineSamples = sqliteTable('machine_samples', {
   index('machine_samples_machine_time_idx').on(table.machineId, table.collectedAt),
 ])
 
+export const machineStorageSamples = sqliteTable('machine_storage_samples', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  machineId: text('machine_id').notNull().references(() => machines.id),
+  volumeId: text('volume_id').notNull(),
+  name: text('name').notNull(),
+  roles: text('roles').notNull(),
+  collectedAt: text('collected_at').notNull(),
+  minuteStart: text('minute_start').notNull(),
+  localDate: text('local_date').notNull(),
+  timeZone: text('time_zone').notNull(),
+  usedBytes: integer('used_bytes'),
+  availableBytes: integer('available_bytes'),
+  totalBytes: integer('total_bytes'),
+  usedPercent: real('used_percent'),
+}, (table) => [
+  uniqueIndex('machine_storage_samples_key_unique').on(table.machineId, table.volumeId, table.collectedAt),
+  index('machine_storage_samples_volume_time_idx').on(table.machineId, table.volumeId, table.collectedAt),
+])
+
 export const machineMinuteRollups = sqliteTable('machine_minute_rollups', {
   machineId: text('machine_id').notNull().references(() => machines.id),
   timeZone: text('time_zone').notNull(),

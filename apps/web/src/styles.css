@@ -420,6 +420,10 @@ kbd { display: inline-flex; align-items: center; gap: 3px; height: 21px; padding
 .data-note { display: flex; align-items: center; gap: 6px; margin: 19px 0 0; padding-top: 13px; color: var(--text-muted); border-top: 1px solid var(--line-quiet); font-size: 9px; }
 .lower > .card { min-height: 180px; }
 .volume-row { margin-top: 22px; }
+.storage-volume-list .volume-row + .volume-row { padding-top: 18px; border-top: 1px solid var(--border-subtle); }
+.storage-history-panel { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border-subtle); }
+.storage-history-panel .card-heading-row { margin-bottom: 12px; }
+.storage-history-panel h3 { margin: 4px 0 0; font-size: 13px; font-weight: 550; }
 .volume-heading { display: flex; align-items: center; gap: 9px; }
 .volume-icon { width: 31px; height: 31px; display: grid; place-items: center; color: var(--text-secondary); border: 1px solid var(--line); border-radius: 7px; background: #202420; }
 .volume-heading > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }

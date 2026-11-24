@@ -46,6 +46,7 @@ describe('additive Stage 6 migrations', () => {
     expect(opened.db.select().from(machineSamples).where(eq(machineSamples.machineId, 'local')).all()).toMatchObject([{ cpuPercent: 12.5, memoryTotalBytes: 4096, source: 'fixture' }])
     expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'server_templates')).toBeTruthy()
     expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'user_notification_reads')).toBeTruthy()
+    expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'machine_storage_samples')).toBeTruthy()
     const backups = (await readdir(directory)).filter((name) => name.includes('.pre-migration-') && name.endsWith('.backup'))
     expect(backups).toHaveLength(1)
     expect((await lstat(join(directory, backups[0]!))).mode & 0o777).toBe(0o600)

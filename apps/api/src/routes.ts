@@ -22,6 +22,8 @@ import {
   loginSchema,
   machineCalendarSchema,
   machineCurrentSchema,
+  machineStorageQuerySchema,
+  machineStorageSchema,
   machineDaySchema,
   machineHistorySchema,
   monitoringSettingsSchema,
@@ -109,6 +111,7 @@ import type { AppConfigStore } from './app-config.js'
 import type { AppDatabase } from './db/client.js'
 import type { MachineCollector } from './machine/collector.js'
 import { MachineHistoryService } from './machine/history.js'
+import { MachineStorageHistoryService } from './machine/storage-history.js'
 import { validateCalendarDate } from './time.js'
 import { AuthFailure, AuthService } from './auth/service.js'
 import type { SessionPrincipal } from './auth/service.js'
@@ -255,6 +258,7 @@ export async function createApiApp(options: {
 }): Promise<FastifyInstance> {
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, trustProxy: false })
   const history = new MachineHistoryService(options.db, options.timeZone, options.now, options.monitoringConfig?.get().historySaveMs)
+  const storageHistory = new MachineStorageHistoryService(options.db, options.now)
   const activity = new ActivityFeedService(options.db)
   const notifications = new NotificationService(options.db, activity, options.now)
   const templates = new ServerTemplateService(options.db, options.now)
@@ -922,6 +926,11 @@ export async function createApiApp(options: {
     return notificationsResponseSchema.parse(notifications.markRead(request.principal!.userId, request.principal!.role, params.eventId))
   })
   app.get('/api/v1/machine/current', { preHandler: requireAuth }, async () => machineCurrentSchema.parse(history.getCurrent(options.collector.health, options.collector.currentSnapshot)))
+  app.get('/api/v1/machine/storage', { preHandler: requireAuth }, async (request) => {
+    const query = parse(machineStorageQuerySchema, request.query)
+    const volumes = options.collector.currentSnapshot?.snapshot.storageVolumes ?? []
+    return machineStorageSchema.parse(storageHistory.get(query, volumes))
+  })
   app.get('/api/v1/monitoring-settings', { preHandler: requireAuth }, async () => monitoringSettingsSchema.parse(options.monitoringConfig?.get() ?? DEFAULT_MONITORING_SETTINGS))
   app.get('/api/v1/admin/monitoring-settings', { preHandler: requireAdmin }, async () => monitoringSettingsSchema.parse(options.monitoringConfig?.get() ?? DEFAULT_MONITORING_SETTINGS))
   app.patch('/api/v1/admin/monitoring-settings', { preHandler: requireAdminMutation }, async (request) => {

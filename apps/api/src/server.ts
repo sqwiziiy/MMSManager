@@ -1,3 +1,4 @@
+import os from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { API_HOST, getApiPort, getDisplayTimeZone, getWebOrigin, secureCookiesEnabled } from './config.js'
@@ -5,6 +6,7 @@ import { openDatabase } from './db/client.js'
 import { createApiApp } from './routes.js'
 import { MachineCollector } from './machine/collector.js'
 import { SystemInformationReader } from './machine/reader.js'
+import { rolePathDefaults } from './machine/storage-volumes.js'
 import { AuthService } from './auth/service.js'
 import { AvatarStore } from './auth/avatar-store.js'
 import { ServerRegistry } from './servers/registry.js'
@@ -32,6 +34,7 @@ async function main(): Promise<void> {
   const javaRuntimes = new JavaRuntimeRegistry()
   const processes = new ServerProcessManager(database.db, servers)
   const reader = new SystemInformationReader(monitoringSettings.diskRefreshMs)
+  reader.configureStoragePaths(rolePathDefaults(os.homedir(), dataDirectory, servers.managedRoot))
   const collector = new MachineCollector(database.db, reader, timeZone, monitoringSettings.fastSampleMs, Date.now, monitoringSettings.historySaveMs)
   const app = await createApiApp({
     db: database.db,

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 
-const screenshotDir = resolve(process.cwd(), '../../reports/screenshots')
+const screenshotDir = resolve(process.env['MMSMANAGER_E2E_SCREENSHOT_DIR'] ?? resolve(process.cwd(), '../../reports/screenshots'))
 function screenshotPath(name: string): string { return resolve(screenshotDir, `stage-06h-${name}`) }
 mkdirSync(screenshotDir, { recursive: true })
 
@@ -1110,8 +1110,14 @@ test('Stage 6H dashboard and machine layouts fit the 390/768/1280/1920px matrix'
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
     await page.screenshot({ path: screenshotPath(`dashboard-${width}.png`), fullPage: true, animations: 'disabled' })
     await expectNoHorizontalOverflow(page, `dashboard at ${width}px`)
+    const storageResponsePromise = page.waitForResponse((response) => response.url().includes('/api/v1/machine/storage') && response.status() === 200)
     await page.goto('/machine')
     await expect(page.getByRole('heading', { name: 'Machine' })).toBeVisible()
+    const storageResponse = await storageResponsePromise
+    const storage = await storageResponse.json() as { volumes: Array<{ roles: string[] }>; historyRetentionDays: number }
+    expect(storage.historyRetentionDays).toBe(30)
+    expect(storage.volumes.some((volume) => volume.roles.includes('server-data'))).toBe(true)
+    await expect(page.getByText('Storage volumes', { exact: true })).toBeVisible()
     await page.screenshot({ path: screenshotPath(`machine-${width}.png`), fullPage: true, animations: 'disabled' })
     await expectNoHorizontalOverflow(page, `machine at ${width}px`)
   }

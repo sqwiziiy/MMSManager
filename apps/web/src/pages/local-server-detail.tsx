@@ -478,7 +478,7 @@ function LocalWorlds({ serverId, managed }: { serverId: string; managed: boolean
             <div className="local-world-stat"><span>Backup</span><strong>{world.backupAvailable ? 'Available' : 'None yet'}</strong></div>
           </article>)}
         </div>
-        <div className="local-worlds-note"><Shield size={15} /><span>World folders are read only here. Backup availability will connect in Stage 5E. Visual world previews are unavailable.</span></div>
+        <div className="local-worlds-note"><Shield size={15} /><span>World folders are read only here. Visual world previews are unavailable.</span></div>
       </>}
     </Card>
   </div>
