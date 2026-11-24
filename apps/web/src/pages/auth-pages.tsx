@@ -119,7 +119,7 @@ export function LoginPage() {
           <Button kind="primary" icon={busy ? LoaderCircle : ArrowRight} className={busy ? 'auth-submit is-busy' : 'auth-submit'} disabled={busy}>{busy ? 'Signing in' : 'Sign in'}</Button>
         </form>
       </div>
-      <p className="auth-footnote"><LockKeyhole size={13} /> Loopback only · server-managed session</p>
+      <p className="auth-footnote">MMSManager · Mentality Minecraft Server Manager</p>
     </section>
   </main>
 }

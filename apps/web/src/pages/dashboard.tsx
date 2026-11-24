@@ -110,7 +110,7 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
         </div>
       </Card>
     </div>
-    {monitor.apiStatus === 'offline' && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Local metrics are unavailable</strong><small>No machine values are being substituted.</small></span><button className="button button-secondary" onClick={monitor.refreshNow}><RefreshCw size={14} /> Retry</button></div>}
+    {monitor.apiStatus === 'offline' && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Machine readings are unavailable</strong></span><button className="button button-secondary" onClick={monitor.refreshNow}><RefreshCw size={14} /> Try again</button></div>}
   </div>
 }
 

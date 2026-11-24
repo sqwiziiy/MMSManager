@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, Archive, Blocks, CalendarDays, ChevronDown, ChevronRight, Computer, FilePlus2,
@@ -35,26 +35,45 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
   const [searchOpen, setSearchOpen] = useState(false)
   const [sidebarPreferenceError, setSidebarPreferenceError] = useState(false)
   const [sidebarSaving, setSidebarSaving] = useState(false)
+  const sidebarSaveInFlight = useRef(false)
+  const desiredCollapsed = useRef(user.preferences.compactNavigation)
   const [registeredServers, setRegisteredServers] = useState<LocalServerSummary[]>([])
   const location = useLocation()
   const accountNavigation = user.role === 'administrator' ? administration : administration.filter((item) => item.to !== '/users')
 
-  useEffect(() => { setCollapsed(user.preferences.compactNavigation) }, [user.preferences.compactNavigation])
+  useEffect(() => {
+    if (sidebarSaveInFlight.current) return
+    desiredCollapsed.current = user.preferences.compactNavigation
+    setCollapsed(user.preferences.compactNavigation)
+  }, [user.id, user.preferences.compactNavigation])
 
-  const toggleSidebar = async () => {
-    if (sidebarSaving) return
-    const next = !collapsed
+  const toggleSidebar = () => {
+    const next = !desiredCollapsed.current
+    desiredCollapsed.current = next
     setCollapsed(next)
-    setSidebarSaving(true)
     setSidebarPreferenceError(false)
+    if (sidebarSaveInFlight.current) return
+    sidebarSaveInFlight.current = true
+    setSidebarSaving(true)
+    void saveSidebarPreference()
+  }
+
+  async function saveSidebarPreference() {
+    let confirmed = user.preferences.compactNavigation
     try {
-      const updated = await updateUserPreferences({ compactNavigation: next, defaultLanding: user.preferences.defaultLanding })
-      // Update the shared session snapshot so settings and the shell stay in sync.
-      replaceSnapshot(updated)
+      while (desiredCollapsed.current !== confirmed) {
+        const target = desiredCollapsed.current
+        const updated = await updateUserPreferences({ compactNavigation: target, defaultLanding: user.preferences.defaultLanding })
+        confirmed = updated.user.preferences.compactNavigation
+        // Keep the shared session snapshot and the shell preference in sync.
+        replaceSnapshot(updated)
+      }
     } catch {
-      setCollapsed(user.preferences.compactNavigation)
+      desiredCollapsed.current = confirmed
+      setCollapsed(confirmed)
       setSidebarPreferenceError(true)
     } finally {
+      sidebarSaveInFlight.current = false
       setSidebarSaving(false)
     }
   }
@@ -99,7 +118,7 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
       <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
         <div className="brand-row">
           <NavLink to="/" className="brand-mark" aria-label="MMSManager dashboard"><span className="brand-glyph"><i /><i /><i /><i /></span><span className="brand-name">MMSManager</span></NavLink>
-          <IconButton icon={collapsed ? PanelLeftOpen : PanelLeftClose} label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} className="collapse-sidebar" aria-expanded={!collapsed} disabled={sidebarSaving} onClick={() => void toggleSidebar()} />
+          <IconButton icon={collapsed ? PanelLeftOpen : PanelLeftClose} label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} className="collapse-sidebar" aria-expanded={!collapsed} aria-busy={sidebarSaving} onClick={toggleSidebar} />
           <IconButton icon={X} label="Close navigation" className="close-mobile" onClick={() => setMobileOpen(false)} />
         </div>
 
@@ -143,7 +162,7 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
 function SidebarMachineStatus() {
   const { apiStatus, machineStatus } = useMachineStatus()
   const live = apiStatus === 'online' && machineStatus === 'live'
-  const problem = apiStatus === 'offline' ? 'API offline' : apiStatus === 'checking' ? 'Checking' : machineStatus === 'stale' ? 'Stale sample' : machineStatus !== 'live' ? 'Waiting for sample' : ''
+  const problem = apiStatus === 'offline' ? 'Connection unavailable' : apiStatus === 'checking' ? 'Updating' : machineStatus === 'stale' ? 'Out of date' : machineStatus !== 'live' ? 'No reading yet' : ''
   const tone = live ? 'live' : apiStatus === 'offline' ? 'offline' : machineStatus === 'stale' ? 'stale' : ''
   return <div className="local-node"><span className="node-icon"><Computer size={16} /></span><div><strong>Local machine</strong>{problem && <span>{problem}</span>}</div><span className={`node-dot ${tone}`} role="status" aria-label={live ? 'Machine monitoring is current' : problem} title={live ? 'Monitoring current' : problem} /></div>
 }
@@ -151,7 +170,7 @@ function SidebarMachineStatus() {
 function TopbarMachineStatus() {
   const { apiStatus, machineStatus } = useMachineStatus()
   const live = apiStatus === 'online' && machineStatus === 'live'
-  const problem = apiStatus === 'offline' ? 'API offline' : apiStatus === 'checking' ? 'Checking' : machineStatus === 'stale' ? 'Stale sample' : machineStatus !== 'live' ? 'Waiting for sample' : ''
+  const problem = apiStatus === 'offline' ? 'Connection unavailable' : apiStatus === 'checking' ? 'Updating' : machineStatus === 'stale' ? 'Out of date' : machineStatus !== 'live' ? 'No reading yet' : ''
   return <span className={`top-demo ${live ? 'machine-live' : problem ? 'machine-problem' : ''}`} title={problem || 'Monitoring current'} aria-label={live ? 'Local machine monitoring is current' : `Local machine: ${problem}`}><span aria-hidden="true" />Local machine</span>
 }
 

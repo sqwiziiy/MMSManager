@@ -44,19 +44,32 @@ async function expectNoHorizontalOverflow(page: Page, route: string): Promise<vo
       .map((element) => {
         const bounds = element.getBoundingClientRect()
         const chain: string[] = []
+        let scrollContainer = ''
         let parent: HTMLElement | null = element
         while (parent && chain.length < 4) {
           chain.push(`${parent.tagName.toLowerCase()}.${String(parent.className).split(/\s+/).filter(Boolean).join('.')}`)
+          const overflowX = getComputedStyle(parent).overflowX
+          if (!scrollContainer && ['auto', 'scroll', 'hidden', 'clip'].includes(overflowX)) scrollContainer = `${parent.tagName.toLowerCase()}.${String(parent.className).split(/\s+/).filter(Boolean).join('.')}`
           parent = parent.parentElement
         }
-        return { element: chain.join(' < '), right: Math.round(bounds.right), left: Math.round(bounds.left), width: Math.round(bounds.width), text: element.textContent?.trim().slice(0, 60) ?? '', position: getComputedStyle(element).position }
+        return { element: chain.join(' < '), scrollContainer, right: Math.round(bounds.right), left: Math.round(bounds.left), width: Math.round(bounds.width), text: element.textContent?.trim().slice(0, 60) ?? '', position: getComputedStyle(element).position }
       })
-      .filter((item) => item.right > viewport + 1)
+      .filter((item) => item.right > viewport + 1 && !item.scrollContainer)
       .sort((left, right) => right.right - left.right)
       .slice(0, 5)
-    return { viewport, content: document.documentElement.scrollWidth, offenders }
+    return { viewport, content: document.documentElement.scrollWidth, scrollX: window.scrollX, offenders }
   })
   expect(size.content, `horizontal overflow on ${route}: ${JSON.stringify(size.offenders)}`).toBeLessThanOrEqual(size.viewport)
+}
+
+async function expectAccessBadgeFits(page: Page, route: string): Promise<void> {
+  const geometry = await page.locator('.local-access-heading > .badge').evaluate((badge) => {
+    const card = badge.closest<HTMLElement>('.local-access-card')!
+    const bounds = card.getBoundingClientRect()
+    const paddingRight = Number.parseFloat(getComputedStyle(card).paddingRight)
+    return { badgeRight: badge.getBoundingClientRect().right, contentRight: bounds.right - paddingRight }
+  })
+  expect(geometry.badgeRight, `Administrator badge clipped on ${route}: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(geometry.contentRight + 1)
 }
 
 async function mockLocalServer(page: Page, runtimeStatus = 'running') {
@@ -507,7 +520,7 @@ test('local server overview, console and visual properties use mocked API data',
 
   await page.getByRole('link', { name: 'Properties' }).click()
   await expect(page.getByRole('heading', { name: 'Server properties', level: 3 })).toBeVisible()
-  await expect(page.getByText('3 other properties preserved')).toBeVisible()
+  await expect(page.getByText('3 unedited properties')).toBeVisible()
   await page.getByLabel('Message of the day').fill('Changed in browser fixture')
   await page.getByRole('button', { name: 'Save properties' }).click()
   await expect(page.getByText('Saved with a recovery copy.')).toBeVisible()
@@ -521,11 +534,34 @@ test('local server overview, console and visual properties use mocked API data',
   await page.screenshot({ path: screenshotPath('stage-04d-properties-desktop.png'), fullPage: true })
 })
 
-test('sidebar preference persists through navigation and reload', async ({ page }) => {
+test('R3 sidebar preference survives rapid toggles, keyboard, navigation and reload', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 })
   await signIn(page)
+  const frame = page.locator('.app-frame')
+  const toggle = page.locator('.collapse-sidebar')
+  const initiallyCollapsed = await frame.evaluate((element) => element.classList.contains('sidebar-collapsed'))
+  expect(await frame.evaluate((element) => getComputedStyle(element).transitionDuration)).toContain('0.28s')
+  await toggle.click()
+  await toggle.click()
+  await expect(frame).toHaveClass(initiallyCollapsed ? /sidebar-collapsed/ : /(?!.*sidebar-collapsed)/)
+  await expect(toggle).toHaveAttribute('aria-busy', 'false')
+  await page.reload()
+  await expect(frame).toHaveClass(initiallyCollapsed ? /sidebar-collapsed/ : /(?!.*sidebar-collapsed)/)
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const reducedDurationMs = await frame.evaluate((element) => {
+    const duration = getComputedStyle(element).transitionDuration.split(',')[0]!.trim()
+    const value = Number.parseFloat(duration)
+    return duration.endsWith('ms') ? value : value * 1000
+  })
+  expect(reducedDurationMs).toBeLessThanOrEqual(0.02)
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
   await page.getByRole('button', { name: 'Collapse sidebar' }).click()
   await expect(page.locator('.app-frame')).toHaveClass(/sidebar-collapsed/)
+  await page.waitForTimeout(80)
+  const sidebarTrackDuringCollapse = await frame.evaluate((element) => Number.parseFloat(getComputedStyle(element).gridTemplateColumns.split(' ')[0]!))
+  expect(sidebarTrackDuringCollapse).toBeGreaterThan(76)
+  expect(sidebarTrackDuringCollapse).toBeLessThan(256)
   await expect(page.getByRole('button', { name: 'Expand sidebar' })).toHaveAttribute('aria-expanded', 'false')
   await page.goto('/settings')
   await expect(page.locator('.app-frame')).toHaveClass(/sidebar-collapsed/)
@@ -539,6 +575,65 @@ test('sidebar preference persists through navigation and reload', async ({ page 
   await page.getByRole('button', { name: 'Expand sidebar' }).click()
   await page.reload()
   await expect(page.locator('.app-frame')).not.toHaveClass(/sidebar-collapsed/)
+  await page.locator('.collapse-sidebar').focus()
+  await page.keyboard.press('Enter')
+  await expect(frame).toHaveClass(/sidebar-collapsed/)
+  await expect(toggle).toHaveAttribute('aria-busy', 'false')
+  await page.keyboard.press('Enter')
+  await expect(frame).not.toHaveClass(/sidebar-collapsed/)
+  await expect(toggle).toHaveAttribute('aria-busy', 'false')
+})
+
+test('R3 workspace and server screens fit the 390/768/1280/1920px layout matrix', async ({ page }) => {
+  test.setTimeout(120_000)
+  await signIn(page)
+  const workspaceRoutes = ['/', '/servers', '/machine', '/machine/history', '/activity', '/backups', '/templates', '/users', '/profile', '/settings']
+  for (const width of [390, 768, 1280, 1920]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 980 })
+    for (const route of workspaceRoutes) {
+      await page.goto(route)
+      await expect(page.locator('.page-content')).toBeVisible()
+      const routeName = route === '/' ? 'dashboard' : route.slice(1).replaceAll('/', '-')
+      await page.screenshot({ path: screenshotPath(`r3-${routeName}-${width}.png`), fullPage: true, animations: 'disabled' })
+      await expectNoHorizontalOverflow(page, `${route} at ${width}px`)
+    }
+  }
+
+  const { serverId } = await mockLocalServer(page)
+  const serverSections = ['overview', 'console', 'logs', 'players', 'mods', 'files', 'properties', 'worlds', 'runtime', 'backups', 'automation', 'access']
+  for (const width of [390, 768, 1280, 1920]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 980 })
+    for (const section of serverSections) {
+      const route = `/servers/${serverId}/${section}`
+      await page.goto(route)
+      await expect(page.locator('.page-content')).toBeVisible()
+      if (section === 'access') await expectAccessBadgeFits(page, `${section} at ${width}px`)
+      await page.screenshot({ path: screenshotPath(`r3-server-${section}-${width}.png`), fullPage: true, animations: 'disabled' })
+      await expectNoHorizontalOverflow(page, `${section} at ${width}px`)
+    }
+  }
+
+  const zoomWidths = [{ zoom: 125, width: 1024 }, { zoom: 150, width: 853 }]
+  for (const { zoom, width } of zoomWidths) {
+    await page.setViewportSize({ width, height: 980 })
+    for (const route of workspaceRoutes) {
+      await page.goto(route)
+      await expectNoHorizontalOverflow(page, `${route} at ${zoom}% zoom (effective ${width}px)`)
+      if (['/', '/servers', '/settings'].includes(route)) {
+        const routeName = route === '/' ? 'dashboard' : route.slice(1).replaceAll('/', '-')
+        await page.screenshot({ path: screenshotPath(`r3-zoom-${zoom}-${routeName}.png`), fullPage: true, animations: 'disabled' })
+      }
+    }
+    for (const section of serverSections) {
+      const route = `/servers/${serverId}/${section}`
+      await page.goto(route)
+      if (section === 'access') await expectAccessBadgeFits(page, `${section} at ${zoom}% zoom`)
+      await expectNoHorizontalOverflow(page, `${section} at ${zoom}% zoom (effective ${width}px)`)
+      if (['access', 'players', 'files', 'properties'].includes(section)) {
+        await page.screenshot({ path: screenshotPath(`r3-zoom-${zoom}-server-${section}.png`), fullPage: true, animations: 'disabled' })
+      }
+    }
+  }
 })
 
 test('administrator monitoring settings persist and apply without a restart', async ({ page }) => {
@@ -755,7 +850,7 @@ test('managed files edit with recovery, trash and restore at desktop and mobile 
   await signIn(page)
   const { serverId } = await mockLocalServer(page)
   await page.goto(`/servers/${serverId}/files`)
-  await expect(page.locator('.local-files-card h3', { hasText: 'File browser' })).toBeVisible()
+  await expect(page.locator('.local-files-card h3', { hasText: 'Files' })).toBeVisible()
   await expect(page.getByText('server.properties')).toBeVisible()
   await expect(page.getByText('Protected', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'config', exact: true }).click()
