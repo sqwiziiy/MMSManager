@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, like, lte, lt, notLike, or, type SQL } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, isNull, like, lte, lt, notLike, or, type SQL } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import type { ActivityCategory, ActivityItem, ActivityQuery, ActivityResponse, UserRole } from '@mmsmanager/shared'
 import type { AppDatabase } from '../db/client.js'
@@ -7,6 +7,7 @@ import type { AnySQLiteColumn } from 'drizzle-orm/sqlite-core'
 
 type Cursor = { at: string; source: number; id: number; filter: string }
 type Row = ActivityItem & { rank: number; rowId: number; dedupeKey?: string }
+export type ActivityAccessScope = { serverIds?: string[]; playerServerIds?: string[]; backupServerIds?: string[]; automationServerIds?: string[] }
 
 const EVENT_TITLES: Record<string, string> = {
   'server-installed': 'Server installation completed',
@@ -33,6 +34,7 @@ const EVENT_TITLES: Record<string, string> = {
   'server-backup-schedule-missed': 'Scheduled backup was missed',
   'server-backup-schedule-missed-acknowledged': 'Missed backup acknowledged',
   'server-backup-schedule-interrupted': 'Scheduled backup interrupted',
+  'server-access-grant-updated': 'Server access updated',
   'server-runtime-settings-updated': 'Runtime settings updated',
   'server-metadata-updated': 'Server name updated',
   'workspace-template-created': 'Server template created',
@@ -58,6 +60,7 @@ const AUDIT_TITLES: Record<string, string> = {
   'user.enabled': 'Workspace account enabled',
   'user.password.reset': 'Workspace password reset',
   'workspace.preferences.updated': 'Workspace settings updated',
+  'server.access.updated': 'Server access updated',
 }
 
 function eventCategory(action: string): Exclude<ActivityCategory, 'all' | 'security' | 'player'> {
@@ -67,9 +70,15 @@ function eventCategory(action: string): Exclude<ActivityCategory, 'all' | 'secur
   return 'server'
 }
 
-function filterHash(query: ActivityQuery): string {
-  const normalized = JSON.stringify({ category: query.category, serverId: query.serverId ?? null, from: query.from ?? null, to: query.to ?? null })
+function filterHash(query: ActivityQuery, access?: ActivityAccessScope): string {
+  const normalized = JSON.stringify({ category: query.category, serverId: query.serverId ?? null, from: query.from ?? null, to: query.to ?? null,
+    access: access ? { serverIds: access.serverIds?.slice().sort() ?? null, playerServerIds: access.playerServerIds?.slice().sort() ?? null, backupServerIds: access.backupServerIds?.slice().sort() ?? null, automationServerIds: access.automationServerIds?.slice().sort() ?? null } : null })
   return createHash('sha256').update(normalized).digest('base64url').slice(0, 18)
+}
+
+function scopeFilter(column: AnySQLiteColumn, ids: string[] | undefined): SQL | undefined {
+  if (ids === undefined) return undefined
+  return ids.length ? inArray(column, ids) : eq(column, '')
 }
 
 function decodeCursor(raw: string | undefined, filter: string): Cursor | null {
@@ -154,8 +163,8 @@ export class ActivityFeedError extends Error {
 export class ActivityFeedService {
   constructor(private readonly db: AppDatabase) {}
 
-  list(query: ActivityQuery, role: UserRole): ActivityResponse {
-    const fingerprint = filterHash(query)
+  list(query: ActivityQuery, role: UserRole, access?: ActivityAccessScope): ActivityResponse {
+    const fingerprint = filterHash(query, access)
     const cursor = decodeCursor(query.cursor, fingerprint)
     const fetchCount = query.limit * 2 + 1
     const rows: Row[] = []
@@ -189,12 +198,24 @@ export class ActivityFeedService {
     }
 
     const includeServerActions = query.category === 'all' || query.category === 'system' || query.category === 'server' || query.category === 'backup' || query.category === 'automation'
+    const actionAccess = access === undefined ? undefined : query.category === 'backup'
+      ? scopeFilter(localServerEvents.serverId, access.backupServerIds)
+      : query.category === 'automation' ? scopeFilter(localServerEvents.serverId, access.automationServerIds)
+        : query.category === 'system' ? isNull(localServerEvents.serverId)
+          : query.category === 'all' ? or(
+            and(like(localServerEvents.action, 'server-backup-%'), notLike(localServerEvents.action, 'server-backup-schedule-%'), scopeFilter(localServerEvents.serverId, access.backupServerIds)),
+            and(like(localServerEvents.action, 'server-backup-schedule-%'), scopeFilter(localServerEvents.serverId, access.automationServerIds)),
+            and(notLike(localServerEvents.action, 'server-backup-%'), notLike(localServerEvents.action, 'workspace-template-%'), scopeFilter(localServerEvents.serverId, access.serverIds)),
+            isNull(localServerEvents.serverId),
+          )
+          : scopeFilter(localServerEvents.serverId, access.serverIds)
     if (includeServerActions) {
       const actionRows = this.db.select({ id: localServerEvents.id, serverId: localServerEvents.serverId, occurredAt: localServerEvents.occurredAt,
         action: localServerEvents.action, outcome: localServerEvents.outcome, serverName: localServers.name, actor: users.displayName })
         .from(localServerEvents).leftJoin(localServers, eq(localServers.id, localServerEvents.serverId))
         .leftJoin(users, eq(users.id, localServerEvents.actorUserId)).where(and(
           query.serverId ? eq(localServerEvents.serverId, query.serverId) : undefined,
+          actionAccess,
           query.category === 'backup' ? and(like(localServerEvents.action, 'server-backup-%'), notLike(localServerEvents.action, 'server-backup-schedule-%')) : undefined,
           query.category === 'automation' ? like(localServerEvents.action, 'server-backup-schedule-%') : undefined,
           query.category === 'server' ? and(notLike(localServerEvents.action, 'server-backup-%'), notLike(localServerEvents.action, 'workspace-template-%')) : undefined,
@@ -220,6 +241,7 @@ export class ActivityFeedService {
         .from(localServerStructuredEvents).innerJoin(localServers, eq(localServers.id, localServerStructuredEvents.serverId)).where(and(
           eq(localServerStructuredEvents.category, 'server'),
           query.serverId ? eq(localServerStructuredEvents.serverId, query.serverId) : undefined,
+          scopeFilter(localServerStructuredEvents.serverId, access?.serverIds),
           ...rangeConditions(localServerStructuredEvents.occurredAt, query.from, query.to),
           sourceWindow(localServerStructuredEvents.occurredAt, localServerStructuredEvents.id, 2, cursor),
         )).orderBy(desc(localServerStructuredEvents.occurredAt), desc(localServerStructuredEvents.id)).limit(fetchCount).all()
@@ -242,6 +264,7 @@ export class ActivityFeedService {
         .from(localServerStructuredEvents).innerJoin(localServers, eq(localServers.id, localServerStructuredEvents.serverId)).where(and(
           or(eq(localServerStructuredEvents.category, 'player'), eq(localServerStructuredEvents.category, 'moderation')),
           query.serverId ? eq(localServerStructuredEvents.serverId, query.serverId) : undefined,
+          scopeFilter(localServerStructuredEvents.serverId, access?.playerServerIds),
           ...rangeConditions(localServerStructuredEvents.occurredAt, query.from, query.to),
           sourceWindow(localServerStructuredEvents.occurredAt, localServerStructuredEvents.id, 2, cursor),
         )).orderBy(desc(localServerStructuredEvents.occurredAt), desc(localServerStructuredEvents.id)).limit(fetchCount).all()

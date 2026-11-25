@@ -473,8 +473,6 @@ const additionalPhrases = [
   ['Server properties changed while this process was running. The new values take effect after the next start.', 'Свойства изменены во время работы процесса. Новые значения вступят в силу после следующего запуска.'],
   ['The server must be confirmed stopped before this setting can change.', 'Чтобы изменить это значение, нужно подтвердить остановку сервера.'],
   ['Changing this may create different player UUIDs and separate existing inventories, advancements and permissions from those identities. Disabling it weakens Minecraft account verification. No player data is migrated, and this does not change MMSManager sign-in.', 'Изменение может привести к другим UUID игроков и отделить от них существующие инвентари, достижения и права. Отключение ослабляет проверку учётных записей Minecraft. Данные игроков не переносятся; вход в MMSManager не меняется.'],
-  ['Only Administrators can start, stop or restart a managed server, edit properties, manage files, worlds, backups, runtime and schedules.', 'Только администраторы могут запускать и останавливать управляемые серверы, менять свойства, файлы, миры, копии, среду запуска и расписания.'],
-  ['Only administrators can start, stop, edit properties, or send console commands.', 'Только администраторы могут запускать и останавливать сервер, менять его свойства и отправлять команды в консоль.'],
   ['All enabled local workspace accounts can see this registered server and its non-sensitive status pages.', 'Все активные учётные записи рабочей области видят этот сервер и страницы состояния без закрытых данных.'],
   ['Administrator access is required to request player names.', 'Для запроса имён игроков нужны права администратора.'],
   ['The status ping never proves player identities. Moderation actions remain unavailable until their command results can be verified.', 'Проверка статуса не подтверждает личности игроков. Модерация недоступна, пока нельзя проверить результат команды.'],
@@ -893,13 +891,52 @@ const additionalPhrases = [
   ['The alternate management protocol is not managed by MMSManager.', 'Дополнительный протокол управления не настраивается в MMSManager.'],
   ['Arbitrary server-side file paths are not edited in Properties.', 'Произвольные пути к файлам сервера не редактируются в свойствах.'],
   ['This key is managed together with the protected text-filtering configuration.', 'Этот ключ связан с защищённой настройкой фильтрации текста.'],
+  ['Server access', 'Доступ к серверу'], ['Administrators have full access to this server.', 'Администраторы имеют полный доступ к этому серверу.'],
+  ['These are the permissions assigned to your account for this server.', 'Здесь показаны права вашей учётной записи для этого сервера.'],
+  ['Member account', 'Учётная запись участника'], ['Choose member account', 'Выберите учётную запись участника'],
+  ['Choose a Member', 'Выберите участника'], ['Loading member permissions…', 'Загрузка прав участника…'],
+  ['No Member accounts', 'Учётных записей участников нет'], ['Create a Member account in Users before assigning server access.', 'Создайте учётную запись участника в разделе «Пользователи», чтобы назначить доступ к серверу.'],
+  ['Choose a Member account to review its access.', 'Выберите учётную запись участника, чтобы проверить её доступ.'],
+  ['Server visibility', 'Видимость сервера'], ['View overview and status', 'Просмотр сводки и состояния'], ['See this server in lists and inspect its status.', 'Видеть сервер в списках и проверять его состояние.'],
+  ['Console and logs', 'Консоль и журналы'], ['View console and process logs', 'Просмотр консоли и журналов процесса'], ['Read live output and retained process sessions.', 'Читать текущий вывод и сохранённую историю сеансов.'],
+  ['Send Minecraft console commands', 'Отправка команд Minecraft'], ['Send commands to a ready panel-owned process.', 'Отправлять команды готовому процессу под управлением панели.'],
+  ['Server lifecycle', 'Работа сервера'], ['Start, stop and restart', 'Запуск, остановка и перезапуск'], ['Control an eligible panel-managed server process.', 'Управлять подходящим серверным процессом панели.'],
+  ['Players', 'Игроки'], ['View player names and events', 'Просмотр имён игроков и событий'], ['Read the owned process player list and player history.', 'Просматривать список игроков процесса и историю событий.'],
+  ['Moderate players', 'Модерация игроков'], ['Submit fixed kick, ban, whitelist and operator commands.', 'Отправлять фиксированные команды исключения, блокировки, белого списка и оператора.'],
+  ['Mods and plugins', 'Моды и плагины'], ['View mod and plugin inventory', 'Просмотр списка модов и плагинов'], ['Read supported JAR metadata and status.', 'Просматривать метаданные и состояние поддерживаемых JAR-файлов.'],
+  ['Manage mod and plugin files', 'Управление файлами модов и плагинов'], ['Upload, enable, disable, quarantine and restore JARs.', 'Загружать, включать, отключать, помещать в карантин и восстанавливать JAR-файлы.'],
+  ['Server files', 'Файлы сервера'], ['View and download server files', 'Просмотр и загрузка файлов сервера'], ['Browse files, read supported text and download allowed items.', 'Просматривать файлы, читать поддерживаемый текст и загружать разрешённые элементы.'],
+  ['Change server files', 'Изменение файлов сервера'], ['Upload, create, edit, move, trash and recover files.', 'Загружать, создавать, изменять, перемещать файлы, удалять в корзину и восстанавливать их.'],
+  ['Properties', 'Свойства'], ['View server properties', 'Просмотр свойств сервера'], ['Read supported settings; protected values remain hidden.', 'Просматривать поддерживаемые параметры; защищённые значения скрыты.'],
+  ['Edit server properties', 'Изменение свойств сервера'], ['Change supported settings with safety confirmations.', 'Изменять поддерживаемые параметры с подтверждением важных изменений.'],
+  ['Worlds', 'Миры'], ['View world inventory', 'Просмотр списка миров'], ['Inspect detected managed world folders.', 'Просматривать обнаруженные папки миров под управлением панели.'],
+  ['Backups', 'Резервные копии'], ['View and download backups', 'Просмотр и загрузка резервных копий'], ['Inspect manifests and download retained archives.', 'Проверять манифесты и скачивать сохранённые архивы.'],
+  ['Create backups', 'Создание резервных копий'], ['Create a verified backup while the server is stopped.', 'Создавать проверенную копию, когда сервер остановлен.'],
+  ['Workspace user and role changes, Java, installation, automation, runtime tuning, server rename, backup restore and server deletion remain Administrator-only.', 'Управление пользователями и ролями, Java, установка, автоматизация, параметры запуска, переименование сервера, восстановление копий и удаление сервера доступны только администраторам.'],
+  ['Changes are recorded in local audit history.', 'Изменения записываются в локальную историю аудита.'], ['Save permissions', 'Сохранить права'], ['Permissions saved and active immediately.', 'Права сохранены и действуют сразу.'],
+  ['Server access updated', 'Доступ к серверу обновлён'],
+  ['Permissions could not be saved.', 'Не удалось сохранить права.'], ['Server access could not be loaded.', 'Не удалось загрузить доступ к серверу.'],
+  ['Your current server access could not be refreshed.', 'Не удалось обновить сведения о ваших правах на сервер.'],
+  ['Your server permissions', 'Ваши права на сервер'], ['Permission changes take effect immediately when an Administrator saves them.', 'Изменения прав вступают в силу сразу после сохранения администратором.'],
+  ['Granted', 'Разрешено'], ['Not granted', 'Не разрешено'], ['Access rules', 'Правила доступа'], ['Permissions apply to this server only.', 'Права применяются только к этому серверу.'],
+  ['Members see only their own permissions.', 'Участники видят только собственные права.'],
+  ['Immediate', 'Сразу'], ['Private', 'Личные'], ['Read only', 'Только чтение'],
+  ['Only Administrators can manage accounts, installations, runtime settings, schedules, backup restore and server deletion.', 'Только администраторы могут управлять учётными записями, установкой, параметрами запуска и расписанием, восстанавливать копии и удалять серверы.'],
+  ['Each account has its own permissions for this server.', 'Для каждой учётной записи отдельно настроены права на этот сервер.'],
+  ['Changes take effect as soon as they are saved.', 'Изменения вступают в силу сразу после сохранения.'],
+  ['Server management is available only for servers created by MMSManager.', 'Управлять можно только серверами, созданными в MMSManager.'], ['Managed only', 'Только управляемые'],
+  ['Server access was removed', 'Доступ к серверу отозван'], ['This server is no longer available to your account.', 'Этот сервер больше недоступен вашей учётной записи.'],
+  ['Server permissions could not be refreshed.', 'Не удалось обновить права на сервер.'], ['Ask an Administrator to grant this server permission.', 'Попросите администратора предоставить доступ к этому серверу.'],
+  ['Access not granted', 'Доступ не предоставлен'], ['This server permission has not been granted.', 'Это право на сервер не предоставлено.'],
+  ['Backup access not granted', 'Доступ к резервным копиям не предоставлен'], ['Ask an Administrator for access to this server\'s backups.', 'Попросите администратора предоставить доступ к резервным копиям этого сервера.'],
+  ['Inspect archive', 'Проверить архив'],
+  ['Read only access', 'Доступ только для чтения'],
 ] as const satisfies ReadonlyArray<readonly [string, string]>
 export const supplementalPhrasePairs = additionalPhrases
 
-const russianByEnglish = new Map<string, string>([
-  ...Object.keys(englishCatalog).map((key) => [englishCatalog[key as keyof typeof englishCatalog], russianCatalog[key as keyof typeof russianCatalog]] as const),
-  ...additionalPhrases,
-])
+const russianByEnglish = new Map<string, string>()
+Object.keys(englishCatalog).forEach((key) => russianByEnglish.set(englishCatalog[key as keyof typeof englishCatalog], russianCatalog[key as keyof typeof russianCatalog]))
+additionalPhrases.forEach(([english, russian]) => russianByEnglish.set(english, russian))
 const englishByRussian = new Set([...Object.values(russianCatalog), ...additionalPhrases.map((phrase) => phrase[1])])
 
 export function translateText(value: string, language: 'en' | 'ru'): string {

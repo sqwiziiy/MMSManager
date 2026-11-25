@@ -392,6 +392,38 @@ export const localServerSummarySchema = z.object({
 export const localServerListSchema = z.object({ servers: z.array(localServerSummarySchema) })
 export const serverImportResultSchema = z.object({ server: localServerSummarySchema })
 export const serverMetadataUpdateSchema = z.object({ name: z.string().trim().min(1).max(60) }).strict()
+export const serverAccessPermissionsSchema = z.object({
+  viewServer: z.boolean(),
+  viewLogs: z.boolean(),
+  sendConsoleCommands: z.boolean(),
+  controlLifecycle: z.boolean(),
+  viewPlayers: z.boolean(),
+  moderatePlayers: z.boolean(),
+  viewMods: z.boolean(),
+  manageMods: z.boolean(),
+  viewFiles: z.boolean(),
+  manageFiles: z.boolean(),
+  viewSettings: z.boolean(),
+  manageSettings: z.boolean(),
+  viewWorlds: z.boolean(),
+  viewBackups: z.boolean(),
+  createBackups: z.boolean(),
+}).strict().superRefine((permissions, context) => {
+  const requiresServerView = Object.entries(permissions).some(([key, value]) => key !== 'viewServer' && value)
+  if (requiresServerView && !permissions.viewServer) context.addIssue({ code: 'custom', path: ['viewServer'], message: 'Server visibility is required for scoped permissions.' })
+  for (const [managed, viewed] of [['manageMods', 'viewMods'], ['moderatePlayers', 'viewPlayers'], ['manageFiles', 'viewFiles'], ['manageSettings', 'viewSettings'], ['createBackups', 'viewBackups']] as const) {
+    if (permissions[managed] && !permissions[viewed]) context.addIssue({ code: 'custom', path: [viewed], message: 'View access is required for this management permission.' })
+  }
+})
+export const serverAccessGrantUserSchema = z.object({
+  userId: z.string().uuid(), username: z.string(), displayName: z.string(), role: userRoleSchema,
+  enabled: z.boolean(), permissions: serverAccessPermissionsSchema,
+}).strict()
+export const serverAccessAdminResultSchema = z.object({ users: z.array(serverAccessGrantUserSchema).max(500) }).strict()
+export const serverAccessUpdateSchema = z.object({ userId: z.string().uuid(), permissions: serverAccessPermissionsSchema }).strict()
+export const serverAccessSelfResultSchema = z.object({
+  administrator: z.boolean(), permissions: serverAccessPermissionsSchema,
+}).strict()
 export const serverImportRequestSchema = z.object({
   path: z.string().trim().min(1).max(1024),
 }).strict()
@@ -1020,6 +1052,8 @@ export type RegisteredServer = z.infer<typeof registeredServerSchema>
 export type ServerInventory = z.infer<typeof serverInventorySchema>
 export type LocalServerSummary = z.infer<typeof localServerSummarySchema>
 export type ServerMetadataUpdate = z.infer<typeof serverMetadataUpdateSchema>
+export type ServerAccessPermissions = z.infer<typeof serverAccessPermissionsSchema>
+export type ServerAccessGrantUser = z.infer<typeof serverAccessGrantUserSchema>
 export type ServerImportPreview = z.infer<typeof serverImportPreviewSchema>
 export type ServerTemplateInput = z.infer<typeof serverTemplateInputSchema>
 export type ServerTemplate = z.infer<typeof serverTemplateSchema>

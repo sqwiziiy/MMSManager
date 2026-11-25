@@ -7,13 +7,14 @@ import {
   Search, Send, Server, Settings2, Shield, Square, Terminal, Trash2, Upload, Users, Wifi,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
-import type { LocalServerSummary, ServerConsoleEntry, ServerConsoleSession, ServerModEntry, ServerModsInventory, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds } from '@mmsmanager/shared'
+import type { LocalServerSummary, ServerConsoleEntry, ServerConsoleSession, ServerModEntry, ServerModsInventory, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerAccessPermissions, ServerAccessGrantUser } from '@mmsmanager/shared'
 import {
-  confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getServerConsole, getServerConsoleSessions, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, restoreServerFileRecovery, restoreTrashedServerFile, sendPlayerAction,
+  confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getMyServerAccess, getServerAccessUsers, getServerConsole, getServerConsoleSessions, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, restoreServerFileRecovery, restoreTrashedServerFile, sendPlayerAction, updateServerAccess,
   sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer,
   getServerMods, uploadServerMod, uploadServerFiles, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
 } from '../api/servers'
 import type { ServerFileUploadRequest } from '../api/servers'
+import { ApiRequestError } from '../api/client'
 import { translateText } from '../i18n/catalog'
 import { useAuth } from '../state/use-auth'
 import { Badge, Button, Card, ComingSoon, SectionHeading } from '../components/ui'
@@ -54,8 +55,29 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   const [nameDialogOpen, setNameDialogOpen] = useState(false)
   const [nameSaving, setNameSaving] = useState(false)
   const [nameError, setNameError] = useState<string | null>(null)
+  const [permissions, setPermissions] = useState<ServerAccessPermissions | null>(null)
+  const [accessDenied, setAccessDenied] = useState(false)
+  const [accessError, setAccessError] = useState<string | null>(null)
 
   useEffect(() => { setDisplayName(server.name); setNameDraft(server.name) }, [server.id, server.name])
+
+  useEffect(() => {
+    let active = true
+    const refreshAccess = async () => {
+      try {
+        const result = await getMyServerAccess(server.id)
+        if (active) { setPermissions(result.permissions); setAccessDenied(false); setAccessError(null) }
+      } catch (issue) {
+        if (!active) return
+        if (issue instanceof ApiRequestError && (issue.status === 403 || issue.status === 404)) {
+          setPermissions(null); setAccessDenied(true); setAccessError(null)
+        } else setAccessError(accessText('Server permissions could not be refreshed.'))
+      }
+    }
+    void refreshAccess()
+    const timer = window.setInterval(() => void refreshAccess(), 5_000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [server.id])
 
   const refreshRuntime = useCallback(async () => {
     try {
@@ -117,18 +139,25 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   const status = runtime?.status ?? server.runtimeStatus ?? 'unavailable'
   const statusTone = status === 'running' ? 'good' : status === 'crashed' || status === 'error' ? 'danger' : status === 'external/unmanaged' ? 'warn' : 'neutral'
   const isManaged = server.source === 'created' && server.managed
-  const canStart = isAdmin && isManaged && ['stopped', 'crashed', 'error'].includes(status) && server.eula === 'accepted' && Boolean(server.jarName && server.javaMajor)
-  const canStop = isAdmin && isManaged && ['running', 'starting'].includes(status)
-  const canRestart = isAdmin && isManaged && status === 'running'
+  const hasPermission = (capability: keyof ServerAccessPermissions) => isAdmin || permissions?.[capability] === true
+  const canControlLifecycle = hasPermission('controlLifecycle')
+  const canStart = canControlLifecycle && isManaged && ['stopped', 'crashed', 'error'].includes(status) && server.eula === 'accepted' && Boolean(server.jarName && server.javaMajor)
+  const canStop = canControlLifecycle && isManaged && ['running', 'starting'].includes(status)
+  const canRestart = canControlLifecycle && isManaged && status === 'running'
   const canConfirmStopped = isAdmin && isManaged && status === 'external/unmanaged'
-  const canReadConsole = isManaged && ['starting', 'running', 'stopping'].includes(status)
-  const canReadPlayers = isAdmin && isManaged && status === 'running' && runtime?.ready === true
+  const canReadConsole = hasPermission('viewLogs') && isManaged && ['starting', 'running', 'stopping'].includes(status)
+  const canReadPlayers = hasPermission('viewPlayers') && isManaged && status === 'running' && runtime?.ready === true
+  const sectionCapability: Partial<Record<string, keyof ServerAccessPermissions>> = {
+    overview: 'viewServer', console: 'viewLogs', logs: 'viewLogs', players: 'viewPlayers', mods: 'viewMods',
+    files: 'viewFiles', properties: 'viewSettings', worlds: 'viewWorlds', backups: 'viewBackups',
+  }
+  if (accessDenied) return <div className="page-stack"><Card className="section-unavailable"><div className="local-console-empty"><Shield size={20} /><strong>{accessText('Server access was removed')}</strong><span>{accessText('This server is no longer available to your account.')}</span><Link to="/servers" className="text-link">{accessText('Return to servers')}</Link></div></Card></div>
   return <div className="page-stack server-detail-page local-detail-page">
     <div className="server-detail-heading">
       <div className="server-detail-identity"><span className="local-server-icon detail-server-icon"><Server size={19} /></span><div><div className="server-detail-title"><h1 data-no-translate>{displayName}</h1><Badge tone={statusTone}>{statusLabel(status)}</Badge></div><p>{server.software === 'unknown' ? 'Unknown software' : `${capitalize(server.software)}${server.version ? ` ${server.version}` : ''}`} <span>·</span> {server.port ? `Game port ${server.port}` : 'No game port detected'}</p></div></div>
       <div className="server-actions">
         {isAdmin && <Button kind="quiet" icon={PencilLine} onClick={() => { setNameDraft(displayName); setNameError(null); setNameDialogOpen(true) }}>Edit name</Button>}
-        {isAdmin && (canStart ? <Button kind="primary" icon={Play} disabled={busy} onClick={() => void runAction('start')}>Start server</Button>
+        {canControlLifecycle && (canStart ? <Button kind="primary" icon={Play} disabled={busy} onClick={() => void runAction('start')}>Start server</Button>
           : canStop ? <Button kind="danger" icon={Square} disabled={busy} onClick={() => void runAction('stop')}>Stop server</Button>
             : canConfirmStopped ? <Button icon={CircleCheck} disabled={busy} onClick={() => void runAction('confirm')}>Confirm it has stopped</Button>
               : <Button disabled title={server.eula !== 'accepted' ? 'EULA acceptance is required' : 'This action is not available in the current state'}>{status === 'starting' ? 'Starting…' : status === 'stopping' ? 'Stopping…' : 'Start unavailable'}</Button>)}
@@ -137,36 +166,35 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     </div>
     <div className="server-detail-tabs" role="navigation" aria-label={`${displayName} pages`}>
       {tabs.map(({ id, label, icon: Icon }) => {
-        const disabled = (id === 'console' && !canReadConsole) || (id === 'players' && !canReadPlayers)
+        const missingPermission = sectionCapability[id] !== undefined && !hasPermission(sectionCapability[id]!)
+        const disabled = missingPermission || (id === 'console' && !canReadConsole) || (id === 'players' && !canReadPlayers) || ((id === 'runtime' || id === 'automation') && !isAdmin)
         const content = <><Icon size={15} />{label}</>
         return disabled
-          ? <span key={id} className={`server-detail-tab-disabled ${section === id ? 'active' : ''}`} aria-disabled="true" title={id === 'console' ? 'Available during a panel-owned process session.' : 'Available while a panel-owned server is ready.'}>{content}</span>
+          ? <span key={id} className={`server-detail-tab-disabled ${section === id ? 'active' : ''}`} aria-disabled="true" title={missingPermission ? 'This server permission has not been granted.' : id === 'console' ? 'Available during a panel-owned process session.' : id === 'players' ? 'Available while a panel-owned server is ready.' : 'Administrator access is required.'}>{content}</span>
           : <NavLink key={id} to={`/servers/${server.id}/${id}`} className={section === id ? 'active' : ''}>{content}</NavLink>
       })}
     </div>
     <div className="server-section-heading"><div><p className="eyebrow">{displayName} / {active.label}</p><h2>{sectionTitle(section)}</h2></div></div>
-    {(runtimeError || actionError) && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{actionError ?? runtimeError}</span><Button icon={RefreshCw} onClick={() => void refreshRuntime()}>Retry</Button></div>}
+    {(runtimeError || actionError || accessError) && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{actionError ?? runtimeError ?? accessText('Server permissions could not be refreshed.')}</span><Button icon={RefreshCw} onClick={() => { void refreshRuntime(); void getMyServerAccess(server.id).then((result) => setPermissions(result.permissions)).catch(() => undefined) }}>Retry</Button></div>}
     {runtime?.errorMessage && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{runtime.errorMessage}</span></div>}
     {runtime?.restartRequired && <div className="local-restart-banner" role="status"><RefreshCw size={16} /><span><strong>Restart required</strong><small>Server properties changed while this process was running. The new values take effect after the next start.</small></span></div>}
-    {section === 'overview' && <LocalOverview server={server} runtime={runtime} statusSample={statusSample} isAdmin={isAdmin} />}
+    {section === 'overview' && hasPermission('viewServer') && <LocalOverview server={server} runtime={runtime} statusSample={statusSample} />}
     {section === 'players' && (canReadPlayers
-      ? <LocalPlayers serverId={server.id} isAdmin={isAdmin} canAct={true} statusSample={statusSample} error={statusError} />
+      ? <LocalPlayers serverId={server.id} canView={hasPermission('viewPlayers')} canAct={hasPermission('moderatePlayers') && canReadPlayers} statusSample={statusSample} error={statusError} />
       : <SectionUnavailable title={isAdmin ? 'Players unavailable' : 'Administrator access required'} text={isAdmin ? 'Player names and moderation actions are available while a panel-owned server is ready.' : 'Player names and moderation actions require an administrator.'} />)}
-    {section === 'mods' && <LocalMods serverId={server.id} software={server.software} managed={isManaged} isAdmin={isAdmin} runtimeStatus={status} />}
+    {section === 'mods' && hasPermission('viewMods') && <LocalMods serverId={server.id} software={server.software} managed={isManaged} canManage={hasPermission('manageMods')} runtimeStatus={status} />}
     {section === 'console' && (canReadConsole
-      ? <LocalConsole serverId={server.id} runtime={runtime} isAdmin={isAdmin} />
+      ? <LocalConsole serverId={server.id} runtime={runtime} canSendCommands={hasPermission('sendConsoleCommands')} />
       : <SectionUnavailable title="Console unavailable" text="The live console requires an active panel-owned process session. Historical process output remains available in Logs." logsHref={`/servers/${server.id}/logs`} />)}
-    {section === 'logs' && <LocalLogs serverId={server.id} runtimeStatus={status} />}
-    {section === 'properties' && isAdmin && <ServerPropertiesEditor serverId={server.id} managed={isManaged} runtimeStatus={runtime?.status ?? 'unavailable'} serverPort={server.port} />}
-    {section === 'properties' && !isAdmin && <LockedDetail title="Administrator access required" text="Server properties are visible only to workspace administrators." />}
-    {section === 'files' && isAdmin && <LocalFiles serverId={server.id} managed={isManaged} runtimeStatus={status} />}
-    {section === 'files' && !isAdmin && <LockedDetail title="Administrator access required" text="Server files may contain credentials or private world data. Access is limited to workspace administrators." />}
-    {section === 'worlds' && isAdmin && <LocalWorlds serverId={server.id} managed={isManaged} />}
-    {section === 'worlds' && !isAdmin && <LockedDetail title="Administrator access required" text="World paths and storage details are available only to workspace administrators." />}
-    {section === 'backups' && <LocalServerBackups serverId={server.id} serverName={server.name} managed={isManaged} isAdmin={isAdmin} runtimeStatus={status} />}
+    {section === 'logs' && hasPermission('viewLogs') && <LocalLogs serverId={server.id} runtimeStatus={status} />}
+    {section === 'properties' && hasPermission('viewSettings') && <ServerPropertiesEditor serverId={server.id} managed={isManaged} runtimeStatus={runtime?.status ?? 'unavailable'} serverPort={server.port} canEdit={hasPermission('manageSettings')} canRestore={isAdmin} />}
+    {section === 'files' && hasPermission('viewFiles') && <LocalFiles serverId={server.id} managed={isManaged} runtimeStatus={status} canManage={hasPermission('manageFiles')} />}
+    {section === 'worlds' && hasPermission('viewWorlds') && <LocalWorlds serverId={server.id} managed={isManaged} />}
+    {section === 'backups' && hasPermission('viewBackups') && <LocalServerBackups serverId={server.id} serverName={server.name} managed={isManaged} canView={hasPermission('viewBackups')} canCreate={hasPermission('createBackups')} isAdmin={isAdmin} runtimeStatus={status} />}
     {section === 'runtime' && <LocalServerRuntime serverId={server.id} managed={isManaged} isAdmin={isAdmin} />}
     {section === 'automation' && <LocalServerAutomation serverId={server.id} managed={isManaged} isAdmin={isAdmin} />}
-    {section === 'access' && <LocalAccessPolicy server={{ ...server, name: displayName }} isAdmin={isAdmin} />}
+    {section === 'access' && <LocalAccessPolicy server={{ ...server, name: displayName }} isAdmin={isAdmin} selfPermissions={permissions} accessError={accessError} />}
+    {sectionCapability[section] && !hasPermission(sectionCapability[section]!) && <LockedDetail title={accessText('Access not granted')} text={accessText('Ask an Administrator to grant this server permission.')} />}
     {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups', 'runtime', 'automation', 'access'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
     {nameDialogOpen && <div className="local-file-dialog-backdrop"><section className="local-file-dialog server-name-dialog" role="dialog" aria-modal="true" aria-labelledby="server-name-dialog-title"><div className="local-file-dialog-heading"><span className="local-backup-icon"><PencilLine size={16} /></span><div><h3 id="server-name-dialog-title">Edit server name</h3><p>Only the display name changes. Server files and history stay in place.</p></div></div><form onSubmit={(event) => void saveName(event)}><label className="server-name-field">Server name<input autoFocus required maxLength={60} value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} /></label>{nameError && <div className="local-inline-error" role="alert">{nameError}</div>}<div className="local-file-dialog-actions"><Button type="button" disabled={nameSaving} onClick={() => setNameDialogOpen(false)}>Cancel</Button><Button kind="primary" icon={nameSaving ? RefreshCw : Check} disabled={nameSaving || !nameDraft.trim() || nameDraft.trim() === displayName}>{nameSaving ? 'Saving…' : 'Save name'}</Button></div></form></section></div>}
   </div>
@@ -194,7 +222,7 @@ function bytes(value: number | null) {
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
-function LocalOverview({ server, runtime, statusSample, isAdmin }: { server: LocalServerSummary; runtime: ServerRuntime | null; statusSample: ServerStatus | null; isAdmin: boolean }) {
+function LocalOverview({ server, runtime, statusSample }: { server: LocalServerSummary; runtime: ServerRuntime | null; statusSample: ServerStatus | null }) {
   return <>
     <div className="local-runtime-metrics">
       <div><span>Players online</span><strong>{statusSample?.state === 'reachable' ? statusSample.playersOnline : 'Unavailable'}</strong><small>{statusSample?.state === 'reachable' ? 'Local status ping · count only' : 'No current local status response'}</small></div>
@@ -213,7 +241,6 @@ function LocalOverview({ server, runtime, statusSample, isAdmin }: { server: Loc
       </div></Card>
       <Card><SectionHeading title="Local process" description="Runtime values are separate from machine-wide telemetry." /><div className="local-process-state"><span className={`local-process-indicator ${runtime?.status === 'running' ? 'active' : ''}`} /><div><strong>{statusLabel(runtime?.status ?? server.runtimeStatus ?? 'unavailable')}</strong><small>{runtime?.ready ? 'Minecraft reported readiness in its output.' : runtime?.status === 'starting' ? 'Waiting for the Minecraft readiness line.' : 'No panel-owned ready process.'}</small></div></div>
         <div className="local-detail-facts compact"><div><span>Process CPU</span><strong>{runtime?.cpuPercent === null || runtime?.cpuPercent === undefined ? 'Unavailable' : `${runtime.cpuPercent.toFixed(1)}%`}</strong><small>Share of host capacity; needs two samples</small></div><div><span>Last exit code</span><strong>{runtime?.lastExitCode ?? '—'}</strong></div></div>
-        {!isAdmin && <div className="local-detail-callout"><Shield size={15} /><span>Only administrators can start, stop, edit properties, or send console commands.</span></div>}
       </Card>
     </div>
   </>
@@ -225,7 +252,7 @@ const playerActionLabels: Record<ServerPlayerAction, string> = {
 }
 const playerActions: ServerPlayerAction[] = ['kick', 'ban', 'pardon', 'op', 'deop', 'whitelist-add', 'whitelist-remove', 'whitelist-list']
 
-function LocalPlayers({ serverId, isAdmin, canAct, statusSample, error }: { serverId: string; isAdmin: boolean; canAct: boolean; statusSample: ServerStatus | null; error: string | null }) {
+function LocalPlayers({ serverId, canView, canAct, statusSample, error }: { serverId: string; canView: boolean; canAct: boolean; statusSample: ServerStatus | null; error: string | null }) {
   const [players, setPlayers] = useState<ServerPlayerList | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -234,7 +261,7 @@ function LocalPlayers({ serverId, isAdmin, canAct, statusSample, error }: { serv
   const [actionBusy, setActionBusy] = useState(false)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const refresh = useCallback(async (signal?: AbortSignal) => {
-    if (!isAdmin) return
+    if (!canView) return
     setLoading(true)
     try {
       setPlayers(await getAuthoritativePlayers(serverId, signal))
@@ -242,7 +269,7 @@ function LocalPlayers({ serverId, isAdmin, canAct, statusSample, error }: { serv
     } catch (issue) {
       if (!(issue instanceof DOMException && issue.name === 'AbortError')) setListError(issue instanceof Error ? issue.message : 'The owned process player list is unavailable.')
     } finally { setLoading(false) }
-  }, [serverId, isAdmin])
+  }, [serverId, canView])
   async function submitAction(event: FormEvent) {
     event.preventDefault()
     const target = action === 'whitelist-list' ? null : username.trim()
@@ -272,13 +299,13 @@ function LocalPlayers({ serverId, isAdmin, canAct, statusSample, error }: { serv
   return <Card className="local-properties-card"><SectionHeading title="Player status" description="Status ping counts and, for administrators, a fresh list from an owned process." />
     {(error || listError) && <div className="local-inline-error" role="status">{error ?? listError}</div>}
     <div className="local-detail-facts"><div><span>Online count</span><strong>{statusSample?.state === 'reachable' ? statusSample.playersOnline : 'Unavailable'}</strong></div><div><span>Maximum slots</span><strong>{statusSample?.state === 'reachable' ? statusSample.playersMax : 'Unavailable'}</strong></div><div><span>Count source</span><strong>Local status ping</strong></div><div><span>Checked</span><strong>{statusSample ? new Date(statusSample.checkedAt).toLocaleString(currentLocale()) : 'Waiting for response'}</strong></div></div>
-    <div className="local-player-list"><div className="card-heading-row"><div><div className="card-kicker"><Users size={15} /> Owned process</div><h3>Online identities</h3></div>{isAdmin && <Button icon={RefreshCw} disabled={loading} onClick={() => void refresh()}>Refresh list</Button>}</div>
-      {!isAdmin ? <p>Administrator access is required to request player names.</p>
+    <div className="local-player-list"><div className="card-heading-row"><div><div className="card-kicker"><Users size={15} /> Owned process</div><h3>Online identities</h3></div>{canView && <Button icon={RefreshCw} disabled={loading} onClick={() => void refresh()}>Refresh list</Button>}</div>
+      {!canView ? <p>Player visibility has not been granted.</p>
         : loading && !players ? <p>Asking the owned process for its player list…</p>
           : players?.state === 'authoritative' ? <><p>Reported by the owned console at {new Date(players.sampledAt!).toLocaleString(currentLocale())}. Names are not UUID verified.</p>{players.names.length ? <div className="local-player-names">{players.names.map((name) => <strong key={name}>{name}</strong>)}</div> : <p>No players were reported by the owned process.</p>}</>
             : <p>{players?.reason ?? 'An owned, ready process is required for a verified player list.'}</p>}
     </div>
-    {isAdmin && <div className="local-player-actions"><SectionHeading title="Player commands" description="Fixed Minecraft commands sent only to this panel-owned process." />
+    {canAct && <div className="local-player-actions"><SectionHeading title="Player commands" description="Fixed Minecraft commands sent only to this panel-owned process." />
       <form onSubmit={(event) => void submitAction(event)}>
         <label><span>Action</span><select aria-label="Player action" value={action} onChange={(event) => setAction(event.target.value as ServerPlayerAction)}>{playerActions.map((choice) => <option key={choice} value={choice}>{playerActionLabels[choice]}</option>)}</select></label>
         {action !== 'whitelist-list' && <label><span>Minecraft username</span><input aria-label="Minecraft username" autoComplete="off" maxLength={16} pattern="[A-Za-z0-9_]{3,16}" placeholder="Player name" required value={username} onChange={(event) => setUsername(event.target.value)} /></label>}
@@ -463,12 +490,12 @@ function LogFollowControls({ autoFollow, newLines, onToggle, onJump }: { autoFol
   </div>
 }
 
-function LocalConsole({ serverId, runtime, isAdmin }: { serverId: string; runtime: ServerRuntime | null; isAdmin: boolean }) {
+function LocalConsole({ serverId, runtime, canSendCommands }: { serverId: string; runtime: ServerRuntime | null; canSendCommands: boolean }) {
   const history = useConsoleHistory(serverId, runtime?.status ?? 'unavailable')
   const tail = useLogTail(history.entries, history.sessionId)
   const [command, setCommand] = useState('')
   const [sending, setSending] = useState(false)
-  const readySession = Boolean(history.selected?.live && isAdmin && runtime?.status === 'running' && runtime.ready)
+  const readySession = Boolean(history.selected?.live && canSendCommands && runtime?.status === 'running' && runtime.ready)
   const liveSession = Boolean(history.selected?.live)
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -646,7 +673,7 @@ async function collectDroppedEntries(items: DataTransferItemList): Promise<{ fil
   return { files, directories }
 }
 
-function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; managed: boolean; runtimeStatus: string }) {
+function LocalFiles({ serverId, managed, runtimeStatus, canManage }: { serverId: string; managed: boolean; runtimeStatus: string; canManage: boolean }) {
   const [path, setPath] = useState('')
   const [inventory, setInventory] = useState<ServerFileList | null>(null)
   const [loading, setLoading] = useState(true)
@@ -702,7 +729,7 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
 
   async function saveTextFile(event: FormEvent) {
     event.preventDefault()
-    if (!editor?.sha256) return
+    if (!canManage || !editor?.sha256) return
     setEditorBusy(true); setEditorError(null)
     try {
       const updated = await saveServerFileText(serverId, editor.path, editorText, editor.sha256)
@@ -714,7 +741,7 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
   }
 
   async function restoreTextRecovery(recovery: ServerFileRecovery) {
-    if (!editor?.sha256 || !window.confirm(`Restore the saved version of ${recovery.path}? The current text will be kept as another recovery copy.`)) return
+    if (!canManage || !editor?.sha256 || !window.confirm(`Restore the saved version of ${recovery.path}? The current text will be kept as another recovery copy.`)) return
     setEditorBusy(true); setEditorError(null)
     try {
       const updated = await restoreServerFileRecovery(serverId, recovery.id, editor.sha256)
@@ -727,6 +754,7 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
 
   async function createItem(event: FormEvent) {
     event.preventDefault()
+    if (!canManage) return
     if (!dialog || (dialog !== 'file' && dialog !== 'folder')) return
     const name = dialogName.trim()
     if (!name) return
@@ -742,6 +770,7 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
 
   async function moveItem(event: FormEvent) {
     event.preventDefault()
+    if (!canManage) return
     if (!dialogEntry || !dialogName.trim()) return
     setBusy(true); setError(null)
     try {
@@ -753,6 +782,7 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
   }
 
   async function uploadSelection(files: { file: File; relativePath: string }[], directories: string[]) {
+    if (!canManage) return
     if (!files.length && !directories.length) return
     setBusy(true); setProgress(0); setError(null); setNotice(null); setUploadError(null)
     try {
@@ -782,6 +812,7 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
 
   async function uploadDroppedFiles(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault(); setDragActive(false)
+    if (!canManage) return
     try {
       const selected = await collectDroppedEntries(event.dataTransfer.items)
       if (!selected.files.length && !selected.directories.length) {
@@ -806,6 +837,7 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
   }
 
   async function moveToTrash(entry: ServerFileEntry) {
+    if (!canManage) return
     const noun = entry.kind === 'folder' ? 'folder' : 'file'
     if (!window.confirm(`Move ${noun} “${entry.name}” to recoverable trash?`)) return
     setBusy(true); setError(null)
@@ -823,6 +855,7 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
   }
 
   async function restoreTrashItem(item: ServerFileTrash) {
+    if (!canManage) return
     if (!window.confirm(`Restore “${item.originalPath}” to its original location?`)) return
     setBusy(true); setError(null)
     try {
@@ -843,7 +876,7 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
   const changed = Boolean(editor && editorText !== editor.text)
   return <div className="local-files-layout">
     <Card className="local-files-card"><div className="local-files-header"><div><h3>Files</h3></div><div className="local-files-header-actions"><Button icon={RotateCcw} disabled={busy || loading} onClick={() => void reload()}>Refresh</Button><Button icon={Archive} onClick={() => void toggleTrash()}>{trashOpen ? 'Hide trash' : `Trash${inventory?.trashCount ? ` · ${inventory.trashCount}` : ''}`}</Button></div></div>
-      <div className="local-files-toolbar"><nav className="local-files-breadcrumbs" aria-label="Server folder path"><button type="button" onClick={() => setPath('')}>Server root</button>{inventory?.breadcrumbs.map((crumb) => <span key={crumb.path}><ChevronRight size={13} /><button type="button" onClick={() => setPath(crumb.path)}>{crumb.name}</button></span>)}</nav><div className="local-files-actions"><Button icon={FolderPlus} disabled={busy} onClick={() => { setDialog('folder'); setDialogName(''); setDialogText('') }}>New folder</Button><Button icon={FilePlus2} disabled={busy} onClick={() => { setDialog('file'); setDialogName(''); setDialogText('') }}>New text file</Button><label className="local-file-upload-button"><Upload size={15} /><span>Upload files</span><input ref={fileInput} data-testid="server-file-upload-input" type="file" multiple disabled={busy} onChange={(event) => uploadPickedFiles(event, 'files')} /></label><label className={`local-file-upload-button${folderPickerSupported ? '' : ' is-unavailable'}`} aria-disabled={!folderPickerSupported} title={folderPickerSupported ? undefined : 'Folder selection is not supported in this browser. Select multiple files instead.'}><FolderUp size={15} /><span>Upload folder</span><input ref={folderInput} data-testid="server-folder-upload-input" type="file" multiple disabled={busy || !folderPickerSupported} onChange={(event) => uploadPickedFiles(event, 'folder')} /></label></div></div>
+      <div className="local-files-toolbar"><nav className="local-files-breadcrumbs" aria-label="Server folder path"><button type="button" onClick={() => setPath('')}>Server root</button>{inventory?.breadcrumbs.map((crumb) => <span key={crumb.path}><ChevronRight size={13} /><button type="button" onClick={() => setPath(crumb.path)}>{crumb.name}</button></span>)}</nav><div className="local-files-actions">{canManage && <><Button icon={FolderPlus} disabled={busy} onClick={() => { setDialog('folder'); setDialogName(''); setDialogText('') }}>New folder</Button><Button icon={FilePlus2} disabled={busy} onClick={() => { setDialog('file'); setDialogName(''); setDialogText('') }}>New text file</Button><label className="local-file-upload-button"><Upload size={15} /><span>Upload files</span><input ref={fileInput} data-testid="server-file-upload-input" type="file" multiple disabled={busy} onChange={(event) => uploadPickedFiles(event, 'files')} /></label><label className={`local-file-upload-button${folderPickerSupported ? '' : ' is-unavailable'}`} aria-disabled={!folderPickerSupported} title={folderPickerSupported ? undefined : 'Folder selection is not supported in this browser. Select multiple files instead.'}><FolderUp size={15} /><span>Upload folder</span><input ref={folderInput} data-testid="server-folder-upload-input" type="file" multiple disabled={busy || !folderPickerSupported} onChange={(event) => uploadPickedFiles(event, 'folder')} /></label></>}</div></div>
       {!folderPickerSupported && <p className="local-file-picker-note">Folder selection is not supported in this browser. Select multiple files instead.</p>}
       {progress !== null && <div className="local-file-progress" role="status"><span>Uploading files</span><progress max={100} value={progress} /><strong>{progress}%</strong><Button icon={Square} disabled={progress >= 100} onClick={cancelUpload}>Cancel upload</Button></div>}
       {error && <div className="local-inline-error" role="alert">{error}<Button icon={RotateCcw} onClick={() => void reload()}>Retry</Button></div>}
@@ -859,17 +892,17 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
             {entry.kind === 'folder' ? <button type="button" className="local-file-name" onClick={() => setPath(entry.path)}>{entry.name}</button> : entry.name === 'server.properties' ? <Link className="local-file-name" to={`/servers/${serverId}/properties`}>{entry.name}</Link> : entry.canEdit ? <button type="button" className="local-file-name" onClick={() => void openTextFile(entry)}>{entry.name}</button> : <span className="local-file-name" title={entry.reason ?? undefined}>{entry.name}</span>}
             {entry.reason && <small className="local-file-state">{entry.contentState === 'protected' ? 'Protected' : entry.contentState === 'unsafe' ? 'Unsafe' : entry.contentState === 'oversized' ? 'Large text' : 'Read only'}</small>}
           </div><span className="local-file-size">{entry.kind === 'folder' ? 'Folder' : formatFileSize(entry.sizeBytes)}</span><span className="local-file-date">{entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString(currentLocale()) : 'Unavailable'}</span>
-          <div className="local-file-row-actions">{entry.canDownload && <Button kind="quiet" icon={ArrowDownToLine} title={`Download ${entry.name}`} aria-label={`Download ${entry.name}`} disabled={busy} onClick={() => void download(entry)}>Download</Button>}{entry.canRename && <Button kind="quiet" icon={PencilLine} title={`Rename or move ${entry.name}`} aria-label={`Rename or move ${entry.name}`} disabled={busy} onClick={() => beginMove(entry)}>Move</Button>}{entry.canTrash && <Button kind="quiet" icon={Trash2} title={`Move ${entry.name} to trash`} aria-label={`Move ${entry.name} to trash`} disabled={busy} onClick={() => void moveToTrash(entry)}>Trash</Button>}</div>
+          <div className="local-file-row-actions">{entry.canDownload && <Button kind="quiet" icon={ArrowDownToLine} title={`Download ${entry.name}`} aria-label={`Download ${entry.name}`} disabled={busy} onClick={() => void download(entry)}>Download</Button>}{canManage && entry.canRename && <Button kind="quiet" icon={PencilLine} title={`Rename or move ${entry.name}`} aria-label={`Rename or move ${entry.name}`} disabled={busy} onClick={() => beginMove(entry)}>Move</Button>}{canManage && entry.canTrash && <Button kind="quiet" icon={Trash2} title={`Move ${entry.name} to trash`} aria-label={`Move ${entry.name} to trash`} disabled={busy} onClick={() => void moveToTrash(entry)}>Trash</Button>}</div>
         </div>)}
         {inventory.entries.length === 0 && <div className="local-files-empty"><Folder size={20} /><strong>This folder is empty</strong><span>Create a text file or folder, or upload a supported item.</span></div>}
         {inventory.truncated && <div className="local-files-limit">Showing the first 500 entries. Open a narrower folder to see more.</div>}
       </div>}
-      {trashOpen && <div className="local-files-trash"><div className="local-files-subheading"><div><strong>Recoverable trash</strong><span>Items remain on disk until restored. Permanent deletion is not available here.</span></div><Badge>{trash.length} items</Badge></div>{trash.length ? trash.map((item) => <div className="local-file-trash-row" key={item.id}><span className="local-file-icon"><Archive size={15} /></span><span><strong>{item.originalPath}</strong><small>{item.kind === 'folder' ? 'Folder' : formatFileSize(item.sizeBytes)} · {new Date(item.deletedAt).toLocaleString(currentLocale())}</small></span><Button icon={RotateCcw} disabled={busy} onClick={() => void restoreTrashItem(item)}>Restore</Button></div>) : <div className="local-files-empty compact">Trash is empty.</div>}</div>}
+      {trashOpen && <div className="local-files-trash"><div className="local-files-subheading"><div><strong>Recoverable trash</strong><span>Items remain on disk until restored. Permanent deletion is not available here.</span></div><Badge>{trash.length} items</Badge></div>{trash.length ? trash.map((item) => <div className="local-file-trash-row" key={item.id}><span className="local-file-icon"><Archive size={15} /></span><span><strong>{item.originalPath}</strong><small>{item.kind === 'folder' ? 'Folder' : formatFileSize(item.sizeBytes)} · {new Date(item.deletedAt).toLocaleString(currentLocale())}</small></span>{canManage && <Button icon={RotateCcw} disabled={busy} onClick={() => void restoreTrashItem(item)}>Restore</Button>}</div>) : <div className="local-files-empty compact">Trash is empty.</div>}</div>}
     </Card>
 
     {dialog && <div className="local-file-dialog-backdrop"><section className="local-file-dialog" role="dialog" aria-modal="true" aria-labelledby="server-file-dialog-title"><div className="local-file-dialog-heading"><span className="local-backup-icon">{dialog === 'folder' ? <FolderPlus size={16} /> : dialog === 'file' ? <FilePlus2 size={16} /> : <PencilLine size={16} />}</span><div><h3 id="server-file-dialog-title">{dialog === 'folder' ? 'Create folder' : dialog === 'file' ? 'Create text file' : 'Rename or move item'}</h3><p>Paths are relative to the managed server folder.</p></div></div><form onSubmit={(event) => void (dialog === 'move' ? moveItem(event) : createItem(event))}><label className="field"><span className="field-label">{dialog === 'move' ? 'Destination path' : 'Name'}</span><input autoFocus value={dialogName} onChange={(event) => setDialogName(event.target.value)} placeholder={dialog === 'move' ? 'config/example.txt' : dialog === 'folder' ? 'config' : 'notes.txt'} /></label>{dialog === 'file' && <label className="field"><span className="field-label">Initial text</span><textarea rows={5} value={dialogText} onChange={(event) => setDialogText(event.target.value)} /></label>}{error && <div className="local-inline-error" role="alert">{error}</div>}<div className="local-file-dialog-actions"><Button type="button" disabled={busy} onClick={() => { setDialog(null); setDialogEntry(null); setError(null) }}>Cancel</Button><Button kind="primary" icon={dialog === 'move' ? PencilLine : dialog === 'folder' ? FolderPlus : FilePlus2} disabled={busy || !dialogName.trim()} type="submit">{busy ? 'Working…' : dialog === 'move' ? 'Move item' : dialog === 'folder' ? 'Create folder' : 'Create file'}</Button></div></form></section></div>}
 
-    {editor && <div className="local-file-dialog-backdrop"><section className="local-file-dialog local-file-editor" role="dialog" aria-modal="true" aria-labelledby="server-text-editor-title"><div className="local-file-dialog-heading"><span className="local-backup-icon"><FileText size={16} /></span><div><h3 id="server-text-editor-title">Edit {editor.path}</h3><p>{formatFileSize(editor.sizeBytes)} · SHA-256 {editor.sha256?.slice(0, 16)}…</p></div><Button kind="quiet" onClick={() => { setEditor(null); setEditorError(null) }}>Close</Button></div>{editorError && <div className="local-inline-error" role="alert">{editorError}<Button icon={RotateCcw} onClick={() => void openTextFile({ name: editor.path.split('/').at(-1)!, path: editor.path, kind: 'file', sizeBytes: editor.sizeBytes, modifiedAt: editor.modifiedAt, contentState: 'editable', reason: null, canDownload: true, canEdit: true, canRename: true, canTrash: true })}>Reload file</Button></div>}<form onSubmit={(event) => void saveTextFile(event)}><textarea className="local-file-textarea" aria-label="Text file contents" spellCheck={false} value={editorText} onChange={(event) => setEditorText(event.target.value)} /><div className="local-file-editor-footer"><span>{changed ? 'Unsaved edits' : 'No unsaved edits'} · saves create a private recovery copy</span><Button kind="primary" icon={Check} disabled={!changed || editorBusy} type="submit">{editorBusy ? 'Saving…' : 'Save text'}</Button></div></form>{recoveries.length > 0 && <div className="local-file-recovery-list"><strong>Private recovery copies</strong>{recoveries.slice(0, 5).map((recovery) => <div key={recovery.id}><span>{new Date(recovery.createdAt).toLocaleString(currentLocale())} · SHA-256 {recovery.sha256.slice(0, 10)}…</span><Button kind="quiet" icon={RotateCcw} disabled={editorBusy || !editor.sha256} onClick={() => void restoreTextRecovery(recovery)}>Restore</Button></div>)}</div>}</section></div>}
+    {editor && <div className="local-file-dialog-backdrop"><section className="local-file-dialog local-file-editor" role="dialog" aria-modal="true" aria-labelledby="server-text-editor-title"><div className="local-file-dialog-heading"><span className="local-backup-icon"><FileText size={16} /></span><div><h3 id="server-text-editor-title">{canManage ? 'Edit' : 'View'} {editor.path}</h3><p>{formatFileSize(editor.sizeBytes)} · SHA-256 {editor.sha256?.slice(0, 16)}…</p></div><Button kind="quiet" onClick={() => { setEditor(null); setEditorError(null) }}>Close</Button></div>{editorError && <div className="local-inline-error" role="alert">{editorError}<Button icon={RotateCcw} onClick={() => void openTextFile({ name: editor.path.split('/').at(-1)!, path: editor.path, kind: 'file', sizeBytes: editor.sizeBytes, modifiedAt: editor.modifiedAt, contentState: 'editable', reason: null, canDownload: true, canEdit: true, canRename: true, canTrash: true })}>Reload file</Button></div>}<form onSubmit={(event) => void saveTextFile(event)}><textarea className="local-file-textarea" aria-label="Text file contents" spellCheck={false} value={editorText} readOnly={!canManage} onChange={(event) => setEditorText(event.target.value)} /><div className="local-file-editor-footer"><span>{canManage ? `${changed ? 'Unsaved edits' : 'No unsaved edits'} · saves create a private recovery copy` : 'Read only access'}</span>{canManage && <Button kind="primary" icon={Check} disabled={!changed || editorBusy} type="submit">{editorBusy ? 'Saving…' : 'Save text'}</Button>}</div></form>{canManage && recoveries.length > 0 && <div className="local-file-recovery-list"><strong>Private recovery copies</strong>{recoveries.slice(0, 5).map((recovery) => <div key={recovery.id}><span>{new Date(recovery.createdAt).toLocaleString(currentLocale())} · SHA-256 {recovery.sha256.slice(0, 10)}…</span><Button kind="quiet" icon={RotateCcw} disabled={editorBusy || !editor.sha256} onClick={() => void restoreTextRecovery(recovery)}>Restore</Button></div>)}</div>}</section></div>}
   </div>
 }
 
@@ -880,7 +913,7 @@ function formatFileSize(bytes: number | null): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function LocalMods({ serverId, software, managed, isAdmin, runtimeStatus }: { serverId: string; software: string; managed: boolean; isAdmin: boolean; runtimeStatus: string }) {
+function LocalMods({ serverId, software, managed, canManage, runtimeStatus }: { serverId: string; software: string; managed: boolean; canManage: boolean; runtimeStatus: string }) {
   const [inventory, setInventory] = useState<ServerModsInventory | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -907,7 +940,7 @@ function LocalMods({ serverId, software, managed, isAdmin, runtimeStatus }: { se
     return () => controller.abort()
   }, [reload])
 
-  const canMutate = Boolean(isAdmin && managed && inventory?.supported && ['stopped', 'running', 'crashed', 'error'].includes(runtimeStatus))
+  const canMutate = Boolean(canManage && managed && inventory?.supported && ['stopped', 'running', 'crashed', 'error'].includes(runtimeStatus))
   const visibleItems = (inventory?.items ?? []).filter((item) => (filter === 'all' || item.state === filter)
     && `${item.fileName} ${item.modId ?? ''} ${item.name ?? ''} ${item.artifactVersion ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))
   const mutate = async (work: () => Promise<ServerModsInventory>, success: string) => {
@@ -946,7 +979,7 @@ function LocalMods({ serverId, software, managed, isAdmin, runtimeStatus }: { se
       {inventory?.restartRequired && <div className="local-restart-banner"><RefreshCw size={16} /><span><strong>Restart required</strong><small>File changes are saved, but a running server does not hot-load or unload mods.</small></span></div>}
       {error && <div className="local-inline-error" role="alert">{error}</div>}
       {notice && <div className="local-saved-note" role="status"><Check size={15} />{notice}</div>}
-      {inventory?.supported && isAdmin && managed && <form className="local-mod-upload" onSubmit={(event) => void upload(event)}>
+      {inventory?.supported && canManage && managed && <form className="local-mod-upload" onSubmit={(event) => void upload(event)}>
         <label className="local-mod-file-picker"><Upload size={16} /><span>{selectedFileName ?? 'Choose JAR to install'}</span><input name="mod-file" aria-label="Choose mod or plugin JAR" type="file" accept=".jar,application/java-archive" disabled={busy || !canMutate} onChange={(event) => setSelectedFileName(event.target.files?.[0]?.name ?? null)} required /></label>
         <Button kind="primary" icon={Upload} disabled={busy || !canMutate}>{progress === null ? 'Upload JAR' : `Uploading ${progress}%`}</Button>
         <small>Maximum 128 MiB. Duplicate filenames are rejected.</small>
@@ -992,9 +1025,116 @@ function ComingSoonDetail({ section, serverName }: { section: string; serverName
   return <div className="preview-section-layout"><Card className="preview-section-card"><div className="preview-section-header"><span className="preview-section-icon"><Icon size={20} /></span><div><h3>{sectionTitle(section)}</h3><p>This section is not available yet.</p></div><ComingSoon /></div><div className="preview-section-footer"><span>{serverName}</span><Link to="/servers">All servers <ChevronRight size={14} /></Link></div></Card></div>
 }
 
-function LocalAccessPolicy({ server, isAdmin }: { server: LocalServerSummary; isAdmin: boolean }) {
-  return <div className="local-access-layout"><Card className="local-access-card"><div className="local-access-heading"><span><Shield size={19} /></span><div><div className="card-kicker">Read only access view</div><h3>{server.name}</h3><p>{isAdmin ? 'You are an Administrator in this local workspace.' : 'You are a Member in this local workspace.'}</p></div><Badge tone={isAdmin ? 'good' : 'neutral'}>{isAdmin ? 'Administrator' : 'Member'}</Badge></div>
-    <div className="local-access-grid"><div><strong>Workspace visibility</strong><p>All enabled local workspace accounts can see this registered server and its non-sensitive status pages.</p></div><div><strong>Administrator controls</strong><p>Only Administrators can start, stop or restart a managed server, edit properties, manage files, worlds, backups, runtime and schedules.</p></div><div><strong>Imported folders</strong><p>{server.source === 'imported' ? 'This folder is imported and remains read only, including for Administrators.' : 'Panel-created instances are managed only while their process identity and folder checks remain valid.'}</p></div></div>
-    <div className="local-detail-callout"><LockKeyhole size={15} /><span>This project uses workspace roles only. Per-server member grants and access-control editing are not configured here.</span></div>
-  </Card><Card className="local-access-summary"><SectionHeading title="Visible pages" description="Current server-view permissions" /><div><span>Overview, console and process logs</span><Badge>Workspace</Badge></div><div><span>Player events and supported mod inventory</span><Badge>Workspace</Badge></div><div><span>Properties, files, worlds and recovery</span><Badge tone={isAdmin ? 'good' : 'warn'}>{isAdmin ? 'Administrator' : 'Restricted'}</Badge></div></Card></div>
+const accessGroups: Array<{ title: string; permissions: Array<{ key: keyof ServerAccessPermissions; label: string; description: string }> }> = [
+  { title: 'Server visibility', permissions: [{ key: 'viewServer', label: 'View overview and status', description: 'See this server in lists and inspect its status.' }] },
+  { title: 'Console and logs', permissions: [
+    { key: 'viewLogs', label: 'View console and process logs', description: 'Read live output and retained process sessions.' },
+    { key: 'sendConsoleCommands', label: 'Send Minecraft console commands', description: 'Send commands to a ready panel-owned process.' },
+  ] },
+  { title: 'Server lifecycle', permissions: [{ key: 'controlLifecycle', label: 'Start, stop and restart', description: 'Control an eligible panel-managed server process.' }] },
+  { title: 'Players', permissions: [
+    { key: 'viewPlayers', label: 'View player names and events', description: 'Read the owned process player list and player history.' },
+    { key: 'moderatePlayers', label: 'Moderate players', description: 'Submit fixed kick, ban, whitelist and operator commands.' },
+  ] },
+  { title: 'Mods and plugins', permissions: [
+    { key: 'viewMods', label: 'View mod and plugin inventory', description: 'Read supported JAR metadata and status.' },
+    { key: 'manageMods', label: 'Manage mod and plugin files', description: 'Upload, enable, disable, quarantine and restore JARs.' },
+  ] },
+  { title: 'Server files', permissions: [
+    { key: 'viewFiles', label: 'View and download server files', description: 'Browse files, read supported text and download allowed items.' },
+    { key: 'manageFiles', label: 'Change server files', description: 'Upload, create, edit, move, trash and recover files.' },
+  ] },
+  { title: 'Properties', permissions: [
+    { key: 'viewSettings', label: 'View server properties', description: 'Read supported settings; protected values remain hidden.' },
+    { key: 'manageSettings', label: 'Edit server properties', description: 'Change supported settings with safety confirmations.' },
+  ] },
+  { title: 'Worlds', permissions: [{ key: 'viewWorlds', label: 'View world inventory', description: 'Inspect detected managed world folders.' }] },
+  { title: 'Backups', permissions: [
+    { key: 'viewBackups', label: 'View and download backups', description: 'Inspect manifests and download retained archives.' },
+    { key: 'createBackups', label: 'Create backups', description: 'Create a verified backup while the server is stopped.' },
+  ] },
+]
+const accessDependencies: Partial<Record<keyof ServerAccessPermissions, keyof ServerAccessPermissions>> = {
+  moderatePlayers: 'viewPlayers', manageMods: 'viewMods', manageFiles: 'viewFiles', manageSettings: 'viewSettings', createBackups: 'viewBackups',
+}
+const allAccessKeys = accessGroups.flatMap((group) => group.permissions.map((item) => item.key))
+function accessText(value: string) { return translateText(value, currentLocale()) }
+
+function LocalAccessPolicy({ server, isAdmin, selfPermissions, accessError }: { server: LocalServerSummary; isAdmin: boolean; selfPermissions: ServerAccessPermissions | null; accessError: string | null }) {
+  const [users, setUsers] = useState<ServerAccessGrantUser[]>([])
+  const [selectedId, setSelectedId] = useState('')
+  const [draft, setDraft] = useState<ServerAccessPermissions | null>(null)
+  const [loading, setLoading] = useState(isAdmin)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    if (!isAdmin) { setLoading(false); return }
+    setLoading(true)
+    try {
+      const result = await getServerAccessUsers(server.id, signal)
+      setUsers(result)
+      setError(null)
+      setSelectedId((current) => result.some((user) => user.userId === current) ? current : result.find((user) => user.role === 'member')?.userId ?? '')
+    } catch (issue) {
+      if (!(issue instanceof DOMException && issue.name === 'AbortError')) setError(accessText('Server access could not be loaded.'))
+    } finally { setLoading(false) }
+  }, [isAdmin, server.id])
+  useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort() }, [load])
+
+  const selectedUser = users.find((user) => user.userId === selectedId) ?? null
+  useEffect(() => { setDraft(selectedUser?.permissions ?? null) }, [selectedId, selectedUser?.permissions])
+  useEffect(() => { setNotice(null) }, [selectedId])
+  const dirty = Boolean(selectedUser && draft && JSON.stringify(selectedUser.permissions) !== JSON.stringify(draft))
+  function changePermission(key: keyof ServerAccessPermissions, checked: boolean) {
+    if (!draft) return
+    const next = { ...draft, [key]: checked }
+    if (key === 'viewServer' && !checked) for (const field of allAccessKeys) next[field] = false
+    const child = accessDependencies[key]
+    if (child && checked) next[child] = true
+    if (checked && key !== 'viewServer') next.viewServer = true
+    if (Object.values(accessDependencies).includes(key) && !checked) {
+      for (const [dependent, parent] of Object.entries(accessDependencies) as Array<[keyof ServerAccessPermissions, keyof ServerAccessPermissions]>) if (parent === key) next[dependent] = false
+    }
+    setDraft(next)
+    setNotice(null)
+  }
+  async function save() {
+    if (!selectedUser || !draft || !dirty || !selectedUser.enabled) return
+    setSaving(true); setError(null); setNotice(null)
+    try {
+      const updated = await updateServerAccess(server.id, selectedUser.userId, draft)
+      setUsers(updated)
+      const savedUser = updated.find((user) => user.userId === selectedUser.userId)
+      if (savedUser) setDraft(savedUser.permissions)
+      setNotice(accessText('Permissions saved and active immediately.'))
+    } catch { setError(accessText('Permissions could not be saved.')) }
+    finally { setSaving(false) }
+  }
+
+  const visiblePermissions = selfPermissions ?? allAccessKeys.reduce((result, key) => ({ ...result, [key]: false }), {} as ServerAccessPermissions)
+  return <div className="local-access-layout access-control-layout">
+    <Card className="local-access-card"><div className="local-access-heading"><span><Shield size={19} /></span><div><div className="card-kicker">{accessText('Server access')}</div><h3>{server.name}</h3><p>{accessText(isAdmin ? 'Administrators have full access to this server.' : 'These are the permissions assigned to your account for this server.')}</p></div><Badge tone={isAdmin ? 'good' : 'neutral'}>{accessText(isAdmin ? 'Administrator' : 'Member')}</Badge></div>
+      {accessError && <div className="local-inline-error" role="status">{accessText('Your current server access could not be refreshed.')}</div>}
+      {error && <div className="local-inline-error" role="alert">{error}</div>}
+      {notice && <div className="local-saved-note" role="status"><Check size={15} />{notice}</div>}
+      {isAdmin ? <>
+        <div className="access-editor-toolbar"><label><span>{accessText('Member account')}</span><select aria-label={accessText('Choose member account')} value={selectedId} disabled={loading || users.every((user) => user.role !== 'member')} onChange={(event) => { setSelectedId(event.target.value); setError(null); setNotice(null) }}><option value="">{accessText('Choose a Member')}</option>{users.filter((user) => user.role === 'member').map((user) => <option key={user.userId} value={user.userId} disabled={!user.enabled}>{user.displayName} · @{user.username}{user.enabled ? '' : ` · ${accessText('Disabled')}`}</option>)}</select></label><Button icon={RefreshCw} disabled={loading || saving} onClick={() => void load()}>{loading ? accessText('Loading…') : accessText('Refresh')}</Button></div>
+        {loading ? <div className="local-files-empty"><span className="loading-pulse" />{accessText('Loading member permissions…')}</div>
+          : !users.some((user) => user.role === 'member') ? <div className="local-files-empty"><Users size={20} /><strong>{accessText('No Member accounts')}</strong><span>{accessText('Create a Member account in Users before assigning server access.')}</span></div>
+            : selectedUser && draft ? <>
+              <div className="access-selected-user"><div><strong>{selectedUser.displayName}</strong><span>@{selectedUser.username}</span></div><Badge tone={selectedUser.enabled ? 'good' : 'warn'}>{accessText(selectedUser.enabled ? 'Enabled' : 'Disabled')}</Badge></div>
+              <div className="access-permission-groups">{accessGroups.map((group) => <fieldset key={group.title} className="access-permission-group" disabled={!selectedUser.enabled || saving}><legend>{accessText(group.title)}</legend>{group.permissions.map(({ key, label, description }) => <label className="access-permission-row" key={key}><input type="checkbox" checked={draft[key]} disabled={!selectedUser.enabled || saving} onChange={(event) => changePermission(key, event.target.checked)} /><span><strong>{accessText(label)}</strong><small>{accessText(description)}</small></span></label>)}</fieldset>)}</div>
+              <div className="access-admin-only"><LockKeyhole size={15} /><span>{accessText('Only Administrators can manage accounts, installations, runtime settings, schedules, backup restore and server deletion.')}</span></div>
+              <div className="access-save-row"><span>{accessText('Changes are recorded in local audit history.')}</span><Button kind="primary" icon={saving ? RefreshCw : Check} disabled={!dirty || saving || !selectedUser.enabled} onClick={() => void save()}>{saving ? accessText('Saving…') : accessText('Save permissions')}</Button></div>
+            </> : <div className="local-files-empty"><Users size={20} /><span>{accessText('Choose a Member account to review its access.')}</span></div>}
+      </> : <>
+        <SectionHeading title={accessText('Your server permissions')} description={accessText('Permission changes take effect immediately when an Administrator saves them.')} />
+        <div className="access-permission-groups access-self-groups">{accessGroups.map((group) => <section key={group.title} className="access-permission-group"><h4>{accessText(group.title)}</h4>{group.permissions.map(({ key, label, description }) => <div className="access-permission-row self" key={key}><span className={`access-permission-state ${visiblePermissions[key] ? 'granted' : ''}`}>{visiblePermissions[key] ? <Check size={14} /> : <LockKeyhole size={13} />}</span><span><strong>{accessText(label)}</strong><small>{accessText(description)}</small></span><Badge tone={visiblePermissions[key] ? 'good' : 'neutral'}>{accessText(visiblePermissions[key] ? 'Granted' : 'Not granted')}</Badge></div>)}</section>)}</div>
+        <div className="access-admin-only"><LockKeyhole size={15} /><span>{accessText('Only Administrators can manage accounts, installations, runtime settings, schedules, backup restore and server deletion.')}</span></div>
+      </>}
+    </Card>
+    <Card className="local-access-summary"><SectionHeading title={accessText('Access rules')} description={accessText('Each account has its own permissions for this server.')} /><div><span>{accessText('Changes take effect as soon as they are saved.')}</span><Badge tone="good">{accessText('Immediate')}</Badge></div><div><span>{accessText('Members see only their own permissions.')}</span><Badge>{accessText('Private')}</Badge></div><div><span>{accessText(server.source === 'imported' ? 'Imported folders stay read only.' : 'Server management is available only for servers created by MMSManager.')}</span><Badge tone="warn">{accessText(server.source === 'imported' ? 'Read only' : 'Managed only')}</Badge></div></Card>
+  </div>
 }

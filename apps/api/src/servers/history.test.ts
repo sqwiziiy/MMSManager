@@ -96,6 +96,24 @@ describe('managed server history', () => {
     expect(history.getDay(serverId, '2026-03-30')).toMatchObject({ status: 'no-data', summary: null, points: [], events: [] })
   })
 
+  it('hides player-count aggregates and player-event detail without viewPlayers', () => {
+    const now = () => Date.parse('2026-04-02T00:00:00.000Z')
+    recordServerResourceSample(opened.db, serverId, '2026-03-29T00:05:00.000Z', { cpuPercent: 4, playersOnline: 6, playersMax: 20 }, now)
+    recordStructuredServerEvent(opened.db, {
+      serverId, occurredAt: '2026-03-29T00:05:00.000Z', category: 'player', eventType: 'player_joined',
+      description: 'MiraWoods joined the server.', rawMessage: 'MiraWoods joined the game', confidence: 'high', source: 'owned-log',
+    }, now)
+    const history = new ServerHistoryService(opened.db, 'Europe/Paris', now)
+    const hidden = history.getDay(serverId, '2026-03-29', [serverId], [])
+    expect(hidden.summary?.playersPeak).toBeNull()
+    expect(hidden.points[0]?.playersPeak).toBeNull()
+    expect(hidden.events).toEqual([])
+    const visible = history.getDay(serverId, '2026-03-29', [serverId], [serverId])
+    expect(visible.summary?.playersPeak).toBe(6)
+    expect(visible.points[0]?.playersPeak).toBe(6)
+    expect(visible.events).toMatchObject([{ eventType: 'player_joined', rawMessage: 'MiraWoods joined the game' }])
+  })
+
   it('restricts all-server aggregates to managed created servers and expires stale records', () => {
     const importedId = randomUUID()
     const at = '2025-01-01T00:00:00.000Z'

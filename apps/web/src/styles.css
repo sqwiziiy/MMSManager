@@ -358,6 +358,35 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 .local-access-grid strong { color: var(--text-secondary); font-size: 10px; font-weight: 550; }
 .local-access-grid p { margin: 5px 0 0; color: var(--text-muted); font-size: 9px; line-height: 1.5; }
 .local-access-summary > div:not(.section-heading) { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; border-top: 1px solid var(--line-quiet); color: var(--text-secondary); font-size: 9px; }
+.access-control-layout { grid-template-columns: minmax(0, 1.65fr) minmax(220px, .65fr); }
+.access-editor-toolbar { display: flex; align-items: end; gap: 9px; margin: 16px 0 10px; }
+.access-editor-toolbar > label { display: grid; flex: 1; gap: 6px; min-width: 0; color: var(--text-muted); font-size: 10px; }
+.access-editor-toolbar select { width: 100%; min-height: 36px; padding: 0 10px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 7px; font: inherit; }
+.access-selected-user { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 9px 0 12px; padding: 10px; background: var(--surface-raised); border: 1px solid var(--line-quiet); border-radius: 8px; }
+.access-selected-user > div { display: grid; gap: 3px; min-width: 0; }
+.access-selected-user strong { color: var(--text); font-size: 11px; }
+.access-selected-user span { overflow-wrap: anywhere; color: var(--text-muted); font-size: 9px; }
+.access-permission-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.access-permission-group { min-width: 0; margin: 0; padding: 9px; background: var(--surface-raised); border: 1px solid var(--line-quiet); border-radius: 8px; }
+.access-permission-group legend, .access-permission-group > h4 { padding: 0 4px; color: var(--text-secondary); font-size: 10px; font-weight: 600; }
+.access-permission-row { display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 8px 3px; border-top: 1px solid var(--line-quiet); cursor: pointer; transition: background-color 140ms ease; }
+.access-permission-row:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.access-permission-row > input { flex: 0 0 auto; width: 14px; height: 14px; margin: 2px 0 0; accent-color: var(--accent); }
+.access-permission-row > span:not(.access-permission-state) { display: grid; gap: 3px; min-width: 0; }
+.access-permission-row strong { color: var(--text-secondary); font-size: 9px; font-weight: 550; }
+.access-permission-row small { color: var(--text-muted); font-size: 8px; line-height: 1.45; }
+.access-permission-row.self { align-items: center; cursor: default; }
+.access-permission-row.self:hover { background: transparent; }
+.access-permission-row.self > span:nth-child(2) { flex: 1; }
+.access-permission-state { display: grid; flex: 0 0 21px; width: 21px; height: 21px; place-items: center; color: var(--text-muted); border: 1px solid var(--line); border-radius: 6px; }
+.access-permission-state.granted { color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.access-self-groups { margin-top: 12px; }
+.access-admin-only { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 10px; color: var(--text-muted); background: color-mix(in srgb, var(--accent) 6%, var(--surface-raised)); border: 1px solid var(--line-quiet); border-radius: 8px; font-size: 9px; line-height: 1.5; }
+.access-admin-only > svg { flex: 0 0 auto; color: var(--accent); }
+.access-save-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.access-save-row > span { color: var(--text-muted); font-size: 9px; }
+@media (max-width: 900px) { .access-control-layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { .access-permission-groups { grid-template-columns: minmax(0, 1fr); } .access-editor-toolbar { align-items: stretch; flex-direction: column; } .access-save-row { align-items: stretch; flex-direction: column; } }
 .server-name-dialog { width: min(430px, 100%); }
 .server-name-field { display: grid; gap: 7px; margin: 12px 0; color: var(--text-muted); font-size: 10px; }
 .server-name-field input { min-height: 38px; padding: 0 10px; color: var(--text); background: #151915; border: 1px solid var(--line); border-radius: 7px; font: inherit; }

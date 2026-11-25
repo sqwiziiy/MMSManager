@@ -113,6 +113,9 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   consoleResponse.entries.forEach((entry) => consoleEntrySession.set(entry.id, currentConsoleSessionId))
   consoleSessionRows.push({ id: currentConsoleSessionId, startedAt: now, endedAt: runtimeStatus === 'running' ? null : now, outcome: runtimeStatus === 'running' ? 'running' : 'stopped', entryCount: consoleResponse.entries.length, oldestEntryId: 1, latestEntryId: 42, live: runtimeStatus === 'running' })
   await page.route('**/api/v1/servers', (route) => route.fulfill({ json: { servers: [server] } }))
+  const allAccess = { viewServer: true, viewLogs: true, sendConsoleCommands: true, controlLifecycle: true, viewPlayers: true, moderatePlayers: true, viewMods: true, manageMods: true, viewFiles: true, manageFiles: true, viewSettings: true, manageSettings: true, viewWorlds: true, viewBackups: true, createBackups: true }
+  await page.route(`**/api/v1/servers/${serverId}/access`, (route) => route.fulfill({ json: { administrator: true, permissions: allAccess } }))
+  await page.route(`**/api/v1/admin/servers/${serverId}/access`, (route) => route.fulfill({ json: { users: [] } }))
   await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [{ ...server, directory: '/tmp/mmsmanager-e2e/local-fixture', javaPath: '/tmp/fake-java' }], managedRoot: '/tmp/mmsmanager-e2e/servers', importRoots: ['/tmp/mmsmanager-e2e/servers'] } }))
   await page.route('**/api/v1/admin/java', (route) => route.fulfill({ json: { runtimes: [{ path: '/tmp/mmsmanager-e2e-java-21', version: '21.0.4', major: 21, vendor: 'Temurin', source: 'discovered' }] } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/runtime-settings`, async (route) => {
@@ -658,6 +661,88 @@ test('R7 console follows active output and keeps stopped history read only', asy
     await expect(stoppedPage.getByRole('button', { name: 'Refresh list' })).toHaveCount(0)
     await expectNoHorizontalOverflow(stoppedPage, 'R7 stopped server players')
   } finally { await stoppedPage.close() }
+})
+
+test('R8 administrators can grant server permissions with dependent access enabled', async ({ page }) => {
+  test.setTimeout(60_000)
+  await signIn(page)
+  await page.goto('/users')
+  await page.getByRole('button', { name: 'Add user' }).click()
+  const addMember = page.getByRole('dialog', { name: 'Add a user' })
+  await addMember.getByLabel('Username').fill('r8-member')
+  await addMember.getByLabel('Display name').fill('R8 Member')
+  await addMember.getByLabel('Initial password').fill(memberPassword)
+  await addMember.getByLabel('Role').selectOption('member')
+  await addMember.getByRole('button', { name: 'Create user' }).click()
+  await expect(page.locator('.account-users-table .data-table-row').filter({ hasText: '@r8-member' })).toBeVisible()
+  const { serverId } = await mockLocalServer(page, 'stopped')
+  const allCapabilities = {
+    viewServer: true, viewLogs: true, sendConsoleCommands: true, controlLifecycle: true, viewPlayers: true,
+    moderatePlayers: true, viewMods: true, manageMods: true, viewFiles: true, manageFiles: true,
+    viewSettings: true, manageSettings: true, viewWorlds: true, viewBackups: true, createBackups: true,
+  }
+  let memberPermissions = Object.fromEntries(Object.keys(allCapabilities).map((key) => [key, false])) as typeof allCapabilities
+  let savedPayload: { userId: string; permissions: typeof allCapabilities } | null = null
+  let administrator = true
+  const members = () => [{ userId: 'b13c1cf8-e2a1-4a4e-9de4-4536c7796091', username: 'r8-member', displayName: 'R8 Member', role: 'member', enabled: true, permissions: memberPermissions }]
+  await page.route(`**/api/v1/servers/${serverId}/access`, (route) => route.fulfill({ json: { administrator, permissions: administrator ? allCapabilities : memberPermissions } }))
+  await page.route(`**/api/v1/admin/servers/${serverId}/access`, async (route) => {
+    if (route.request().method() === 'PUT') {
+      savedPayload = route.request().postDataJSON() as { userId: string; permissions: typeof allCapabilities }
+      memberPermissions = savedPayload.permissions
+    }
+    return route.fulfill({ json: { users: members() } })
+  })
+  await page.setViewportSize({ width: 1280, height: 960 })
+  await page.goto(`/servers/${serverId}/access`)
+  await expect(page.getByRole('heading', { name: 'Access policy' })).toBeVisible()
+  const viewBackups = page.getByRole('checkbox', { name: /View and download backups/ })
+  const createBackups = page.getByRole('checkbox', { name: /Create backups/ })
+  await createBackups.check()
+  await expect(viewBackups).toBeChecked()
+  await expect(page.getByRole('button', { name: 'Save permissions' })).toBeEnabled()
+  await page.getByRole('button', { name: 'Save permissions' }).click()
+  await expect(page.getByText('Permissions saved and active immediately.')).toBeVisible()
+  expect(savedPayload).toMatchObject({ userId: 'b13c1cf8-e2a1-4a4e-9de4-4536c7796091', permissions: { viewServer: true, viewBackups: true, createBackups: true } })
+  await page.screenshot({ path: screenshotPath('r8-access-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Language & appearance' }).click()
+  let appearance = page.locator('form.appearance-form')
+  await appearance.locator('select').nth(0).selectOption('ru')
+  await appearance.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+  await page.goto(`/servers/${serverId}/access`)
+  await expect(page.getByRole('heading', { name: 'Правила доступа' }).first()).toBeVisible()
+  await expect(page.getByText('Доступ к серверу', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Сохранить права' })).toBeVisible()
+  await page.screenshot({ path: screenshotPath('r8-access-admin-ru-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Язык и оформление' }).click()
+  appearance = page.locator('form.appearance-form')
+  await appearance.locator('select').nth(0).selectOption('en')
+  await appearance.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  await signOut(page)
+  administrator = false
+  await signIn(page, 'r8-member', memberPassword)
+  await page.goto(`/servers/${serverId}/access`)
+  await expect(page.getByRole('heading', { name: 'Your server permissions' })).toBeVisible()
+  await expect(page.getByRole('combobox', { name: 'Choose member account' })).toHaveCount(0)
+  await expect(page.getByText('Create backups', { exact: true })).toBeVisible()
+  await expect(page.getByText('Granted', { exact: true })).toHaveCount(3)
+  await page.setViewportSize({ width: 1280, height: 960 })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Language & appearance' }).click()
+  appearance = page.locator('form.appearance-form')
+  await appearance.locator('select').nth(0).selectOption('ru')
+  await appearance.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+  await page.goto(`/servers/${serverId}/access`)
+  await expect(page.getByRole('heading', { name: 'Правила доступа' }).first()).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Ваши права на сервер' })).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'R8 Access at 390px')
+  await page.screenshot({ path: screenshotPath('r8-access-member-ru-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('R3 sidebar preference survives rapid toggles, keyboard, navigation and reload', async ({ page }) => {
@@ -1458,7 +1543,7 @@ test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page
   const translatedChecks: Record<string, string> = {
     '/': 'История ресурсов компьютера', '/servers': 'Зарегистрированные серверы', '/machine': 'Ресурсы компьютера',
     '/activity': 'События', '/users': 'Пользователи', '/profile': 'Профиль', '/settings': 'Настройки',
-    '/servers/properties': 'Свойства сервера', '/servers/console': 'Текущая консоль', '/servers/access': 'Просмотр прав доступа',
+    '/servers/properties': 'Свойства сервера', '/servers/console': 'Текущая консоль', '/servers/access': 'Правила доступа',
     '/servers/logs': 'Журналы процесса', '/servers/players': 'Список игроков', '/servers/mods': 'Установленные моды',
     '/servers/files': 'Файлы сервера', '/servers/worlds': 'Управление мирами', '/servers/runtime': 'Профиль запуска',
   }

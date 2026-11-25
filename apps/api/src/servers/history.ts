@@ -147,9 +147,22 @@ function scopeWhere(scope: ServerHistoryScope, serverIds: string[]) {
   if (scope !== 'all') return eq(localServerResourceSamples.serverId, scope)
   return serverIds.length ? inArray(localServerResourceSamples.serverId, serverIds) : eq(localServerResourceSamples.serverId, '')
 }
+function playerScopeWhere(scope: ServerHistoryScope, serverIds: string[]) {
+  if (scope !== 'all') return serverIds.includes(scope) ? eq(localServerResourceSamples.serverId, scope) : eq(localServerResourceSamples.serverId, '')
+  return serverIds.length ? inArray(localServerResourceSamples.serverId, serverIds) : eq(localServerResourceSamples.serverId, '')
+}
 function eventScopeWhere(scope: ServerHistoryScope, serverIds: string[]) {
-  if (scope !== 'all') return eq(localServerStructuredEvents.serverId, scope)
+  if (scope !== 'all') return serverIds.includes(scope) ? eq(localServerStructuredEvents.serverId, scope) : eq(localServerStructuredEvents.serverId, '')
   return serverIds.length ? inArray(localServerStructuredEvents.serverId, serverIds) : eq(localServerStructuredEvents.serverId, '')
+}
+function authorizedEventScopeWhere(scope: ServerHistoryScope, serverIds: string[], playerServerIds: string[] | undefined) {
+  const visible = eventScopeWhere(scope, serverIds)
+  if (playerServerIds === undefined) return visible
+  const playerVisible = eventScopeWhere(scope, playerServerIds)
+  return or(
+    and(eq(localServerStructuredEvents.category, 'server'), visible),
+    and(or(eq(localServerStructuredEvents.category, 'player'), eq(localServerStructuredEvents.category, 'moderation')), playerVisible),
+  )
 }
 function sessionScopeWhere(scope: ServerHistoryScope, serverIds: string[]) {
   if (scope !== 'all') return eq(localServerSessions.serverId, scope)
@@ -170,8 +183,16 @@ function dayStatus(date: string, sampleCount: number, ratio: number, timeZone: s
 export class ServerHistoryService {
   constructor(private readonly db: AppDatabase, readonly timeZone: string, private readonly now: () => number = Date.now) {}
 
-  getCalendar(scope: ServerHistoryScope, year: number, month: number): ServerHistoryCalendar {
-    const servers = this.registeredServerIds(scope)
+  scopeAvailable(scope: ServerHistoryScope, visibleServerIds?: string[]): boolean {
+    if (scope === 'all') return true
+    if (visibleServerIds !== undefined && !visibleServerIds.includes(scope)) return false
+    return Boolean(this.db.select({ id: localServers.id }).from(localServers).where(and(
+      eq(localServers.id, scope), eq(localServers.source, 'created'), eq(localServers.managed, true),
+    )).get())
+  }
+
+  getCalendar(scope: ServerHistoryScope, year: number, month: number, visibleServerIds?: string[], playerServerIds?: string[]): ServerHistoryCalendar {
+    const servers = this.registeredServerIds(scope, visibleServerIds)
     const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate()
     const days: ServerHistoryCalendar['days'] = []
     for (let day = 1; day <= daysInMonth; day += 1) {
@@ -186,7 +207,7 @@ export class ServerHistoryService {
         scopeWhere(scope, servers), gte(localServerResourceSamples.minuteStart, window.from), lt(localServerResourceSamples.minuteStart, window.to),
       )).get()
       const eventAggregate = this.db.select({ eventCount: count(localServerStructuredEvents.id) }).from(localServerStructuredEvents)
-        .where(and(eventScopeWhere(scope, servers), gte(localServerStructuredEvents.occurredAt, window.from), lt(localServerStructuredEvents.occurredAt, window.to))).get()
+      .where(and(authorizedEventScopeWhere(scope, servers, playerServerIds), gte(localServerStructuredEvents.occurredAt, window.from), lt(localServerStructuredEvents.occurredAt, window.to))).get()
       const sampleCount = aggregate?.sampleCount ?? 0
       const expected = expectedMinutes(window.durationMs)
       const coveragePercent = Math.min(100, ((aggregate?.coveredMinutes ?? 0) / expected) * 100)
@@ -203,10 +224,10 @@ export class ServerHistoryService {
     return { scope, year, month, timeZone: this.timeZone, days }
   }
 
-  getDay(scope: ServerHistoryScope, date: string): ServerHistoryDay {
+  getDay(scope: ServerHistoryScope, date: string, visibleServerIds?: string[], playerServerIds?: string[]): ServerHistoryDay {
     validateCalendarDate(date)
     const window = localDayWindow(date, this.timeZone)
-    const servers = this.registeredServerIds(scope)
+    const servers = this.registeredServerIds(scope, visibleServerIds)
     const aggregate = this.db.select({
       sampleCount: count(localServerResourceSamples.id),
       coveredMinutes: countDistinct(localServerResourceSamples.minuteStart),
@@ -219,6 +240,9 @@ export class ServerHistoryService {
     }).from(localServerResourceSamples).where(and(
       scopeWhere(scope, servers), gte(localServerResourceSamples.minuteStart, window.from), lt(localServerResourceSamples.minuteStart, window.to),
     )).get()
+    const allowedPlayerServers = playerServerIds === undefined ? servers : servers.filter((serverId) => playerServerIds.includes(serverId))
+    const playerAggregate = playerServerIds === undefined ? null : this.db.select({ playersPeak: max(localServerResourceSamples.playersOnline) })
+      .from(localServerResourceSamples).where(and(playerScopeWhere(scope, allowedPlayerServers), gte(localServerResourceSamples.minuteStart, window.from), lt(localServerResourceSamples.minuteStart, window.to))).get()
     const sampleCount = aggregate?.sampleCount ?? 0
     const expected = expectedMinutes(window.durationMs)
     const coveragePercent = Math.min(100, ((aggregate?.coveredMinutes ?? 0) / expected) * 100)
@@ -235,16 +259,22 @@ export class ServerHistoryService {
     }).from(localServerResourceSamples).where(and(
       scopeWhere(scope, servers), gte(localServerResourceSamples.minuteStart, window.from), lt(localServerResourceSamples.minuteStart, window.to),
     )).groupBy(localServerResourceSamples.minuteStart).orderBy(asc(localServerResourceSamples.minuteStart)).limit(MAX_DAY_POINTS).all()
+    const playerPointRows = future || playerServerIds === undefined ? [] : this.db.select({
+      minuteStart: localServerResourceSamples.minuteStart, playersPeak: max(localServerResourceSamples.playersOnline),
+    }).from(localServerResourceSamples).where(and(
+      playerScopeWhere(scope, allowedPlayerServers), gte(localServerResourceSamples.minuteStart, window.from), lt(localServerResourceSamples.minuteStart, window.to),
+    )).groupBy(localServerResourceSamples.minuteStart).all()
+    const playerPoints = new Map(playerPointRows.map((row) => [row.minuteStart, row.playersPeak]))
     const points = pointRows.map((row) => ({
       observedAt: row.minuteStart,
       sampleCount: row.sampleCount,
       serverCount: row.serverCount,
       cpuAveragePercent: numberOrNull(row.cpuAveragePercent),
       memoryPeakBytes: row.memoryPeakBytes,
-      playersPeak: row.playersPeak,
+      playersPeak: playerServerIds === undefined ? row.playersPeak : playerPoints.get(row.minuteStart) ?? null,
       uptimePeakSeconds: row.uptimePeakSeconds,
     }))
-    const eventWhere = and(eventScopeWhere(scope, servers), gte(localServerStructuredEvents.occurredAt, window.from), lt(localServerStructuredEvents.occurredAt, window.to))
+    const eventWhere = and(authorizedEventScopeWhere(scope, servers, playerServerIds), gte(localServerStructuredEvents.occurredAt, window.from), lt(localServerStructuredEvents.occurredAt, window.to))
     const eventCount = future ? 0 : this.db.select({ total: count(localServerStructuredEvents.id) }).from(localServerStructuredEvents).where(eventWhere).get()?.total ?? 0
     const eventRows = future ? [] : this.db.select({
       id: localServerStructuredEvents.id,
@@ -298,7 +328,7 @@ export class ServerHistoryService {
       cpuAveragePercent: numberOrNull(aggregate?.cpuAveragePercent),
       cpuMaximumPercent: aggregate?.cpuMaximumPercent ?? null,
       memoryPeakBytes: aggregate?.memoryPeakBytes ?? null,
-      playersPeak: aggregate?.playersPeak ?? null,
+      playersPeak: playerServerIds === undefined ? aggregate?.playersPeak ?? null : playerAggregate?.playersPeak ?? null,
       uptimeSeconds: Math.max(0, Math.floor(sessionAggregate?.uptimeSeconds ?? 0)),
       sessionCount: sessionAggregate?.sessionCount ?? 0,
     }
@@ -317,9 +347,14 @@ export class ServerHistoryService {
     }
   }
 
-  private registeredServerIds(scope: ServerHistoryScope): string[] {
+  private registeredServerIds(scope: ServerHistoryScope, visibleServerIds?: string[]): string[] {
     const conditions = [eq(localServers.source, 'created'), eq(localServers.managed, true)]
-    if (scope !== 'all') conditions.push(eq(localServers.id, scope))
+    if (scope !== 'all') {
+      if (visibleServerIds !== undefined && !visibleServerIds.includes(scope)) throw new RangeError('Server history is not available in this account view.')
+      conditions.push(eq(localServers.id, scope))
+    } else if (visibleServerIds !== undefined) {
+      conditions.push(visibleServerIds.length ? inArray(localServers.id, visibleServerIds) : eq(localServers.id, ''))
+    }
     const rows = this.db.select({ id: localServers.id }).from(localServers).where(and(...conditions)).all()
     if (scope !== 'all' && rows.length === 0) throw new RangeError('Server history is available only for a panel-managed server.')
     return rows.map((row) => row.id)

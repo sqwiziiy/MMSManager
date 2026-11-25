@@ -5,6 +5,9 @@ import {
   installOperationListSchema,
   installOperationResultSchema,
   localServerListSchema,
+  serverAccessAdminResultSchema,
+  serverAccessSelfResultSchema,
+  serverAccessUpdateSchema,
   serverImportPreviewSchema,
   serverImportResultSchema,
   serverMetadataUpdateSchema,
@@ -35,7 +38,7 @@ import {
   serverHistoryCalendarResultSchema,
   serverHistoryDayResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate, ServerAccessPermissions, ServerAccessGrantUser } from '@mmsmanager/shared'
 import type { DashboardPlayerSummary, InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestResponse, reportSessionExpiry } from './client'
@@ -47,6 +50,22 @@ function request<T>(url: string, schema: { parse: (value: unknown) => T }, init:
 export async function getLocalServers(signal?: AbortSignal): Promise<LocalServerSummary[]> {
   const response = await request('/api/v1/servers', localServerListSchema, { signal })
   return response.servers
+}
+
+export async function getMyServerAccess(serverId: string, signal?: AbortSignal): Promise<{ administrator: boolean; permissions: ServerAccessPermissions }> {
+  return request(`/api/v1/servers/${encodeURIComponent(serverId)}/access`, serverAccessSelfResultSchema, { signal })
+}
+
+export async function getServerAccessUsers(serverId: string, signal?: AbortSignal): Promise<ServerAccessGrantUser[]> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/access`, serverAccessAdminResultSchema, { signal })
+  return response.users
+}
+
+export async function updateServerAccess(serverId: string, userId: string, permissions: ServerAccessPermissions): Promise<ServerAccessGrantUser[]> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/access`, serverAccessAdminResultSchema, {
+    method: 'PUT', body: JSON.stringify(serverAccessUpdateSchema.parse({ userId, permissions })),
+  })
+  return response.users
 }
 
 export async function getServerStatus(serverId: string, signal?: AbortSignal): Promise<ServerStatus> {

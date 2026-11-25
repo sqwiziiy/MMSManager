@@ -10,7 +10,7 @@ import type { FastifyInstance } from 'fastify'
 import { API_HOST, WEB_ORIGIN } from './config.js'
 import { AppConfigStore } from './app-config.js'
 import { openDatabase } from './db/client.js'
-import { auditEvents, localServerEvents, localServerStructuredEvents, machineSamples, localServerRuntime, localServers } from './db/schema.js'
+import { auditEvents, localServerEvents, localServerStructuredEvents, machineSamples, localServerRuntime, localServers, serverAccessGrants } from './db/schema.js'
 import { recordServerResourceSample, recordStructuredServerEvent } from './servers/history.js'
 import { AuthService } from './auth/service.js'
 import { AvatarStore } from './auth/avatar-store.js'
@@ -110,6 +110,84 @@ describe('authenticated local API', () => {
     const csrfToken = cookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
     return { cookieHeader, csrfToken }
   }
+
+  it('applies server grants to reads, mutations, aggregates, and active-session revocation', async () => {
+    const admin = await bootstrapAdmin()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
+    const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
+    const member = await auth.createUser(principal, { username: 'scoped-reader', displayName: 'Scoped Reader', password: 'synthetic scoped reader 8R!c2Vn4', role: 'member' })
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'scoped-reader', password: 'synthetic scoped reader 8R!c2Vn4' } })
+    const cookies = (Array.isArray(login.headers['set-cookie']) ? login.headers['set-cookie'] : [login.headers['set-cookie']]).filter((item): item is string => typeof item === 'string')
+    const memberCookie = cookies.map((item) => item.split(';')[0]).join('; ')
+    const csrf = cookies.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const memberHeaders = { ...requestHeaders, cookie: memberCookie, 'x-mms-csrf': csrf, 'content-type': 'application/json' }
+    const serverId = randomUUID()
+    const hiddenId = randomUUID()
+    const at = '2026-11-23T12:00:00.000Z'
+    const directory = join(dataDirectory, 'servers', 'scoped-fixture')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'server.properties'), 'motd=Scoped fixture\nmax-players=20\n')
+    await writeFile(join(directory, 'notes.txt'), 'Fixture file content\n')
+    for (const [id, name, folder] of [[serverId, 'Scoped fixture', directory], [hiddenId, 'Hidden fixture', join(dataDirectory, 'servers', 'hidden-fixture')]] as const) {
+      await opened.db.insert(localServers).values({
+        id, name, directory: folder, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar',
+        javaPath: null, javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: null,
+        eula: 'accepted', managed: true, worldFolders: '[]', createdBy: principal.userId, createdAt: at, updatedAt: at,
+      }).run()
+    }
+    await opened.db.insert(localServerRuntime).values({ serverId, status: 'stopped', updatedAt: at, restartRequired: false }).run()
+    const route = `/api/v1/admin/servers/${serverId}/access`
+    const scoped = (flags: Partial<import('@mmsmanager/shared').ServerAccessPermissions> = {}) => ({
+      viewServer: true, viewLogs: false, sendConsoleCommands: false, controlLifecycle: false, viewPlayers: false,
+      moderatePlayers: false, viewMods: false, manageMods: false, viewFiles: false, manageFiles: false,
+      viewSettings: false, manageSettings: false, viewWorlds: false, viewBackups: false, createBackups: false, ...flags,
+    })
+    const saveGrant = (permissions: ReturnType<typeof scoped>) => app.inject({ method: 'PUT', url: route, headers: adminHeaders, payload: { userId: member.id, permissions } })
+
+    expect((await app.inject({ method: 'GET', url: '/api/v1/servers', headers: { ...requestHeaders, cookie: memberCookie } })).json().servers).toEqual([])
+    expect((await app.inject({ method: 'GET', url: route, headers: { ...requestHeaders, cookie: admin.cookieHeader } })).json().users).toContainEqual(expect.objectContaining({
+      userId: member.id, permissions: expect.objectContaining({ viewServer: false }),
+    }))
+    expect((await app.inject({ method: 'PUT', url: route, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: { userId: member.id, permissions: scoped() } })).statusCode).toBe(403)
+    const first = await saveGrant(scoped())
+    expect(first.statusCode, first.body).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/servers', headers: { ...requestHeaders, cookie: memberCookie } })).json().servers).toMatchObject([{ id: serverId }])
+    expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console`, headers: { ...requestHeaders, cookie: memberCookie } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${hiddenId}/access`, headers: { ...requestHeaders, cookie: memberCookie } })).statusCode).toBe(404)
+
+    const readOnly = await saveGrant(scoped({ viewLogs: true, viewPlayers: true, viewFiles: true, viewSettings: true, viewBackups: true }))
+    expect(readOnly.statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console`, headers: { ...requestHeaders, cookie: memberCookie } })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/files`, headers: { ...requestHeaders, cookie: memberCookie } })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/files/read?path=notes.txt`, headers: { ...requestHeaders, cookie: memberCookie } })).json()).toMatchObject({ text: 'Fixture file content\n' })
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/properties`, headers: { ...requestHeaders, cookie: memberCookie } })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/backups`, headers: { ...requestHeaders, cookie: memberCookie } })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/dashboard/players', headers: { ...requestHeaders, cookie: memberCookie } })).json().summary.registeredServerCount).toBe(1)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/console`, headers: memberHeaders, payload: { command: 'list' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/files/create`, headers: memberHeaders, payload: { path: 'blocked.txt', kind: 'file' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${serverId}/properties`, headers: memberHeaders, payload: { motd: 'Blocked' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/backups`, headers: memberHeaders, payload: {} })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/backups/unknown/restore`, headers: memberHeaders, payload: { confirmation: 'x' } })).statusCode).toBe(403)
+
+    expect((await saveGrant(scoped({ manageFiles: true }))).statusCode).toBe(400)
+    const fileManager = await saveGrant(scoped({ viewFiles: true, manageFiles: true }))
+    expect(fileManager.statusCode).toBe(200)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/files/create`, headers: memberHeaders, payload: { path: 'member-created.txt', kind: 'file' } })).statusCode).toBe(201)
+    const properties = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/properties`, headers: adminHeaders })
+    const propertyUpdate = await saveGrant(scoped({ viewSettings: true, manageSettings: true }))
+    expect(propertyUpdate.statusCode).toBe(200)
+    const savedProperties = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${serverId}/properties`, headers: memberHeaders, payload: { motd: 'Member change', expectedSha256: properties.json().properties.sha256 } })
+    expect(savedProperties.statusCode).toBe(200)
+    await saveGrant(scoped({ viewLogs: true, sendConsoleCommands: true }))
+    const noOwnedProcess = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/console`, headers: memberHeaders, payload: { command: 'list' } })
+    expect(noOwnedProcess.statusCode).toBe(409)
+
+    const revoke = await saveGrant(scoped({ viewServer: false, viewLogs: false, viewPlayers: false, viewFiles: false, viewSettings: false, viewBackups: false }))
+    expect(revoke.statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/servers', headers: { ...requestHeaders, cookie: memberCookie } })).json().servers).toEqual([])
+    expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/status`, headers: { ...requestHeaders, cookie: memberCookie } })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/access`, headers: { ...requestHeaders, cookie: memberCookie } })).statusCode).toBe(404)
+  })
 
   it('publishes minimal health and denies telemetry until a real account is initialized', async () => {
     const health = await app.inject({ method: 'GET', url: '/api/v1/health' })
@@ -426,8 +504,7 @@ describe('authenticated local API', () => {
     expect(denied.statusCode).toBe(403)
     const memberList = await app.inject({ method: 'GET', url: '/api/v1/servers', headers: { ...requestHeaders, cookie: memberCookieHeader } })
     expect(memberList.statusCode).toBe(200)
-    expect(memberList.json().servers[0]).toMatchObject({ name: 'Legacy Preview', managed: false })
-    expect(memberList.json().servers[0].directory).toBeUndefined()
+    expect(memberList.json().servers).toEqual([])
     const memberScan = await app.inject({
       method: 'POST', url: '/api/v1/admin/java/scan',
       headers: { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' },
@@ -598,27 +675,26 @@ describe('authenticated local API', () => {
     const memberCsrf = memberCookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
     const memberHeaders = { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }
     expect(memberLogin.statusCode).toBe(200)
-    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/files/upload-batch?path=`, headers: { ...memberHeaders, 'content-type': `multipart/form-data; boundary=${uploadBoundary}` }, payload: uploadBody })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/files/upload-batch?path=`, headers: { ...memberHeaders, 'content-type': `multipart/form-data; boundary=${uploadBoundary}` }, payload: uploadBody })).statusCode).toBe(404)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/runtime-settings`, headers: memberHeaders })).statusCode).toBe(403)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/automation`, headers: memberHeaders })).statusCode).toBe(403)
     expect((await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/automation`, headers: memberHeaders, payload: { enabled: false, frequency: 'daily', localTime: '14:30', weekday: null } })).statusCode).toBe(403)
-    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/restart`, headers: memberHeaders, payload: {} })).statusCode).toBe(403)
-    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files`, headers: memberHeaders })).statusCode).toBe(403)
-    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files/read?path=notes.txt`, headers: memberHeaders })).statusCode).toBe(403)
-    expect((await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/files`, headers: memberHeaders, payload: { path: 'notes.txt', text: 'blocked', expectedSha256: savedText.json().sha256 } })).statusCode).toBe(403)
-    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/start`, headers: memberHeaders, payload: {} })).statusCode).toBe(403)
-    expect((await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: memberHeaders, payload: { motd: 'Blocked' } })).statusCode).toBe(403)
-    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/player-actions`, headers: memberHeaders, payload: { action: 'ban', username: 'Alex_123' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/restart`, headers: memberHeaders, payload: {} })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files`, headers: memberHeaders })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files/read?path=notes.txt`, headers: memberHeaders })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/files`, headers: memberHeaders, payload: { path: 'notes.txt', text: 'blocked', expectedSha256: savedText.json().sha256 } })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/start`, headers: memberHeaders, payload: {} })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: memberHeaders, payload: { motd: 'Blocked' } })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/player-actions`, headers: memberHeaders, payload: { action: 'ban', username: 'Alex_123' } })).statusCode).toBe(404)
     expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/player-actions`, headers: adminHeaders, payload: { action: 'ban', username: 'Alex_123;stop' } })).statusCode).toBe(400)
     expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/player-actions`, headers: adminHeaders, payload: { action: 'ban', username: 'Alex_123' } })).statusCode).toBe(409)
-    expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${id}/console`, headers: memberHeaders })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${id}/console`, headers: memberHeaders })).statusCode).toBe(404)
     const modsRead = await app.inject({ method: 'GET', url: `/api/v1/servers/${id}/mods`, headers: memberHeaders })
-    expect(modsRead.statusCode).toBe(200)
-    expect(modsRead.json().mods).toMatchObject({ supported: false, loader: 'unsupported', items: [] })
+    expect(modsRead.statusCode).toBe(404)
     const modsNoCsrf = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/mods/example.jar/disable`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: {} })
     expect(modsNoCsrf.statusCode).toBe(403)
     const modsMemberMutation = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/mods/example.jar/disable`, headers: memberHeaders, payload: {} })
-    expect(modsMemberMutation.statusCode).toBe(403)
+    expect(modsMemberMutation.statusCode).toBe(404)
     const modsUnsupported = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/mods/example.jar/disable`, headers: adminHeaders, payload: {} })
     expect(modsUnsupported.statusCode, JSON.stringify(modsUnsupported.json())).toBe(409)
     expect(modsUnsupported.json()).toMatchObject({ error: { code: 'MODS_UNSUPPORTED' } })
@@ -690,7 +766,7 @@ describe('authenticated local API', () => {
     const memberLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'backup-member', password: 'synthetic member passphrase 3M!v9Ld2' } })
     const memberCookies = memberLogin.headers['set-cookie']
     const memberCookieHeader = (Array.isArray(memberCookies) ? memberCookies : [memberCookies]).filter((item): item is string => typeof item === 'string').map((item) => item.split(';')[0]).join('; ')
-    expect((await app.inject({ method: 'GET', url: route, headers: { ...requestHeaders, cookie: memberCookieHeader } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: route, headers: { ...requestHeaders, cookie: memberCookieHeader } })).statusCode).toBe(404)
   })
 
   it('protects managed world and server-history endpoints and returns only scoped persisted records', async () => {
@@ -734,8 +810,8 @@ describe('authenticated local API', () => {
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'history-member', password: 'synthetic member passphrase 4T!s8Cq2' } })
     const cookies = login.headers['set-cookie']
     const cookieHeader = (Array.isArray(cookies) ? cookies : [cookies]).filter((item): item is string => typeof item === 'string').map((item) => item.split(';')[0]).join('; ')
-    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/worlds`, headers: { ...requestHeaders, cookie: cookieHeader } })).statusCode).toBe(403)
-    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/server-history/day?scope=${serverId}&date=2026-11-23`, headers: { ...requestHeaders, cookie: cookieHeader } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/worlds`, headers: { ...requestHeaders, cookie: cookieHeader } })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/server-history/day?scope=${serverId}&date=2026-11-23`, headers: { ...requestHeaders, cookie: cookieHeader } })).statusCode).toBe(404)
   })
 
   it('serves persisted activity and safe templates with role-checked mutations', async () => {
@@ -773,6 +849,10 @@ describe('authenticated local API', () => {
 
     const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
     await auth.createUser(principal, { username: 'activity-reader', displayName: 'Activity Reader', password: 'synthetic member passphrase 8P!m4Rd3', role: 'member' })
+    await opened.db.insert(serverAccessGrants).values({
+      serverId, userId: auth.listUsers().users.find((user) => user.username === 'activity-reader')!.id,
+      viewServer: true, viewLogs: true, viewBackups: true, createdAt: at, updatedAt: at, updatedBy: principal.userId,
+    }).run()
     const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'activity-reader', password: 'synthetic member passphrase 8P!m4Rd3' } })
     const cookies = login.headers['set-cookie']
     const cookieList = (Array.isArray(cookies) ? cookies : [cookies]).filter((item): item is string => typeof item === 'string')
@@ -786,10 +866,11 @@ describe('authenticated local API', () => {
     expect(memberActivity.json().events).toEqual([])
     const memberNotificationsResponse = await app.inject({ method: 'GET', url: '/api/v1/notifications', headers: { ...requestHeaders, cookie: memberCookieHeader } })
     expect(memberNotificationsResponse.statusCode).toBe(200)
-    expect(memberNotificationsResponse.json().items.map((item: { event: { title: string } }) => item.event.title)).toEqual(expect.arrayContaining(['Scheduled backup failed', 'Server process crash observed', 'Server restart required']))
+    expect(memberNotificationsResponse.json().items.map((item: { event: { title: string } }) => item.event.title)).toEqual(expect.arrayContaining(['Server process crash observed', 'Server restart required']))
+    expect(memberNotificationsResponse.json().items.map((item: { event: { title: string } }) => item.event.title)).not.toContain('Scheduled backup failed')
     expect(JSON.stringify(memberNotificationsResponse.json())).not.toContain('Sign-in attempt failed')
     expect(JSON.stringify(memberNotificationsResponse.json())).not.toContain('/private/fixture/path')
-    const memberFailure = memberNotificationsResponse.json().items.find((item: { event: { title: string } }) => item.event.title === 'Scheduled backup failed')
+    const memberFailure = memberNotificationsResponse.json().items.find((item: { event: { title: string } }) => item.event.title === 'Server process crash observed')
     const missingCsrf = await app.inject({ method: 'PATCH', url: `/api/v1/notifications/${encodeURIComponent(memberFailure.eventId)}/read`, headers: { ...requestHeaders, cookie: memberCookieHeader, 'content-type': 'application/json' }, payload: {} })
     expect(missingCsrf.statusCode).toBe(403)
     const memberRead = await app.inject({ method: 'PATCH', url: `/api/v1/notifications/${encodeURIComponent(memberFailure.eventId)}/read`, headers: { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }, payload: {} })

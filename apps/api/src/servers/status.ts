@@ -1,5 +1,5 @@
 import { createConnection } from 'node:net'
-import { and, desc, eq, lt } from 'drizzle-orm'
+import { and, desc, eq, inArray, lt } from 'drizzle-orm'
 import type { AppDatabase } from '../db/client.js'
 import { localServers, localServerRuntime, localServerStatusSamples } from '../db/schema.js'
 import type { DashboardPlayerSummary, ServerStatus } from '@mmsmanager/shared'
@@ -142,7 +142,8 @@ export class ServerStatusService {
     return work
   }
 
-  getPlayerSummary(): Promise<DashboardPlayerSummary> {
+  getPlayerSummary(visibleServerIds?: string[]): Promise<DashboardPlayerSummary> {
+    if (visibleServerIds !== undefined) return this.collectPlayerSummary(visibleServerIds)
     if (this.summaryCache && this.now() - this.summaryCache.at < this.pollIntervalMs) {
       return Promise.resolve(this.summaryCache.summary)
     }
@@ -155,9 +156,12 @@ export class ServerStatusService {
     return work
   }
 
-  private async collectPlayerSummary(): Promise<DashboardPlayerSummary> {
+  private async collectPlayerSummary(visibleServerIds?: string[]): Promise<DashboardPlayerSummary> {
+    if (visibleServerIds !== undefined && visibleServerIds.length === 0) {
+      return { playersOnline: 0, complete: true, registeredServerCount: 0, pollIntervalMs: this.pollIntervalMs, checkedAt: new Date(this.now()).toISOString() }
+    }
     const servers = this.db.select({ id: localServers.id, source: localServers.source, managed: localServers.managed, port: localServers.port })
-      .from(localServers).all()
+      .from(localServers).where(visibleServerIds === undefined ? undefined : inArray(localServers.id, visibleServerIds)).all()
     const checkedAt = new Date(this.now()).toISOString()
     if (servers.length === 0) return { playersOnline: 0, complete: true, registeredServerCount: 0, pollIntervalMs: this.pollIntervalMs, checkedAt }
 

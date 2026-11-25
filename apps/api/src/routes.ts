@@ -35,6 +35,9 @@ import {
   installOperationResultSchema,
   localServerListSchema,
   localServerIdSchema,
+  serverAccessAdminResultSchema,
+  serverAccessSelfResultSchema,
+  serverAccessUpdateSchema,
   serverCommandSchema,
   serverConsoleQuerySchema,
   serverConsoleResponseSchema,
@@ -117,6 +120,8 @@ import { validateCalendarDate } from './time.js'
 import { AuthFailure, AuthService } from './auth/service.js'
 import type { SessionPrincipal } from './auth/service.js'
 import { AvatarStore, InvalidAvatarError, MAX_AVATAR_BYTES } from './auth/avatar-store.js'
+import { ServerAccessError, ServerAccessService } from './auth/server-access.js'
+import type { ServerCapability } from './auth/server-access.js'
 import { JavaRuntimeError, JavaRuntimeRegistry } from './servers/java.js'
 import { ServerInventoryError, ServerRegistry } from './servers/registry.js'
 import { ServerInstallError, ServerInstallService } from './servers/install.js'
@@ -272,6 +277,7 @@ export async function createApiApp(options: {
   const processes = options.processes ?? new ServerProcessManager(options.db, options.servers, options.now)
   await processes.prepare()
   const runtimeSettings = new ServerRuntimeSettingsService(options.db, options.servers, processes, options.javaRuntimes, options.now)
+  const serverAccess = new ServerAccessService(options.db, options.now)
   const properties = new ServerPropertiesManager(options.db, options.servers, options.now)
   const serverStatus = new ServerStatusService(options.db, options.now)
   serverStatus.configurePollInterval(options.monitoringConfig?.get().statusPollMs ?? DEFAULT_MONITORING_SETTINGS.statusPollMs)
@@ -372,8 +378,20 @@ export async function createApiApp(options: {
       return reply.code(403).send({ error: { code: 'FORBIDDEN', message: 'Administrator access is required.' } })
     }
   }
+  const requireServerCapability = (capability: ServerCapability, mutation = false) => async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    if (mutation) await requireMutationAuth(request, reply)
+    else await requireAuth(request, reply)
+    if (!request.principal) return
+    const rawServerId = (request.params as { serverId?: unknown }).serverId
+    const params = typeof rawServerId === 'string' ? localServerIdSchema.safeParse({ serverId: rawServerId }) : null
+    if (!params?.success) return reply.code(400).send({ error: { code: 'INVALID_SERVER_ID', message: 'The server identifier is invalid.' } })
+    const decision = serverAccess.authorize(request.principal, params.data.serverId, capability)
+    if (decision === 'not-found') return reply.code(404).send({ error: { code: 'SERVER_NOT_FOUND', message: 'This server is not available in your local inventory.' } })
+    if (decision === 'forbidden') return reply.code(403).send({ error: { code: 'SERVER_PERMISSION_REQUIRED', message: 'This server permission is not granted.' } })
+  }
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ServerAccessError) return reply.code(error.code === 'SERVER_ACCESS_NOT_FOUND' || error.code === 'ACCESS_USER_NOT_FOUND' ? 404 : 400).send({ error: { code: error.code, message: error.message } })
     if (error instanceof NotificationError) return reply.code(404).send({ error: { code: error.code, message: error.message } })
     if (error instanceof ActivityFeedError) return reply.code(400).send({ error: { code: error.code, message: error.message } })
     if (error instanceof ServerTemplateError) {
@@ -637,11 +655,30 @@ export async function createApiApp(options: {
     managedRoot: options.servers.managedRoot,
     importRoots: options.servers.importRoots,
   }))
-  app.get('/api/v1/servers', { preHandler: requireAuth }, async () => {
+  app.get('/api/v1/servers', { preHandler: requireAuth }, async (request) => {
     const statuses = processes.listPublicStatuses()
+    const allowedIds = new Set(serverAccess.serverIds(request.principal!, 'viewServer'))
     return localServerListSchema.parse({
-      servers: (await options.servers.listPublic()).map((server) => ({ ...server, runtimeStatus: statuses.get(server.id) ?? 'unavailable' })),
+      servers: (await options.servers.listPublic()).filter((server) => allowedIds.has(server.id))
+        .map((server) => ({ ...server, runtimeStatus: statuses.get(server.id) ?? 'unavailable' })),
     })
+  })
+  app.get('/api/v1/servers/:serverId/access', { preHandler: requireServerCapability('viewServer') }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverAccessSelfResultSchema.parse({
+      administrator: request.principal!.role === 'administrator',
+      permissions: serverAccess.permissions(params.serverId, request.principal!.userId),
+    })
+  })
+  app.get('/api/v1/admin/servers/:serverId/access', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverAccessAdminResultSchema.parse({ users: serverAccess.listForAdmin(params.serverId) })
+  })
+  app.put('/api/v1/admin/servers/:serverId/access', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverAccessUpdateSchema, request.body)
+    serverAccess.update(request.principal!, params.serverId, input.userId, input.permissions)
+    return serverAccessAdminResultSchema.parse({ users: serverAccess.listForAdmin(params.serverId) })
   })
   app.post('/api/v1/admin/servers/import/inspect', { preHandler: requireAdminMutation }, async (request) => {
     const input = parse(serverImportRequestSchema, request.body)
@@ -677,7 +714,7 @@ export async function createApiApp(options: {
     const operation = await installs.create(input, request.principal!.userId)
     return reply.code(202).send(installOperationResultSchema.parse({ operation }))
   })
-  app.get('/api/v1/servers/:serverId/runtime', { preHandler: requireAuth }, async (request) => {
+  app.get('/api/v1/servers/:serverId/runtime', { preHandler: requireServerCapability('viewServer') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverRuntimeResultSchema.parse({ runtime: await processes.get(params.serverId) })
   })
@@ -690,82 +727,84 @@ export async function createApiApp(options: {
     const input = parse(serverRuntimeSettingsUpdateSchema, request.body)
     return serverRuntimeSettingsResultSchema.parse({ settings: await runtimeSettings.update(params.serverId, request.principal!.userId, input) })
   })
-  app.get('/api/v1/servers/:serverId/status', { preHandler: requireAuth }, async (request) => {
+  app.get('/api/v1/servers/:serverId/status', { preHandler: requireServerCapability('viewServer') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverStatusResultSchema.parse({ status: await serverStatus.get(params.serverId) })
   })
-  app.get('/api/v1/dashboard/players', { preHandler: requireAuth }, async () =>
-    dashboardPlayerSummaryResultSchema.parse({ summary: await serverStatus.getPlayerSummary() }))
-  app.get('/api/v1/admin/servers/:serverId/players', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/dashboard/players', { preHandler: requireAuth }, async (request) => {
+    const allowedIds = serverAccess.serverIds(request.principal!, 'viewPlayers')
+    return dashboardPlayerSummaryResultSchema.parse({ summary: await serverStatus.getPlayerSummary(request.principal!.role === 'administrator' ? undefined : allowedIds) })
+  })
+  app.get('/api/v1/admin/servers/:serverId/players', { preHandler: requireServerCapability('viewPlayers') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverPlayerListResultSchema.parse({ players: await processes.players(params.serverId) })
   })
-  app.get('/api/v1/servers/:serverId/mods', { preHandler: requireAuth }, async (request) => {
+  app.get('/api/v1/servers/:serverId/mods', { preHandler: requireServerCapability('viewMods') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverModsInventoryResultSchema.parse({ mods: await mods.list(params.serverId) })
   })
-  app.post('/api/v1/admin/servers/:serverId/mods', { preHandler: requireAdminMutation }, async (request, reply) => {
+  app.post('/api/v1/admin/servers/:serverId/mods', { preHandler: requireServerCapability('manageMods', true) }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
     const part = await request.file({ limits: { files: 1, fields: 0, parts: 1, fileSize: MAX_MOD_JAR_BYTES } })
     if (!part) throw new InvalidRequestError('A JAR file is required.')
     const inventory = await mods.upload(params.serverId, request.principal!.userId, part.filename, part.file, () => part.file.truncated)
     return reply.code(201).send(serverModsInventoryResultSchema.parse({ mods: inventory }))
   })
-  app.post('/api/v1/admin/servers/:serverId/mods/:fileName/enable', { preHandler: requireAdminMutation }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/mods/:fileName/enable', { preHandler: requireServerCapability('manageMods', true) }, async (request) => {
     const rawParams = request.params as { serverId?: unknown; fileName?: unknown }
     const params = parse(localServerIdSchema, { serverId: rawParams.serverId })
     const fileName = rawParams.fileName
     if (typeof fileName !== 'string') throw new InvalidRequestError('A mod filename is required.')
     return serverModsInventoryResultSchema.parse({ mods: await mods.setEnabled(params.serverId, request.principal!.userId, fileName, true) })
   })
-  app.post('/api/v1/admin/servers/:serverId/mods/:fileName/disable', { preHandler: requireAdminMutation }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/mods/:fileName/disable', { preHandler: requireServerCapability('manageMods', true) }, async (request) => {
     const rawParams = request.params as { serverId?: unknown; fileName?: unknown }
     const params = parse(localServerIdSchema, { serverId: rawParams.serverId })
     const fileName = rawParams.fileName
     if (typeof fileName !== 'string') throw new InvalidRequestError('A mod filename is required.')
     return serverModsInventoryResultSchema.parse({ mods: await mods.setEnabled(params.serverId, request.principal!.userId, fileName, false) })
   })
-  app.post('/api/v1/admin/servers/:serverId/mods/:fileName/quarantine', { preHandler: requireAdminMutation }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/mods/:fileName/quarantine', { preHandler: requireServerCapability('manageMods', true) }, async (request) => {
     const rawParams = request.params as { serverId?: unknown; fileName?: unknown }
     const params = parse(localServerIdSchema, { serverId: rawParams.serverId })
     const fileName = rawParams.fileName
     if (typeof fileName !== 'string') throw new InvalidRequestError('A mod filename is required.')
     return serverModsInventoryResultSchema.parse({ mods: await mods.quarantine(params.serverId, request.principal!.userId, fileName) })
   })
-  app.post('/api/v1/admin/servers/:serverId/mods/quarantine/:id/restore', { preHandler: requireAdminMutation }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/mods/quarantine/:id/restore', { preHandler: requireServerCapability('manageMods', true) }, async (request) => {
     const rawParams = request.params as { serverId?: unknown; id?: unknown }
     const params = parse(localServerIdSchema, { serverId: rawParams.serverId })
     const quarantineId = rawParams.id
     if (typeof quarantineId !== 'string') throw new InvalidRequestError('A quarantine id is required.')
     return serverModsInventoryResultSchema.parse({ mods: await mods.restoreQuarantine(params.serverId, request.principal!.userId, quarantineId) })
   })
-  app.post('/api/v1/admin/servers/:serverId/player-actions', { preHandler: requireAdminMutation }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/player-actions', { preHandler: requireServerCapability('moderatePlayers', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverPlayerActionRequestSchema, request.body)
     return serverPlayerActionResultSchema.parse(await processes.playerAction(params.serverId, request.principal!.userId, input.action, input.username ?? null))
   })
-  app.get('/api/v1/servers/:serverId/console', { preHandler: requireAuth }, async (request) => {
+  app.get('/api/v1/servers/:serverId/console', { preHandler: requireServerCapability('viewLogs') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const query = parse(serverConsoleQuerySchema, request.query)
     return serverConsoleResponseSchema.parse(await processes.console(params.serverId, query.after ?? 0, query.limit, query.sessionId ?? null, query.before))
   })
-  app.get('/api/v1/servers/:serverId/console/sessions', { preHandler: requireAuth }, async (request) => {
+  app.get('/api/v1/servers/:serverId/console/sessions', { preHandler: requireServerCapability('viewLogs') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverConsoleSessionsResponseSchema.parse({ sessions: await processes.consoleSessions(params.serverId) })
   })
-  app.post('/api/v1/admin/servers/:serverId/start', { preHandler: requireAdminMutation }, async (request, reply) => {
+  app.post('/api/v1/admin/servers/:serverId/start', { preHandler: requireServerCapability('controlLifecycle', true) }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
     const runtime = await processes.start(params.serverId, request.principal!.userId)
     serverStatus.invalidate(params.serverId)
     return reply.code(202).send(serverRuntimeResultSchema.parse({ runtime }))
   })
-  app.post('/api/v1/admin/servers/:serverId/stop', { preHandler: requireAdminMutation }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/stop', { preHandler: requireServerCapability('controlLifecycle', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const runtime = await processes.stop(params.serverId, request.principal!.userId)
     serverStatus.invalidate(params.serverId)
     return serverRuntimeResultSchema.parse({ runtime })
   })
-  app.post('/api/v1/admin/servers/:serverId/restart', { preHandler: requireAdminMutation }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/restart', { preHandler: requireServerCapability('controlLifecycle', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const runtime = await processes.restart(params.serverId, request.principal!.userId)
     serverStatus.invalidate(params.serverId)
@@ -775,26 +814,26 @@ export async function createApiApp(options: {
     const params = parse(localServerIdSchema, request.params)
     return serverRuntimeResultSchema.parse({ runtime: await processes.confirmStopped(params.serverId, request.principal!.userId) })
   })
-  app.post('/api/v1/admin/servers/:serverId/console', { preHandler: requireAdminMutation }, async (request, reply) => {
+  app.post('/api/v1/admin/servers/:serverId/console', { preHandler: requireServerCapability('sendConsoleCommands', true) }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverCommandSchema, request.body)
     await processes.sendCommand(params.serverId, request.principal!.userId, input.command)
     return reply.code(202).send({ ok: true })
   })
-  app.get('/api/v1/admin/servers/:serverId/backups', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/admin/servers/:serverId/backups', { preHandler: requireServerCapability('viewBackups') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverBackupsResultSchema.parse(await backups.list(params.serverId))
   })
-  app.post('/api/v1/admin/servers/:serverId/backups', { preHandler: requireAdminMutation }, async (request, reply) => {
+  app.post('/api/v1/admin/servers/:serverId/backups', { preHandler: requireServerCapability('createBackups', true) }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
     if (request.body && typeof request.body === 'object' && Object.keys(request.body as Record<string, unknown>).length !== 0) throw new InvalidRequestError('Backup creation does not accept request options.')
     return reply.code(201).send(serverBackupCreateResultSchema.parse({ backup: await backups.create(params.serverId, request.principal!.userId) }))
   })
-  app.get('/api/v1/admin/servers/:serverId/backups/:backupId/preview', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/admin/servers/:serverId/backups/:backupId/preview', { preHandler: requireServerCapability('viewBackups') }, async (request) => {
     const params = parse(serverBackupIdParamSchema, request.params)
     return serverBackupPreviewResultSchema.parse({ preview: await backups.preview(params.serverId, params.backupId) })
   })
-  app.get('/api/v1/admin/servers/:serverId/backups/:backupId/download', { preHandler: requireAdmin }, async (request, reply) => {
+  app.get('/api/v1/admin/servers/:serverId/backups/:backupId/download', { preHandler: requireServerCapability('viewBackups') }, async (request, reply) => {
     const params = parse(serverBackupIdParamSchema, request.params)
     const download = await backups.openDownload(params.serverId, params.backupId)
     reply.header('content-type', 'application/octet-stream')
@@ -822,11 +861,11 @@ export async function createApiApp(options: {
     const params = parse(serverAutomationJobIdParamSchema, request.params)
     return serverAutomationResultSchema.parse({ automation: await automation.acknowledge(params.serverId, params.jobId, request.principal!.userId) })
   })
-  app.get('/api/v1/admin/servers/:serverId/properties', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/admin/servers/:serverId/properties', { preHandler: requireServerCapability('viewSettings') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverPropertiesResultSchema.parse({ properties: await properties.get(params.serverId) })
   })
-  app.patch('/api/v1/admin/servers/:serverId/properties', { preHandler: requireAdminMutation }, async (request) => {
+  app.patch('/api/v1/admin/servers/:serverId/properties', { preHandler: requireServerCapability('manageSettings', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverPropertiesUpdateRequestSchema, request.body)
     const { expectedSha256, advancedProperties, confirmOnlineModeChange, confirmLevelNameChange, confirmWorldGenerationChange, confirmResourcePackChange, confirmGamePortChange, ...update } = input
@@ -843,17 +882,17 @@ export async function createApiApp(options: {
     const input = parse(serverPropertiesRestoreRequestSchema, request.body)
     return serverPropertiesRestoreResultSchema.parse(await properties.restore(params.serverId, request.principal!.userId, params.backupId, input.expectedCurrentSha256))
   })
-  app.get('/api/v1/admin/servers/:serverId/files', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/admin/servers/:serverId/files', { preHandler: requireServerCapability('viewFiles') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const query = parse(serverFilePathQuerySchema, request.query)
     return serverFileListSchema.parse(await files.list(params.serverId, query.path))
   })
-  app.get('/api/v1/admin/servers/:serverId/files/read', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/admin/servers/:serverId/files/read', { preHandler: requireServerCapability('viewFiles') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const query = parse(serverFileReadQuerySchema, request.query)
     return serverFileReadSchema.parse(await files.read(params.serverId, query.path))
   })
-  app.get('/api/v1/admin/servers/:serverId/files/download', { preHandler: requireAdmin }, async (request, reply) => {
+  app.get('/api/v1/admin/servers/:serverId/files/download', { preHandler: requireServerCapability('viewFiles') }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
     const query = parse(serverFileReadQuerySchema, request.query)
     const download = await files.download(params.serverId, query.path)
@@ -864,7 +903,7 @@ export async function createApiApp(options: {
     reply.header('x-content-type-options', 'nosniff')
     return reply.send(download.bytes)
   })
-  app.post('/api/v1/admin/servers/:serverId/files/upload', { preHandler: requireAdminMutation }, async (request, reply) => {
+  app.post('/api/v1/admin/servers/:serverId/files/upload', { preHandler: requireServerCapability('manageFiles', true) }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
     const query = parse(serverFilePathQuerySchema, request.query)
     const part = await request.file({ limits: { files: 1, fields: 0, parts: 1, fileSize: MAX_SERVER_FILE_UPLOAD_BYTES } })
@@ -873,7 +912,7 @@ export async function createApiApp(options: {
     return reply.code(201).send(serverFileListSchema.parse(inventory))
   })
   app.post('/api/v1/admin/servers/:serverId/files/upload-batch', {
-    preHandler: requireAdminMutation,
+    preHandler: requireServerCapability('manageFiles', true),
     bodyLimit: MAX_SERVER_FILE_UPLOAD_BATCH_BYTES + MAX_SERVER_FILE_UPLOAD_MANIFEST_BYTES + 256 * 1024,
   }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
@@ -950,47 +989,47 @@ export async function createApiApp(options: {
       throw error
     }
   })
-  app.post('/api/v1/admin/servers/:serverId/files/create', { preHandler: requireAdminMutation }, async (request, reply) => {
+  app.post('/api/v1/admin/servers/:serverId/files/create', { preHandler: requireServerCapability('manageFiles', true) }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverFileCreateSchema, request.body)
     return reply.code(201).send(serverFileListSchema.parse(await files.create(params.serverId, request.principal!.userId, input.path, input.kind, input.text ?? '')))
   })
-  app.post('/api/v1/admin/servers/:serverId/files/move', { preHandler: requireAdminMutation }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/files/move', { preHandler: requireServerCapability('manageFiles', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverFileMoveSchema, request.body)
     return serverFileListSchema.parse(await files.move(params.serverId, request.principal!.userId, input.sourcePath, input.destinationPath))
   })
-  app.delete('/api/v1/admin/servers/:serverId/files', { preHandler: requireAdminMutation }, async (request) => {
+  app.delete('/api/v1/admin/servers/:serverId/files', { preHandler: requireServerCapability('manageFiles', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverFileReadQuerySchema, request.body)
     const result = await files.trash(params.serverId, request.principal!.userId, input.path)
     return { item: result.item, inventory: serverFileListSchema.parse(result.inventory) }
   })
-  app.get('/api/v1/admin/servers/:serverId/files/trash', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/admin/servers/:serverId/files/trash', { preHandler: requireServerCapability('viewFiles') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverFileTrashListSchema.parse({ items: files.listTrash(params.serverId) })
   })
-  app.post('/api/v1/admin/servers/:serverId/files/trash/:id/restore', { preHandler: requireAdminMutation }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/files/trash/:id/restore', { preHandler: requireServerCapability('manageFiles', true) }, async (request) => {
     const params = parse(serverFileIdParamSchema, request.params)
     parse(serverFileTrashRestoreSchema, { id: params.id })
     return serverFileListSchema.parse(await files.restoreTrash(params.serverId, request.principal!.userId, params.id))
   })
-  app.put('/api/v1/admin/servers/:serverId/files', { preHandler: requireAdminMutation }, async (request) => {
+  app.put('/api/v1/admin/servers/:serverId/files', { preHandler: requireServerCapability('manageFiles', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverFileWriteSchema, request.body)
     return serverFileReadSchema.parse(await files.writeText(params.serverId, request.principal!.userId, input.path, input.text, input.expectedSha256))
   })
-  app.get('/api/v1/admin/servers/:serverId/files/recoveries', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/admin/servers/:serverId/files/recoveries', { preHandler: requireServerCapability('viewFiles') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const query = parse(serverFileReadQuerySchema, request.query)
     return serverFileRecoveryListSchema.parse({ items: await files.listRecoveries(params.serverId, query.path) })
   })
-  app.post('/api/v1/admin/servers/:serverId/files/recoveries/:id/restore', { preHandler: requireAdminMutation }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/files/recoveries/:id/restore', { preHandler: requireServerCapability('manageFiles', true) }, async (request) => {
     const params = parse(serverFileIdParamSchema, request.params)
     const input = parse(serverFileRecoveryRestoreSchema, request.body)
     return serverFileReadSchema.parse(await files.restoreRecovery(params.serverId, request.principal!.userId, params.id, input.expectedCurrentSha256))
   })
-  app.get('/api/v1/admin/servers/:serverId/worlds', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/admin/servers/:serverId/worlds', { preHandler: requireServerCapability('viewWorlds') }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverWorldsResultSchema.parse({ worlds: await worlds.get(params.serverId) })
   })
@@ -1005,15 +1044,39 @@ export async function createApiApp(options: {
     return javaRuntimeSchema.parse(await options.javaRuntimes.probe(input.path))
   })
 
-  app.get('/api/v1/activity', { preHandler: requireAuth }, async (request) => {
+  app.get('/api/v1/activity', { preHandler: requireAuth }, async (request, reply) => {
     const query = parse(activityQuerySchema, request.query)
-    return activityResponseSchema.parse(activity.list(query, request.principal!.role))
+    const principal = request.principal!
+    const serverIds = serverAccess.serverIds(principal, 'viewServer')
+    if (query.serverId && !serverIds.includes(query.serverId)) return reply.code(404).send({ error: { code: 'SERVER_NOT_FOUND', message: 'This server is not available in your local inventory.' } })
+    const access = {
+      serverIds: serverAccess.serverIds(principal, 'viewLogs'),
+      playerServerIds: serverAccess.serverIds(principal, 'viewPlayers'),
+      backupServerIds: serverAccess.serverIds(principal, 'viewBackups'),
+      automationServerIds: principal.role === 'administrator' ? serverAccess.serverIds(principal, 'viewServer') : [],
+    }
+    return activityResponseSchema.parse(activity.list(query, principal.role, access))
   })
-  app.get('/api/v1/notifications', { preHandler: requireAuth }, async (request) =>
-    notificationsResponseSchema.parse(notifications.list(request.principal!.userId, request.principal!.role)))
+  app.get('/api/v1/notifications', { preHandler: requireAuth }, async (request) => {
+    const principal = request.principal!
+    const access = {
+      serverIds: serverAccess.serverIds(principal, 'viewLogs'),
+      playerServerIds: serverAccess.serverIds(principal, 'viewPlayers'),
+      backupServerIds: serverAccess.serverIds(principal, 'viewBackups'),
+      automationServerIds: principal.role === 'administrator' ? serverAccess.serverIds(principal, 'viewServer') : [],
+    }
+    return notificationsResponseSchema.parse(notifications.list(principal.userId, principal.role, access))
+  })
   app.patch('/api/v1/notifications/:eventId/read', { preHandler: requireMutationAuth }, async (request) => {
     const params = parse(notificationEventIdParamSchema, request.params)
-    return notificationsResponseSchema.parse(notifications.markRead(request.principal!.userId, request.principal!.role, params.eventId))
+    const principal = request.principal!
+    const access = {
+      serverIds: serverAccess.serverIds(principal, 'viewLogs'),
+      playerServerIds: serverAccess.serverIds(principal, 'viewPlayers'),
+      backupServerIds: serverAccess.serverIds(principal, 'viewBackups'),
+      automationServerIds: principal.role === 'administrator' ? serverAccess.serverIds(principal, 'viewServer') : [],
+    }
+    return notificationsResponseSchema.parse(notifications.markRead(principal.userId, principal.role, params.eventId, access))
   })
   app.get('/api/v1/machine/current', { preHandler: requireAuth }, async () => machineCurrentSchema.parse(history.getCurrent(options.collector.health, options.collector.currentSnapshot)))
   app.get('/api/v1/machine/storage', { preHandler: requireAuth }, async (request) => {
@@ -1046,13 +1109,21 @@ export async function createApiApp(options: {
     validateCalendarDate(params.date)
     return machineDaySchema.parse(history.getDay(params.date))
   })
-  app.get('/api/v1/admin/server-history/calendar', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/admin/server-history/calendar', { preHandler: requireAuth }, async (request, reply) => {
     const query = parse(serverHistoryCalendarQuerySchema, request.query)
-    return serverHistoryCalendarResultSchema.parse({ calendar: serverHistory.getCalendar(query.scope, query.year, query.month) })
+    const principal = request.principal!
+    const serverIds = serverAccess.serverIds(principal, 'viewServer')
+    if (!serverHistory.scopeAvailable(query.scope, serverIds)) return reply.code(404).send({ error: { code: 'SERVER_NOT_FOUND', message: 'This server does not have an available local history.' } })
+    return serverHistoryCalendarResultSchema.parse({ calendar: serverHistory.getCalendar(query.scope, query.year, query.month, serverIds, serverAccess.serverIds(principal, 'viewPlayers')) })
   })
-  app.get('/api/v1/admin/server-history/day', { preHandler: requireAdmin }, async (request) => {
+  app.get('/api/v1/admin/server-history/day', { preHandler: requireAuth }, async (request, reply) => {
     const query = parse(serverHistoryDayQuerySchema, request.query)
-    return serverHistoryDayResultSchema.parse({ day: serverHistory.getDay(query.scope, query.date) })
+    const principal = request.principal!
+    const serverIds = serverAccess.serverIds(principal, 'viewServer')
+    if (!serverHistory.scopeAvailable(query.scope, serverIds)) return reply.code(404).send({ error: { code: 'SERVER_NOT_FOUND', message: 'This server does not have an available local history.' } })
+    const day = serverHistory.getDay(query.scope, query.date, serverIds, serverAccess.serverIds(principal, 'viewPlayers'))
+    if (principal.role !== 'administrator') day.events = day.events.map((event) => ({ ...event, rawMessage: null }))
+    return serverHistoryDayResultSchema.parse({ day })
   })
 
   if (options.staticWebDirectory) {

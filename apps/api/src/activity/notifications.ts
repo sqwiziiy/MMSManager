@@ -3,6 +3,7 @@ import { activityQuerySchema, type ActivityItem, type ActivityQuery, type Notifi
 import type { AppDatabase } from '../db/client.js'
 import { localServerRuntime, localServers, userNotificationReads } from '../db/schema.js'
 import { ActivityFeedService } from './feed.js'
+import type { ActivityAccessScope } from './feed.js'
 
 export class NotificationError extends Error {
   constructor(readonly code: 'NOTIFICATION_NOT_FOUND', message: string) { super(message) }
@@ -11,19 +12,22 @@ export class NotificationError extends Error {
 export class NotificationService {
   constructor(private readonly db: AppDatabase, private readonly activity: ActivityFeedService, private readonly now: () => number = Date.now) {}
 
-  list(userId: string, role: UserRole): NotificationsResponse {
+  list(userId: string, role: UserRole, access?: ActivityAccessScope): NotificationsResponse {
     const events: ActivityItem[] = []
     let cursor: string | undefined
     for (let pageNumber = 0; pageNumber < 10 && events.length < 100; pageNumber += 1) {
       const query = activityQuerySchema.parse({ category: 'all', limit: 100, cursor } satisfies Partial<ActivityQuery>)
-      const page = this.activity.list(query, role)
+      const page = this.activity.list(query, role, access)
       events.push(...page.events.filter((event) => event.outcome === 'failure'))
       if (!page.hasMore || !page.nextCursor) break
       cursor = page.nextCursor
     }
+    const visibleServerFilter = access?.serverIds === undefined ? undefined
+      : access.serverIds.length ? inArray(localServerRuntime.serverId, access.serverIds) : eq(localServerRuntime.serverId, '')
     const pendingRestarts = this.db.select({ serverId: localServerRuntime.serverId, updatedAt: localServerRuntime.updatedAt, name: localServers.name })
       .from(localServerRuntime).innerJoin(localServers, eq(localServers.id, localServerRuntime.serverId))
-      .where(eq(localServerRuntime.restartRequired, true)).all()
+      .where(and(eq(localServerRuntime.restartRequired, true), visibleServerFilter)).all()
+      .filter((runtime) => access?.serverIds === undefined || access.serverIds.includes(runtime.serverId))
     for (const runtime of pendingRestarts) {
       const eventId = `restart:${runtime.serverId}:${runtime.updatedAt}`
       events.push({ id: eventId, occurredAt: runtime.updatedAt, category: 'server', title: 'Server restart required',
@@ -48,12 +52,12 @@ export class NotificationService {
     return { items, unreadCount: items.filter((item) => item.readAt === null).length }
   }
 
-  markRead(userId: string, role: UserRole, eventId: string): NotificationsResponse {
-    if (!this.list(userId, role).items.some((item) => item.eventId === eventId)) {
+  markRead(userId: string, role: UserRole, eventId: string, access?: ActivityAccessScope): NotificationsResponse {
+    if (!this.list(userId, role, access).items.some((item) => item.eventId === eventId)) {
       throw new NotificationError('NOTIFICATION_NOT_FOUND', 'This notification is not available in your local workspace view.')
     }
     this.db.insert(userNotificationReads).values({ userId, eventId, readAt: new Date(this.now()).toISOString() })
       .onConflictDoUpdate({ target: [userNotificationReads.userId, userNotificationReads.eventId], set: { readAt: new Date(this.now()).toISOString() } }).run()
-    return this.list(userId, role)
+    return this.list(userId, role, access)
   }
 }
