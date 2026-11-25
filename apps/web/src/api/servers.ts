@@ -45,7 +45,7 @@ import {
   serverRemovalOperationListSchema,
   serverRemovalResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate, ServerAccessPermissions, ServerAccessGrantUser, ServerZipImportPreview, ServerRemovalOperation } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerRestartScheduleUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate, ServerAccessPermissions, ServerAccessGrantUser, ServerZipImportPreview, ServerRemovalOperation } from '@mmsmanager/shared'
 import type { DashboardPlayerSummary, InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestHeaders, apiRequestResponse, reportSessionExpiry } from './client'
@@ -230,6 +230,11 @@ export async function getServerAutomation(serverId: string, signal?: AbortSignal
 
 export async function updateServerAutomation(serverId: string, input: ServerAutomationUpdate): Promise<ServerAutomation> {
   const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/automation`, serverAutomationResultSchema, { method: 'PUT', body: JSON.stringify(input) })
+  return response.automation
+}
+
+export async function updateServerRestartSchedule(serverId: string, input: ServerRestartScheduleUpdate): Promise<ServerAutomation> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/automation/restart-schedule`, serverAutomationResultSchema, { method: 'PUT', body: JSON.stringify(input) })
   return response.automation
 }
 

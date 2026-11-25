@@ -1738,6 +1738,10 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 .local-automation-alert span { display: grid; gap: 3px; }
 .local-automation-alert strong { font-size: 9px; font-weight: 500; }
 .local-automation-alert small { color: #bcb29b; font-size: 8px; line-height: 1.4; }
+.local-automation-warning { display: flex; align-items: flex-start; gap: 7px; margin: 9px 0 0; padding: 9px 10px; color: #ddc48b; border: 1px solid #574b35; border-radius: 7px; background: #28241b; font-size: 8px; line-height: 1.45; }
+.local-automation-warning svg { flex: 0 0 auto; }
+.local-automation-wait-grid > label { align-content: start; }
+.local-automation-wait-grid > label > small { color: var(--text-muted); line-height: 1.4; }
 .local-automation-job-list { display: grid; }
 .local-automation-job { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px 0; border-bottom: 1px solid var(--line-quiet); }
 .local-automation-job:last-child { border-bottom: 0; }

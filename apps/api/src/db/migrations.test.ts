@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { eq } from 'drizzle-orm'
 import { openDatabase } from './client.js'
-import { localServerConsoleEntries, localServers, machineSamples, machines, serverAccessGrants, sessions, users } from './schema.js'
+import { localServerAutomation, localServerAutomationJobs, localServerConsoleEntries, localServerRestartJobs, localServerRestartSchedules, localServers, machineSamples, machines, serverAccessGrants, sessions, users } from './schema.js'
 
 describe('additive database migrations', () => {
   let directory: string | null = null
@@ -159,5 +159,52 @@ describe('additive database migrations', () => {
     expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
     expect(opened.db.select().from(users).where(eq(users.id, userId)).get()?.mustChangePassword).toBe(false)
     expect(opened.db.select().from(sessions).all()).toHaveLength(1)
+  })
+
+  it('adds restart schedule tables without changing account, telemetry, server, grant, or backup history', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'mmsmanager-restart-migration-'))
+    const oldMigrations = join(directory, 'before-restart-automation')
+    await mkdir(join(oldMigrations, 'meta'), { recursive: true })
+    const source = fileURLToPath(new URL('../../drizzle/', import.meta.url))
+    const journal = JSON.parse(await readFile(join(source, 'meta', '_journal.json'), 'utf8')) as { version: string; dialect: string; entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> }
+    const oldEntries = journal.entries.filter((entry) => entry.idx <= 19)
+    for (const entry of oldEntries) await copyFile(join(source, `${entry.tag}.sql`), join(oldMigrations, `${entry.tag}.sql`))
+    await writeFile(join(oldMigrations, 'meta', '_journal.json'), JSON.stringify({ version: journal.version, dialect: journal.dialect, entries: oldEntries }, null, 2))
+
+    const databasePath = join(directory, 'state.sqlite')
+    opened = await openDatabase({ path: databasePath, migrationsFolder: oldMigrations })
+    const userId = randomUUID()
+    const memberId = randomUUID()
+    const serverId = randomUUID()
+    const at = '2026-11-25T12:00:00.000Z'
+    await opened.db.insert(users).values({ id: userId, username: 'restart-migration-admin', usernameKey: 'restart-migration-admin', displayName: 'Restart Migration Admin', role: 'administrator', passwordHash: '$argon2id$fixture-only', enabled: true, mustChangePassword: false, avatarKey: null, createdAt: at, updatedAt: at, lastLoginAt: at, passwordChangedAt: at }).run()
+    await opened.db.insert(users).values({ id: memberId, username: 'restart-migration-member', usernameKey: 'restart-migration-member', displayName: 'Restart Migration Member', role: 'member', passwordHash: '$argon2id$member-fixture-only', enabled: true, mustChangePassword: false, avatarKey: null, createdAt: at, updatedAt: at, lastLoginAt: at, passwordChangedAt: at }).run()
+    await opened.db.insert(machines).values({ id: 'local', hostname: 'restart-fixture-host', platform: 'linux', architecture: 'x64', source: 'fixture', firstSeenAt: at, lastSeenAt: at }).run()
+    await opened.db.insert(machineSamples).values({ machineId: 'local', collectedAt: at, minuteStart: at, localDate: '2026-11-25', timeZone: 'Europe/Paris', cpuPercent: 7.5, coreCount: 4, loadOne: 0.4, loadFive: 0.3, loadFifteen: 0.2, memoryUsedBytes: 100, memoryAvailableBytes: 900, memoryTotalBytes: 1000, swapUsedBytes: 0, swapTotalBytes: 0, storageDevice: '/fixture', storageMount: '/fixture', storageUsedBytes: 100, storageAvailableBytes: 900, storageTotalBytes: 1000, networkInterface: 'fixture0', networkRxBytesPerSecond: 1, networkTxBytesPerSecond: 2, networkRxTransferredBytes: 3, networkTxTransferredBytes: 4, sampleStatus: 'complete', unavailableFields: '[]', source: 'fixture' }).run()
+    await opened.db.insert(localServers).values({ id: serverId, name: 'Restart migration fixture', directory: '/fixture/restart-migration', source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath: null, javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: at, updatedAt: at }).run()
+    await opened.db.insert(serverAccessGrants).values({ serverId, userId: memberId, viewServer: true, viewLogs: true, viewPlayers: false, viewMods: false, viewFiles: false, viewSettings: false, viewWorlds: false, viewBackups: true, createdAt: at, updatedAt: at, updatedBy: userId }).run()
+    await opened.db.insert(localServerAutomation).values({ serverId, backupEnabled: true, frequency: 'daily', localTime: '03:00', weekday: null, timeZone: 'Europe/Paris', nextRunAt: '2026-11-26T02:00:00.000Z', lastRunAt: at, lastStatus: 'completed', lastError: null, updatedBy: userId, updatedAt: at }).run()
+    await opened.db.insert(localServerAutomationJobs).values({ id: randomUUID(), serverId, kind: 'backup', scheduledFor: at, status: 'completed', startedAt: at, finishedAt: at, backupId: null, errorMessage: null, acknowledgedAt: null, createdAt: at }).run()
+    opened.native.close()
+    opened = null
+
+    opened = await openDatabase({ path: databasePath })
+    expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
+    expect(opened.native.pragma('foreign_key_check')).toEqual([])
+    expect(opened.db.select().from(users).all()).toHaveLength(2)
+    expect(opened.db.select().from(machineSamples).all()).toMatchObject([{ cpuPercent: 7.5, source: 'fixture' }])
+    expect(opened.db.select().from(localServers).all()).toMatchObject([{ id: serverId, name: 'Restart migration fixture' }])
+    expect(opened.db.select().from(serverAccessGrants).where(eq(serverAccessGrants.serverId, serverId)).get()).toMatchObject({ userId: memberId, viewServer: true, viewBackups: true })
+    expect(opened.db.select().from(localServerAutomation).where(eq(localServerAutomation.serverId, serverId)).get()).toMatchObject({ backupEnabled: true, nextRunAt: '2026-11-26T02:00:00.000Z', lastStatus: 'completed' })
+    expect(opened.db.select().from(localServerAutomationJobs).where(eq(localServerAutomationJobs.serverId, serverId)).all()).toMatchObject([{ kind: 'backup', status: 'completed', scheduledFor: at }])
+    expect(opened.db.select().from(localServerRestartSchedules).all()).toEqual([])
+    expect(opened.db.select().from(localServerRestartJobs).all()).toEqual([])
+    opened.native.close()
+    opened = null
+    opened = await openDatabase({ path: databasePath })
+    expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
+    expect(opened.db.select().from(users).all()).toHaveLength(2)
+    expect(opened.db.select().from(localServerAutomationJobs).all()).toHaveLength(1)
+    expect(opened.db.select().from(localServerRestartSchedules).all()).toHaveLength(0)
   })
 })

@@ -64,9 +64,9 @@ async function main(): Promise<void> {
   const close = async () => {
     if (closing) return
     closing = true
+    await app.close()
     await processes.shutdown()
     await collector.stop()
-    await app.close()
     database.native.close()
   }
   process.once('SIGINT', () => { void close() })

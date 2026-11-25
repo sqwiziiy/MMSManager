@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { eq } from 'drizzle-orm'
-import { users, localServers, localServerRuntime, localServerConsoleEntries, localServerEvents, localServerStructuredEvents, localServerSessions, localServerResourceSamples } from '../db/schema.js'
+import { users, localServers, localServerRuntime, localServerConsoleEntries, localServerEvents, localServerStructuredEvents, localServerSessions, localServerResourceSamples, localServerBackupRestores, localServerBackups, localServerRemovalOperations } from '../db/schema.js'
 import { openDatabase } from '../db/client.js'
 import { ServerRegistry } from './registry.js'
 import { ServerProcessManager } from './processes.js'
@@ -199,6 +199,46 @@ done
     await expect(manager.start(managedId, userId)).rejects.toMatchObject({ code: 'SERVER_ALREADY_STARTING' })
     await firstStart
     await waitForStatus('running')
+    await manager.stop(managedId, userId)
+    await waitForStatus('stopped')
+  })
+
+  it('scheduled restart never starts an offline or unmanaged server and gates the player check', async () => {
+    await expect(manager.restartScheduled(managedId, true)).rejects.toMatchObject({ code: 'SCHEDULED_SERVER_OFFLINE' })
+    await expect(manager.restartScheduled(importedId, false)).rejects.toMatchObject({ code: 'SCHEDULED_UNMANAGED' })
+    await manager.start(managedId, userId)
+    await waitForStatus('running')
+    const beforePid = opened.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, managedId)).get()?.processPid
+    const at = new Date().toISOString()
+    const removalId = randomUUID()
+    await opened.db.insert(localServerRemovalOperations).values({ id: removalId, serverId: managedId, mode: 'permanent', state: 'prepared', actorUserId: userId, serverName: 'Managed Fixture', directory: 'managed-fixture', source: 'created', errorCode: null, errorMessage: null, createdAt: at, updatedAt: at }).run()
+    await expect(manager.restartScheduled(managedId, false)).rejects.toMatchObject({ code: 'SCHEDULED_PENDING_REMOVAL' })
+    await opened.db.delete(localServerRemovalOperations).where(eq(localServerRemovalOperations.id, removalId)).run()
+    const selectedBackupId = randomUUID()
+    const safetyBackupId = randomUUID()
+    const backupValues = (id: string) => ({ id, serverId: managedId, actorUserId: userId, kind: 'manual' as const, origin: 'manual' as const, directoryName: id, createdAt: at, archiveSizeBytes: 0, manifestSizeBytes: 0, worldPathsJson: '[]', archiveSha256: '0'.repeat(64), manifestSha256: '0'.repeat(64), entryCount: 0, fileCount: 0, totalFileBytes: 0, excludedCount: 0 })
+    await opened.db.insert(localServerBackups).values([backupValues(selectedBackupId), backupValues(safetyBackupId)]).run()
+    const restoreId = randomUUID()
+    await opened.db.insert(localServerBackupRestores).values({ id: restoreId, serverId: managedId, backupId: selectedBackupId, safetyBackupId, actorUserId: userId, startedAt: at, completedAt: null, status: 'prepared', stagingName: '.fixture-stage', rollbackName: '.fixture-rollback', errorCode: null }).run()
+    await expect(manager.restartScheduled(managedId, false)).rejects.toMatchObject({ code: 'SCHEDULED_PENDING_RESTORE' })
+    await opened.db.delete(localServerBackupRestores).where(eq(localServerBackupRestores.id, restoreId)).run()
+    await opened.db.delete(localServerBackups).where(eq(localServerBackups.serverId, managedId)).run()
+    await expect(manager.restartScheduled(managedId, true)).rejects.toMatchObject({ code: 'SCHEDULED_PLAYERS_ONLINE' })
+    expect(await manager.get(managedId)).toMatchObject({ status: 'running', ready: true })
+    expect(opened.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, managedId)).get()?.processPid).toBe(beforePid)
+
+    let release!: () => void
+    let entered!: () => void
+    const gateEntered = new Promise<void>((resolve) => { entered = resolve })
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const heldFileOperation = manager.withServerFileMutation(managedId, async () => { entered(); await gate })
+    await gateEntered
+    await expect(manager.restartScheduled(managedId, false)).rejects.toMatchObject({ code: 'SCHEDULED_CONFLICT' })
+    release()
+    await heldFileOperation
+
+    const result = await manager.restartScheduled(managedId, false)
+    expect(result).toMatchObject({ status: 'running', ready: true })
     await manager.stop(managedId, userId)
     await waitForStatus('stopped')
   })

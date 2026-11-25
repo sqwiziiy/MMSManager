@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
+import type { ServerAutomation, ServerRestartScheduleUpdate } from '@mmsmanager/shared'
 import { isLocalizedText } from '../src/i18n/catalog'
 
 const screenshotDir = resolve(process.env['MMSMANAGER_E2E_SCREENSHOT_DIR'] ?? resolve(process.cwd(), '../../reports/screenshots'))
@@ -104,11 +105,13 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   let currentConsoleSessionId = consoleSessionIds[0]!
   const consoleSessionRows: Array<{ id: string; startedAt: string; endedAt: string | null; outcome: 'running' | 'stopped'; entryCount: number; oldestEntryId: number | null; latestEntryId: number | null; live: boolean }> = []
   const consoleEntrySession = new Map<number, string>()
-  let automation = {
+  let automation: ServerAutomation = {
     serverId, enabled: false, frequency: 'daily' as const, localTime: '03:00', weekday: null,
     timeZone: 'Europe/Paris', nextRunAt: null, lastRunAt: now, lastStatus: 'missed' as const,
     lastError: 'The API was unavailable past the catch-up window. No backup was run.', unacknowledgedCount: 1,
     jobs: [{ id: missedJobId, kind: 'backup' as const, scheduledFor: now, status: 'missed' as const, startedAt: null, finishedAt: now, backupId: null, errorMessage: 'The API was unavailable past the catch-up window. No backup was run.', acknowledgedAt: null, createdAt: now }],
+    restartSchedule: { enabled: false, frequency: 'daily', localTime: '03:00', weekday: null, timeZone: 'Europe/Paris', onlyWhenEmpty: true, waitPolicy: 'skip', retryIntervalMinutes: 5, waitDeadlineMinutes: 30, nextRunAt: null, lastRunAt: null, lastStatus: null, lastOutcome: null },
+    restartJobs: [],
   }
   const properties = () => ({
     settings, advancedProperties, sha256: propertyHash, serverVersion: server.version, serverSoftware: server.software,
@@ -141,6 +144,16 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
     if (route.request().method() === 'PUT') {
       const input = route.request().postDataJSON() as Pick<typeof automation, 'enabled' | 'frequency' | 'localTime' | 'weekday'>
       automation = { ...automation, ...input, nextRunAt: input.enabled ? new Date(Date.now() + 86_400_000).toISOString() : null }
+    }
+    return route.fulfill({ json: { automation } })
+  })
+  await page.route(`**/api/v1/admin/servers/${serverId}/automation/restart-schedule`, async (route) => {
+    if (route.request().method() === 'PUT') {
+      const input = route.request().postDataJSON() as ServerRestartScheduleUpdate
+      automation = { ...automation, restartSchedule: {
+        ...automation.restartSchedule, ...input, timeZone: 'Europe/Paris',
+        nextRunAt: input.enabled ? new Date(Date.now() + 86_400_000).toISOString() : null,
+      } }
     }
     return route.fulfill({ json: { automation } })
   })
@@ -981,7 +994,7 @@ test('local server detail and property controls fit a mobile viewport', async ({
   await page.screenshot({ path: screenshotPath('stage-05a-local-players-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
-test('runtime settings, safe restart and scheduled backup review work on desktop and mobile', async ({ page }) => {
+test('runtime settings, safe restart, backup schedule and restart schedule work on desktop and mobile', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await signIn(page)
   const { serverId } = await mockLocalServer(page)
@@ -1003,17 +1016,47 @@ test('runtime settings, safe restart and scheduled backup review work on desktop
 
   await page.getByRole('link', { name: 'Automation' }).click()
   await expect(page.getByRole('heading', { name: 'Scheduled tasks' })).toBeVisible()
-  await expect(page.getByText('1 missed schedule need review.')).toBeVisible()
+  await expect(page.getByText('1 missed backup needs review.')).toBeVisible()
   await page.getByRole('button', { name: 'Acknowledge' }).click()
   await expect(page.getByText('Missed backup acknowledged. No backup was created for that time.')).toBeVisible()
-  await page.locator('.local-automation-toggle input').check()
-  await page.getByLabel('Frequency').selectOption('weekly')
+  await page.locator('.local-automation-toggle input').first().check()
+  await page.getByLabel('Backup frequency').selectOption('weekly')
   await page.getByLabel('Backup weekday').selectOption('3')
   await page.getByLabel('Backup local time').fill('04:15')
-  await page.getByRole('button', { name: 'Save schedule' }).click()
+  await page.getByRole('button', { name: 'Save backup schedule' }).click()
   await expect(page.getByText('Schedule saved in Europe/Paris. The next backup will run only if the managed server is stopped.')).toBeVisible()
-  await expect(page.getByLabel('Frequency')).toHaveValue('weekly')
-  await page.screenshot({ path: screenshotPath('stage-05f-automation-desktop.png'), fullPage: true })
+  await expect(page.getByLabel('Backup frequency')).toHaveValue('weekly')
+  await expect(page.getByRole('heading', { name: 'Scheduled restarts' })).toBeVisible()
+  const restartCard = page.locator('.local-automation-settings-card').filter({ has: page.getByRole('heading', { name: 'Scheduled restarts' }) })
+  await expect(restartCard.locator('.local-automation-toggle input').nth(1)).toBeChecked()
+  await restartCard.locator('.local-automation-toggle input').nth(0).check()
+  await restartCard.getByLabel('Restart local time').fill('03:30')
+  await restartCard.getByLabel('Restart wait policy').selectOption('retry')
+  await restartCard.getByLabel('Retry interval, minutes').fill('5')
+  await restartCard.getByLabel('Wait deadline, minutes').fill('30')
+  await restartCard.getByRole('button', { name: 'Save restart schedule' }).click()
+  await expect(page.getByText('Restart schedule saved. It remains limited to a running server managed by MMSManager.')).toBeVisible()
+  await expect(restartCard.locator('.local-automation-toggle input').nth(1)).toBeChecked()
+  await page.screenshot({ path: screenshotPath('i5-restart-schedule-en-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Language & appearance' }).click()
+  const appearanceForm = page.locator('form.appearance-form')
+  const appearanceFields = appearanceForm.locator('select')
+  await appearanceFields.nth(0).selectOption('ru')
+  await appearanceForm.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+  await page.goto(`/servers/${serverId}/automation`)
+  await expect(page.getByRole('heading', { name: 'Перезапуски по расписанию' })).toBeVisible()
+  await expect(page.getByLabel('Местное время перезапуска')).toHaveValue('03:30')
+  await expect(page.getByLabel('Ожидание перед перезапуском')).toHaveValue('retry')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'Russian scheduled restart on mobile')
+  await page.screenshot({ path: screenshotPath('i5-restart-schedule-ru-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Язык и оформление' }).click()
+  await page.locator('form.appearance-form select').first().selectOption('en')
+  await page.locator('form.appearance-form .settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`/servers/${serverId}/runtime`)

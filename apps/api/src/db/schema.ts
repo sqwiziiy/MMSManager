@@ -606,6 +606,56 @@ export const localServerAutomationJobs = sqliteTable('local_server_automation_jo
   check('local_server_automation_jobs_status_check', sql`${table.status} IN ('running', 'completed', 'failed', 'missed')`),
 ])
 
+export const localServerRestartSchedules = sqliteTable('local_server_restart_schedules', {
+  serverId: text('server_id').primaryKey().references(() => localServers.id, { onDelete: 'cascade' }),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+  frequency: text('frequency', { enum: ['daily', 'weekly'] }).notNull().default('daily'),
+  localTime: text('local_time').notNull().default('03:00'),
+  weekday: integer('weekday'),
+  timeZone: text('time_zone').notNull(),
+  onlyWhenEmpty: integer('only_when_empty', { mode: 'boolean' }).notNull().default(true),
+  waitPolicy: text('wait_policy', { enum: ['skip', 'retry'] }).notNull().default('skip'),
+  retryIntervalMinutes: integer('retry_interval_minutes').notNull().default(5),
+  waitDeadlineMinutes: integer('wait_deadline_minutes').notNull().default(30),
+  nextRunAt: text('next_run_at'),
+  lastRunAt: text('last_run_at'),
+  lastStatus: text('last_status', { enum: ['executed', 'skipped', 'deferred', 'failed', 'interrupted', 'missed'] }),
+  lastOutcome: text('last_outcome'),
+  updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  check('local_server_restart_schedule_enabled_check', sql`${table.enabled} IN (0, 1)`),
+  check('local_server_restart_schedule_frequency_check', sql`${table.frequency} IN ('daily', 'weekly')`),
+  check('local_server_restart_schedule_time_check', sql`${table.localTime} GLOB '[0-2][0-9]:[0-5][0-9]' AND substr(${table.localTime}, 1, 2) BETWEEN '00' AND '23'`),
+  check('local_server_restart_schedule_weekday_check', sql`${table.weekday} IS NULL OR (${table.weekday} >= 0 AND ${table.weekday} <= 6)`),
+  check('local_server_restart_schedule_weekday_required_check', sql`(${table.frequency} = 'daily' AND ${table.weekday} IS NULL) OR (${table.frequency} = 'weekly' AND ${table.weekday} IS NOT NULL)`),
+  check('local_server_restart_schedule_empty_check', sql`${table.onlyWhenEmpty} IN (0, 1)`),
+  check('local_server_restart_schedule_wait_check', sql`${table.waitPolicy} IN ('skip', 'retry')`),
+  check('local_server_restart_schedule_retry_bounds_check', sql`${table.retryIntervalMinutes} BETWEEN 1 AND 30 AND ${table.waitDeadlineMinutes} BETWEEN 1 AND 180 AND ${table.retryIntervalMinutes} <= ${table.waitDeadlineMinutes}`),
+  check('local_server_restart_schedule_status_check', sql`${table.lastStatus} IS NULL OR ${table.lastStatus} IN ('executed', 'skipped', 'deferred', 'failed', 'interrupted', 'missed')`),
+])
+
+export const localServerRestartJobs = sqliteTable('local_server_restart_jobs', {
+  id: text('id').primaryKey(),
+  serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  scheduledFor: text('scheduled_for').notNull(),
+  status: text('status', { enum: ['running', 'executed', 'skipped', 'deferred', 'failed', 'interrupted', 'missed'] }).notNull(),
+  outcome: text('outcome').notNull(),
+  startedAt: text('started_at'),
+  finishedAt: text('finished_at'),
+  nextAttemptAt: text('next_attempt_at'),
+  deadlineAt: text('deadline_at').notNull(),
+  errorMessage: text('error_message'),
+  acknowledgedAt: text('acknowledged_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('local_server_restart_jobs_slot_unique').on(table.serverId, table.scheduledFor),
+  index('local_server_restart_jobs_server_time_idx').on(table.serverId, table.createdAt),
+  index('local_server_restart_jobs_due_idx').on(table.status, table.nextAttemptAt),
+  check('local_server_restart_jobs_status_check', sql`${table.status} IN ('running', 'executed', 'skipped', 'deferred', 'failed', 'interrupted', 'missed')`),
+  check('local_server_restart_jobs_outcome_check', sql`${table.outcome} IN ('pending', 'completed', 'players-online', 'player-count-unknown', 'server-offline', 'unmanaged', 'conflict', 'pending-restore', 'pending-removal', 'deadline-reached', 'missed', 'interrupted', 'restart-failed', 'schedule-changed')`),
+])
+
 export const localServerStatusSamples = sqliteTable('local_server_status_samples', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),

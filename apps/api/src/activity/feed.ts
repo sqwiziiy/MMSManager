@@ -34,6 +34,14 @@ const EVENT_TITLES: Record<string, string> = {
   'server-backup-schedule-missed': 'Scheduled backup was missed',
   'server-backup-schedule-missed-acknowledged': 'Missed backup acknowledged',
   'server-backup-schedule-interrupted': 'Scheduled backup interrupted',
+  'server-restart-schedule-updated': 'Server restart schedule updated',
+  'server-restart-schedule-attempted': 'Scheduled server restart started',
+  'server-restart-schedule-executed': 'Scheduled server restart completed',
+  'server-restart-schedule-skipped': 'Scheduled server restart skipped',
+  'server-restart-schedule-deferred': 'Scheduled server restart deferred',
+  'server-restart-schedule-failed': 'Scheduled server restart failed',
+  'server-restart-schedule-missed': 'Scheduled server restart was missed',
+  'server-restart-schedule-interrupted': 'Scheduled server restart interrupted',
   'server-access-grant-updated': 'Server access updated',
   'server-runtime-settings-updated': 'Runtime settings updated',
   'server-metadata-updated': 'Server name updated',
@@ -65,7 +73,7 @@ const AUDIT_TITLES: Record<string, string> = {
 
 function eventCategory(action: string): Exclude<ActivityCategory, 'all' | 'security' | 'player'> {
   if (action.startsWith('workspace-template-')) return 'system'
-  if (action.startsWith('server-backup-schedule-')) return 'automation'
+  if (action.startsWith('server-backup-schedule-') || action.startsWith('server-restart-schedule-')) return 'automation'
   if (action.startsWith('server-backup-')) return 'backup'
   return 'server'
 }
@@ -204,8 +212,8 @@ export class ActivityFeedService {
         : query.category === 'system' ? isNull(localServerEvents.serverId)
           : query.category === 'all' ? or(
             and(like(localServerEvents.action, 'server-backup-%'), notLike(localServerEvents.action, 'server-backup-schedule-%'), scopeFilter(localServerEvents.serverId, access.backupServerIds)),
-            and(like(localServerEvents.action, 'server-backup-schedule-%'), scopeFilter(localServerEvents.serverId, access.automationServerIds)),
-            and(notLike(localServerEvents.action, 'server-backup-%'), notLike(localServerEvents.action, 'workspace-template-%'), scopeFilter(localServerEvents.serverId, access.serverIds)),
+            and(or(like(localServerEvents.action, 'server-backup-schedule-%'), like(localServerEvents.action, 'server-restart-schedule-%')), scopeFilter(localServerEvents.serverId, access.automationServerIds)),
+            and(notLike(localServerEvents.action, 'server-backup-%'), notLike(localServerEvents.action, 'server-restart-schedule-%'), notLike(localServerEvents.action, 'workspace-template-%'), scopeFilter(localServerEvents.serverId, access.serverIds)),
             isNull(localServerEvents.serverId),
           )
           : scopeFilter(localServerEvents.serverId, access.serverIds)
@@ -217,8 +225,8 @@ export class ActivityFeedService {
           query.serverId ? eq(localServerEvents.serverId, query.serverId) : undefined,
           actionAccess,
           query.category === 'backup' ? and(like(localServerEvents.action, 'server-backup-%'), notLike(localServerEvents.action, 'server-backup-schedule-%')) : undefined,
-          query.category === 'automation' ? like(localServerEvents.action, 'server-backup-schedule-%') : undefined,
-          query.category === 'server' ? and(notLike(localServerEvents.action, 'server-backup-%'), notLike(localServerEvents.action, 'workspace-template-%')) : undefined,
+          query.category === 'automation' ? or(like(localServerEvents.action, 'server-backup-schedule-%'), like(localServerEvents.action, 'server-restart-schedule-%')) : undefined,
+          query.category === 'server' ? and(notLike(localServerEvents.action, 'server-backup-%'), notLike(localServerEvents.action, 'server-restart-schedule-%'), notLike(localServerEvents.action, 'workspace-template-%')) : undefined,
           query.category === 'system' ? like(localServerEvents.action, 'workspace-template-%') : undefined,
           ...rangeConditions(localServerEvents.occurredAt, query.from, query.to),
           sourceWindow(localServerEvents.occurredAt, localServerEvents.id, 1, cursor),

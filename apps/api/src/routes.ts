@@ -79,6 +79,7 @@ import {
   serverBackupRestoreResultSchema,
   serverAutomationResultSchema,
   serverAutomationUpdateSchema,
+  serverRestartScheduleUpdateSchema,
   serverAutomationJobIdParamSchema,
   serverHistoryCalendarQuerySchema,
   serverHistoryCalendarResultSchema,
@@ -305,7 +306,7 @@ export async function createApiApp(options: {
   await removals.prepare()
   const zipImports = new ServerZipImportService(options.db, options.servers, options.javaRuntimes, options.now)
   await zipImports.prepare()
-  const automation = new ServerAutomationService(options.db, backups, options.timeZone, options.now)
+  const automation = new ServerAutomationService(options.db, backups, options.timeZone, options.now, processes)
   await automation.prepare()
   app.addHook('onReady', async () => { automation.start() })
   app.addHook('onClose', async () => { await automation.stop() })
@@ -932,6 +933,11 @@ export async function createApiApp(options: {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverAutomationUpdateSchema, request.body)
     return serverAutomationResultSchema.parse({ automation: await automation.update(params.serverId, request.principal!.userId, input) })
+  })
+  app.put('/api/v1/admin/servers/:serverId/automation/restart-schedule', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverRestartScheduleUpdateSchema, request.body)
+    return serverAutomationResultSchema.parse({ automation: await automation.updateRestart(params.serverId, request.principal!.userId, input) })
   })
   app.post('/api/v1/admin/servers/:serverId/automation/jobs/:jobId/acknowledge', { preHandler: requireAdminMutation }, async (request) => {
     const params = parse(serverAutomationJobIdParamSchema, request.params)

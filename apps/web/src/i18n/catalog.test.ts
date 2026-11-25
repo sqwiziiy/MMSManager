@@ -43,6 +43,12 @@ describe('English and Russian interface catalog', () => {
     expect(translateText('Destination folder', 'ru')).toBe('Папка назначения')
     expect(translateText('New name', 'ru')).toBe('Новое имя')
     expect(translateText('Minecraft runtime files and loader metadata are protected from generic file operations.', 'ru')).toContain('Файлы среды Minecraft')
+    expect(translateText('Scheduled restarts', 'ru')).toBe('Перезапуски по расписанию')
+    expect(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((day) => translateText(day, 'ru')))
+      .toEqual(['воскресенье', 'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота'])
+    expect(translateText('Only when no players are online', 'ru')).toBe('Только если игроков нет в сети')
+    expect(translateText('Player count could not be confirmed', 'ru')).toBe('Не удалось проверить число игроков')
+    expect(translateText('Interrupted after the app restarted; it was not replayed', 'ru')).toContain('не запускалось')
   })
 
   it('translates ZIP import and server removal failures, including variable details', () => {

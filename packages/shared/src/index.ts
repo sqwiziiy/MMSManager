@@ -875,6 +875,23 @@ export const serverAutomationUpdateSchema = z.object({
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['weekday'], message: 'Choose a weekday only for a weekly schedule.' })
   }
 })
+export const serverRestartScheduleUpdateSchema = z.object({
+  enabled: z.boolean(),
+  frequency: serverAutomationFrequencySchema,
+  localTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+  weekday: z.number().int().min(0).max(6).nullable(),
+  onlyWhenEmpty: z.boolean(),
+  waitPolicy: z.enum(['skip', 'retry']),
+  retryIntervalMinutes: z.number().int().min(1).max(30),
+  waitDeadlineMinutes: z.number().int().min(1).max(180),
+}).strict().superRefine((value, context) => {
+  if ((value.frequency === 'daily' && value.weekday !== null) || (value.frequency === 'weekly' && value.weekday === null)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['weekday'], message: 'Choose a weekday only for a weekly schedule.' })
+  }
+  if (value.retryIntervalMinutes > value.waitDeadlineMinutes) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['retryIntervalMinutes'], message: 'The retry interval must fit inside the wait deadline.' })
+  }
+})
 export const serverAutomationJobSchema = z.object({
   id: z.string().uuid(),
   kind: z.literal('backup'),
@@ -885,6 +902,18 @@ export const serverAutomationJobSchema = z.object({
   backupId: z.string().uuid().nullable(),
   errorMessage: z.string().max(512).nullable(),
   acknowledgedAt: z.string().datetime({ offset: true }).nullable(),
+  createdAt: z.string().datetime({ offset: true }),
+}).strict()
+export const serverRestartJobSchema = z.object({
+  id: z.string().uuid(),
+  scheduledFor: z.string().datetime({ offset: true }),
+  status: z.enum(['running', 'executed', 'skipped', 'deferred', 'failed', 'interrupted', 'missed']),
+  outcome: z.enum(['pending', 'completed', 'players-online', 'player-count-unknown', 'server-offline', 'unmanaged', 'conflict', 'pending-restore', 'pending-removal', 'deadline-reached', 'missed', 'interrupted', 'restart-failed', 'schedule-changed']),
+  startedAt: z.string().datetime({ offset: true }).nullable(),
+  finishedAt: z.string().datetime({ offset: true }).nullable(),
+  nextAttemptAt: z.string().datetime({ offset: true }).nullable(),
+  deadlineAt: z.string().datetime({ offset: true }),
+  errorMessage: z.string().max(512).nullable(),
   createdAt: z.string().datetime({ offset: true }),
 }).strict()
 export const serverAutomationSchema = z.object({
@@ -900,6 +929,22 @@ export const serverAutomationSchema = z.object({
   lastError: z.string().max(512).nullable(),
   unacknowledgedCount: z.number().int().nonnegative(),
   jobs: z.array(serverAutomationJobSchema).max(100),
+  restartSchedule: z.object({
+    enabled: z.boolean(),
+    frequency: serverAutomationFrequencySchema,
+    localTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+    weekday: z.number().int().min(0).max(6).nullable(),
+    timeZone: z.string().min(1).max(100),
+    onlyWhenEmpty: z.boolean(),
+    waitPolicy: z.enum(['skip', 'retry']),
+    retryIntervalMinutes: z.number().int().min(1).max(30),
+    waitDeadlineMinutes: z.number().int().min(1).max(180),
+    nextRunAt: z.string().datetime({ offset: true }).nullable(),
+    lastRunAt: z.string().datetime({ offset: true }).nullable(),
+    lastStatus: z.enum(['executed', 'skipped', 'deferred', 'failed', 'interrupted', 'missed']).nullable(),
+    lastOutcome: z.string().max(64).nullable(),
+  }).strict(),
+  restartJobs: z.array(serverRestartJobSchema).max(100),
 }).strict()
 export const serverAutomationResultSchema = z.object({ automation: serverAutomationSchema }).strict()
 export const serverAutomationJobIdParamSchema = z.object({ serverId: z.string().uuid(), jobId: z.string().uuid() }).strict()
@@ -1153,6 +1198,8 @@ export type ServerBackupRestoreResult = z.infer<typeof serverBackupRestoreResult
 export type ServerAutomation = z.infer<typeof serverAutomationSchema>
 export type ServerAutomationUpdate = z.infer<typeof serverAutomationUpdateSchema>
 export type ServerAutomationJob = z.infer<typeof serverAutomationJobSchema>
+export type ServerRestartScheduleUpdate = z.infer<typeof serverRestartScheduleUpdateSchema>
+export type ServerRestartJob = z.infer<typeof serverRestartJobSchema>
 export type ServerHistoryCalendar = z.infer<typeof serverHistoryCalendarSchema>
 export type ServerHistoryCalendarDay = z.infer<typeof serverHistoryCalendarDaySchema>
 export type ServerHistoryScope = z.infer<typeof serverHistoryScopeSchema>

@@ -141,6 +141,13 @@
       "when": 1795618458116,
       "tag": "0019_stage_06i02_required_password_change",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1795619000000,
+      "tag": "0020_stage_06i05_restart_automation",
+      "breakpoints": true
     }
   ]
 }

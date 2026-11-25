@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path'
 import { asc, count, desc, eq, gt, isNull, lt, max, min, and, sql } from 'drizzle-orm'
 import type { FileHandle } from 'node:fs/promises'
 import type { AppDatabase } from '../db/client.js'
-import { localServerBackupRestores, localServerConsoleEntries, localServerEvents, localServerRuntime, localServerSessions, localServers } from '../db/schema.js'
+import { localServerBackupRestores, localServerConsoleEntries, localServerEvents, localServerRemovalOperations, localServerRuntime, localServerSessions, localServers } from '../db/schema.js'
 import { jvmOptionsSchema } from '@mmsmanager/shared'
 import type { ServerRuntime, ServerConsoleEntry, ServerConsoleSession, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
@@ -477,7 +477,7 @@ export class ServerProcessManager {
     }
   }
 
-  private async startReserved(serverId: string, actorUserId: string): Promise<ServerRuntime> {
+  private async startReserved(serverId: string, actorUserId: string | null): Promise<ServerRuntime> {
     const server = this.serverRow(serverId)
     this.requirePanelManaged(server)
     const unresolvedRestore = this.db.select({ id: localServerBackupRestores.id }).from(localServerBackupRestores)
@@ -596,7 +596,7 @@ export class ServerProcessManager {
     finally { this.lifecycleOperations.delete(serverId) }
   }
 
-  private async stopReserved(serverId: string, actorUserId: string): Promise<ServerRuntime> {
+  private async stopReserved(serverId: string, actorUserId: string | null): Promise<ServerRuntime> {
     const server = this.serverRow(serverId)
     this.requirePanelManaged(server)
     const managed = this.children.get(serverId)
@@ -649,6 +649,71 @@ export class ServerProcessManager {
     }
   }
 
+  /** Restarts only an already-ready owned child, holding the lifecycle gate through the fresh player check. */
+  async restartScheduled(serverId: string, onlyWhenEmpty: boolean): Promise<ServerRuntime> {
+    if (this.fileMutations.has(serverId)) throw new ServerProcessError('SCHEDULED_CONFLICT', 'A server file, backup, or restore operation is in progress.')
+    if (this.lifecycleOperations.has(serverId) || this.starting.has(serverId)) throw new ServerProcessError('SCHEDULED_CONFLICT', 'Another server lifecycle operation is in progress.')
+    this.lifecycleOperations.add(serverId)
+    try {
+      const server = this.serverRow(serverId)
+      if (server.removedAt) throw new ServerProcessError('SCHEDULED_PENDING_REMOVAL', 'A server removal is pending.')
+      try { this.requirePanelManaged(server) } catch {
+        throw new ServerProcessError('SCHEDULED_UNMANAGED', 'Scheduled restarts require a panel-managed server.')
+      }
+      const unresolvedRestore = this.db.select({ id: localServerBackupRestores.id }).from(localServerBackupRestores)
+        .where(and(eq(localServerBackupRestores.serverId, serverId), sql`${localServerBackupRestores.status} IN ('prepared', 'recovery-required')`)).get()
+      if (unresolvedRestore) throw new ServerProcessError('SCHEDULED_PENDING_RESTORE', 'A restore needs recovery before this server can restart.')
+      const pendingRemoval = this.db.select({ id: localServerRemovalOperations.id }).from(localServerRemovalOperations)
+        .where(and(eq(localServerRemovalOperations.serverId, serverId), sql`${localServerRemovalOperations.state} IN ('prepared', 'quarantined', 'purging', 'recovery-required')`)).get()
+      if (pendingRemoval) throw new ServerProcessError('SCHEDULED_PENDING_REMOVAL', 'A server removal needs recovery before this server can restart.')
+
+      const managed = this.children.get(serverId)
+      const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+      if (!managed || !managed.sessionId || !runtime || runtime.status !== 'running' || managed.stopRequested) {
+        throw new ServerProcessError('SCHEDULED_SERVER_OFFLINE', 'Only a ready, running process still owned by MMSManager can be restarted by a schedule.')
+      }
+      if (onlyWhenEmpty) {
+        if (this.playerActions.has(serverId)) throw new ServerProcessError('SCHEDULED_PLAYER_COUNT_UNKNOWN', 'A player action is still awaiting a server response.')
+        const players = await this.players(serverId)
+        const sampledAt = players.sampledAt ? Date.parse(players.sampledAt) : NaN
+        const age = this.now() - sampledAt
+        if (players.state !== 'authoritative' || players.source !== 'owned-console-list' || !Number.isFinite(sampledAt) || age < 0 || age > 5_000) {
+          throw new ServerProcessError('SCHEDULED_PLAYER_COUNT_UNKNOWN', 'A fresh authoritative player count could not be confirmed.')
+        }
+        if (players.names.length > 0) throw new ServerProcessError('SCHEDULED_PLAYERS_ONLINE', 'Players are still online.')
+      }
+
+      const currentRuntime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+      if (this.children.get(serverId) !== managed || !currentRuntime || currentRuntime.status !== 'running' || managed.stopRequested) {
+        throw new ServerProcessError('SCHEDULED_SERVER_OFFLINE', 'The owned server stopped being ready before the scheduled restart began.')
+      }
+      return await this.restartReserved(serverId, null, managed)
+    } finally {
+      this.lifecycleOperations.delete(serverId)
+    }
+  }
+
+  private async restartReserved(serverId: string, actorUserId: string | null, managed: ManagedProcess): Promise<ServerRuntime> {
+    try {
+      await this.event(serverId, actorUserId, 'server-restart-requested', 'success', actorUserId ? 'An orchestrated stop and start was requested for the panel-owned process.' : 'A scheduled orchestrated restart was requested for the panel-owned process.')
+      await this.stopReserved(serverId, actorUserId)
+      await this.waitForProcessExit(serverId, managed)
+      const stopped = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+      if (stopped?.status !== 'stopped' || this.children.has(serverId)) {
+        throw new ServerProcessError('RESTART_EXIT_UNCONFIRMED', 'The owned process did not reach a confirmed stopped state. No replacement process was started.')
+      }
+      await this.startReserved(serverId, actorUserId)
+      await this.waitForReadiness(serverId)
+      const result = await this.get(serverId)
+      await this.event(serverId, actorUserId, 'server-restart-completed', 'success', 'The replacement owned process reported Minecraft readiness.')
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The restart did not complete.'
+      await this.event(serverId, actorUserId, 'server-restart-failed', 'failure', message).catch(() => undefined)
+      throw error
+    }
+  }
+
   private async waitForProcessExit(serverId: string, managed: ManagedProcess): Promise<void> {
     const timeoutMs = this.waits.stopTimeoutMs ?? 30_000
     let timer: NodeJS.Timeout | undefined
@@ -684,6 +749,7 @@ export class ServerProcessManager {
   }
 
   async sendCommand(serverId: string, actorUserId: string, command: string): Promise<void> {
+    if (this.lifecycleOperations.has(serverId)) throw new ServerProcessError('SERVER_OPERATION_BUSY', 'Console commands are temporarily unavailable during a lifecycle operation.')
     const server = this.serverRow(serverId)
     this.requirePanelManaged(server)
     const managed = this.children.get(serverId)
@@ -862,7 +928,7 @@ export class ServerProcessManager {
     }
   }
 
-  private async finish(serverId: string, actorUserId: string, managed: ManagedProcess, code: number | null): Promise<void> {
+  private async finish(serverId: string, actorUserId: string | null, managed: ManagedProcess, code: number | null): Promise<void> {
     if (managed.sampleTimer) clearInterval(managed.sampleTimer)
     await managed.spawnRecorded
     for (const stream of ['stdout', 'stderr'] as const) {
@@ -901,7 +967,7 @@ export class ServerProcessManager {
     await this.addEntry(serverId, 'system', status === 'crashed' ? 'error' : 'info', status === 'crashed' ? `The server process exited unexpectedly (${code ?? 'unknown'}).` : 'The server process stopped.', occurredAt, managed.sessionId)
   }
 
-  private async failStart(serverId: string, actorUserId: string, code: string, message: string): Promise<void> {
+  private async failStart(serverId: string, actorUserId: string | null, code: string, message: string): Promise<void> {
     const occurredAt = new Date(this.now()).toISOString()
     await this.updateRuntime(serverId, { status: 'error', processPid: null, processStartMarker: null, processBootId: null, errorMessage: message })
     recordStructuredServerEvent(this.db, { serverId, occurredAt, category: 'server', eventType: 'server_start_failed', description: 'The managed server process could not start.', confidence: 'high', source: 'panel-process' }, this.now)
