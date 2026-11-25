@@ -366,6 +366,18 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 .access-selected-user > div { display: grid; gap: 3px; min-width: 0; }
 .access-selected-user strong { color: var(--text); font-size: 11px; }
 .access-selected-user span { overflow-wrap: anywhere; color: var(--text-muted); font-size: 9px; }
+.access-mode-switch { display: inline-flex; gap: 3px; width: max-content; margin: 0 0 10px; padding: 3px; background: var(--surface-raised); border: 1px solid var(--line-quiet); border-radius: 8px; }
+.access-mode-switch button { min-height: 30px; padding: 0 11px; color: var(--text-muted); background: transparent; border: 0; border-radius: 5px; font: inherit; cursor: pointer; }
+.access-mode-switch button[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); }
+.access-group-toggle { display: flex; align-items: center; gap: 9px; min-height: 55px; padding: 9px 3px; border-top: 1px solid var(--line-quiet); cursor: pointer; }
+.access-group-toggle > input { flex: 0 0 auto; width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.access-group-toggle > span { display: grid; gap: 4px; min-width: 0; }
+.access-group-toggle strong { color: var(--text-secondary); font-size: 10px; font-weight: 600; }
+.access-group-toggle small { color: var(--text-muted); font-size: 9px; }
+.access-admin-row { align-items: center; cursor: default; }
+.access-admin-row > svg { flex: 0 0 auto; color: var(--text-muted); }
+.access-admin-row > span { flex: 1; }
+.access-admin-row:hover { background: transparent; }
 .access-permission-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .access-permission-group { min-width: 0; margin: 0; padding: 9px; background: var(--surface-raised); border: 1px solid var(--line-quiet); border-radius: 8px; }
 .access-permission-group legend, .access-permission-group > h4 { padding: 0 4px; color: var(--text-secondary); font-size: 10px; font-weight: 600; }

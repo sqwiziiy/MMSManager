@@ -222,7 +222,7 @@ describe('authenticated local API', () => {
     await opened.db.insert(localServerRuntime).values({ serverId, status: 'stopped', updatedAt: at, restartRequired: false }).run()
     const route = `/api/v1/admin/servers/${serverId}/access`
     const scoped = (flags: Partial<import('@mmsmanager/shared').ServerAccessPermissions> = {}) => ({
-      viewServer: true, viewLogs: false, sendConsoleCommands: false, controlLifecycle: false, viewPlayers: false,
+      viewServer: true, viewLogs: false, sendConsoleCommands: false, controlLifecycle: false, startServer: false, stopServer: false, restartServer: false, viewPlayers: false,
       moderatePlayers: false, viewMods: false, manageMods: false, viewFiles: false, manageFiles: false,
       viewSettings: false, manageSettings: false, viewWorlds: false, viewBackups: false, createBackups: false, ...flags,
     })
@@ -262,9 +262,9 @@ describe('authenticated local API', () => {
     expect(propertyUpdate.statusCode).toBe(200)
     const savedProperties = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${serverId}/properties`, headers: memberHeaders, payload: { motd: 'Member change', expectedSha256: properties.json().properties.sha256 } })
     expect(savedProperties.statusCode).toBe(200)
-    await saveGrant(scoped({ viewLogs: true, sendConsoleCommands: true }))
+    expect((await saveGrant(scoped({ viewLogs: true, sendConsoleCommands: true }))).statusCode).toBe(400)
     const noOwnedProcess = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/console`, headers: memberHeaders, payload: { command: 'list' } })
-    expect(noOwnedProcess.statusCode).toBe(409)
+    expect(noOwnedProcess.statusCode).toBe(403)
 
     const revoke = await saveGrant(scoped({ viewServer: false, viewLogs: false, viewPlayers: false, viewFiles: false, viewSettings: false, viewBackups: false }))
     expect(revoke.statusCode).toBe(200)
@@ -1106,6 +1106,64 @@ describe('authenticated local API', () => {
     expect(opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()).toMatchObject({ source: 'created', managed: true, eula: 'accepted' })
     expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console/sessions`, headers: requestHeaders })).statusCode).toBe(401)
 
+    const ownerToken = /mmsmanager_session=([^;]+)/.exec(cookieHeader)?.[1]
+    const ownerPrincipal = ownerToken ? auth.authenticate(ownerToken) : null
+    const memberPassword = 'synthetic lifecycle member 7M!a9Vq3'
+    const lifecycleMember = await auth.createUser(ownerPrincipal!, { username: 'lifecycle-member', displayName: 'Lifecycle Member', password: memberPassword, role: 'member' })
+    const memberLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'lifecycle-member', password: memberPassword } })
+    const memberCookies = (Array.isArray(memberLogin.headers['set-cookie']) ? memberLogin.headers['set-cookie'] : [memberLogin.headers['set-cookie']]).filter((item): item is string => typeof item === 'string')
+    const lifecycleMemberCookie = memberCookies.map((item) => item.split(';')[0]).join('; ')
+    const lifecycleMemberCsrf = memberCookies.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const lifecycleMemberHeaders = { ...requestHeaders, cookie: lifecycleMemberCookie, 'x-mms-csrf': lifecycleMemberCsrf, 'content-type': 'application/json' }
+    const lifecyclePermissions = (grant: Partial<import('@mmsmanager/shared').ServerAccessPermissions>) => ({
+      viewServer: true, viewLogs: false, sendConsoleCommands: false, controlLifecycle: false,
+      startServer: false, stopServer: false, restartServer: false, viewPlayers: false, moderatePlayers: false,
+      viewMods: false, manageMods: false, viewFiles: false, manageFiles: false, viewSettings: false, manageSettings: false,
+      viewWorlds: false, viewBackups: false, createBackups: false, ...grant,
+    })
+    const saveLifecyclePermissions = (permissions: ReturnType<typeof lifecyclePermissions>) => app.inject({
+      method: 'PUT', url: `/api/v1/admin/servers/${serverId}/access`, headers: adminHeaders,
+      payload: { userId: lifecycleMember.id, permissions },
+    })
+    const readLifecycleRuntime = async (expected: 'running' | 'stopped') => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const response = await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/runtime`, headers: { ...requestHeaders, cookie: lifecycleMemberCookie } })
+        const runtime = response.json().runtime as { status: string }
+        if (runtime.status === expected) return runtime
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
+      }
+      throw new Error(`Fake server did not reach ${expected}.`)
+    }
+
+    expect((await saveLifecyclePermissions(lifecyclePermissions({ startServer: true }))).statusCode).toBe(200)
+    const memberStart = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/start`, headers: lifecycleMemberHeaders, payload: {} })
+    expect(memberStart.statusCode, memberStart.body).toBe(202)
+    expect(await readLifecycleRuntime('running')).toMatchObject({ status: 'running' })
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/stop`, headers: lifecycleMemberHeaders, payload: {} })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restart`, headers: lifecycleMemberHeaders, payload: {} })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/stop`, headers: adminHeaders, payload: {} })).statusCode).toBe(200)
+    await readLifecycleRuntime('stopped')
+
+    expect((await saveLifecyclePermissions(lifecyclePermissions({ stopServer: true }))).statusCode).toBe(200)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/start`, headers: adminHeaders, payload: {} })).statusCode).toBe(202)
+    await readLifecycleRuntime('running')
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/start`, headers: lifecycleMemberHeaders, payload: {} })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restart`, headers: lifecycleMemberHeaders, payload: {} })).statusCode).toBe(403)
+    const memberStop = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/stop`, headers: lifecycleMemberHeaders, payload: {} })
+    expect(memberStop.statusCode, memberStop.body).toBe(200)
+    await readLifecycleRuntime('stopped')
+
+    expect((await saveLifecyclePermissions(lifecyclePermissions({ restartServer: true }))).statusCode).toBe(200)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/start`, headers: adminHeaders, payload: {} })).statusCode).toBe(202)
+    await readLifecycleRuntime('running')
+    const memberRestart = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restart`, headers: lifecycleMemberHeaders, payload: {} })
+    expect(memberRestart.statusCode, memberRestart.body).toBe(200)
+    expect(memberRestart.json().runtime).toMatchObject({ status: 'running', ready: true })
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/start`, headers: lifecycleMemberHeaders, payload: {} })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/stop`, headers: lifecycleMemberHeaders, payload: {} })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/stop`, headers: adminHeaders, payload: {} })).statusCode).toBe(200)
+    await readLifecycleRuntime('stopped')
+
     const started = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/start`, headers: adminHeaders, payload: {} })
     expect(started.statusCode).toBe(202)
     let runtime: Record<string, unknown> | undefined
@@ -1139,7 +1197,7 @@ describe('authenticated local API', () => {
     expect(restarted.statusCode).toBe(200)
     expect(restarted.json().runtime).toMatchObject({ status: 'running', ready: true })
     const restartedSessions = (await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console/sessions`, headers: { ...requestHeaders, cookie: cookieHeader } })).json().sessions as Array<{ id: string; outcome: string; live: boolean }>
-    expect(restartedSessions, JSON.stringify(restartedSessions)).toHaveLength(2)
+    expect(restartedSessions, JSON.stringify(restartedSessions)).toHaveLength(6)
     expect(restartedSessions[0]).toMatchObject({ outcome: 'running', live: true })
     expect(restartedSessions[0]?.id).not.toBe(firstSession.id)
     expect(restartedSessions.find((session) => session.id === firstSession.id)).toMatchObject({ outcome: 'stopped', live: false })

@@ -44,7 +44,8 @@ describe('per-server access grants', () => {
   }) as SessionPrincipal
 
   const fullSet = (): ServerAccessPermissions => ({
-    viewServer: true, viewLogs: true, sendConsoleCommands: true, controlLifecycle: true, viewPlayers: true,
+    viewServer: true, viewLogs: true, sendConsoleCommands: false, controlLifecycle: false,
+    startServer: true, stopServer: true, restartServer: true, viewPlayers: true,
     moderatePlayers: true, viewMods: true, manageMods: true, viewFiles: true, manageFiles: true,
     viewSettings: true, manageSettings: true, viewWorlds: true, viewBackups: true, createBackups: true,
   })
@@ -55,7 +56,7 @@ describe('per-server access grants', () => {
     expect(access.authorize(member, ids.one, 'viewServer')).toBe('not-found')
     expect(access.serverIds(member, 'viewServer')).toEqual([])
     access.update(principal(ids.admin, 'administrator'), ids.one, ids.member, {
-      ...fullSet(), viewLogs: false, sendConsoleCommands: false, controlLifecycle: false, viewPlayers: false,
+      ...fullSet(), viewLogs: false, sendConsoleCommands: false, controlLifecycle: false, startServer: false, stopServer: false, restartServer: false, viewPlayers: false,
       moderatePlayers: false, viewMods: false, manageMods: false, viewFiles: false, manageFiles: false,
       viewSettings: false, manageSettings: false, viewWorlds: false, viewBackups: false, createBackups: false,
     })

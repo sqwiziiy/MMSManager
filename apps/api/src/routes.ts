@@ -852,19 +852,19 @@ export async function createApiApp(options: {
     const params = parse(localServerIdSchema, request.params)
     return serverConsoleSessionsResponseSchema.parse({ sessions: await processes.consoleSessions(params.serverId) })
   })
-  app.post('/api/v1/admin/servers/:serverId/start', { preHandler: requireServerCapability('controlLifecycle', true) }, async (request, reply) => {
+  app.post('/api/v1/admin/servers/:serverId/start', { preHandler: requireServerCapability('startServer', true) }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
     const runtime = await processes.start(params.serverId, request.principal!.userId)
     serverStatus.invalidate(params.serverId)
     return reply.code(202).send(serverRuntimeResultSchema.parse({ runtime }))
   })
-  app.post('/api/v1/admin/servers/:serverId/stop', { preHandler: requireServerCapability('controlLifecycle', true) }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/stop', { preHandler: requireServerCapability('stopServer', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const runtime = await processes.stop(params.serverId, request.principal!.userId)
     serverStatus.invalidate(params.serverId)
     return serverRuntimeResultSchema.parse({ runtime })
   })
-  app.post('/api/v1/admin/servers/:serverId/restart', { preHandler: requireServerCapability('controlLifecycle', true) }, async (request) => {
+  app.post('/api/v1/admin/servers/:serverId/restart', { preHandler: requireServerCapability('restartServer', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const runtime = await processes.restart(params.serverId, request.principal!.userId)
     serverStatus.invalidate(params.serverId)
@@ -874,7 +874,7 @@ export async function createApiApp(options: {
     const params = parse(localServerIdSchema, request.params)
     return serverRuntimeResultSchema.parse({ runtime: await processes.confirmStopped(params.serverId, request.principal!.userId) })
   })
-  app.post('/api/v1/admin/servers/:serverId/console', { preHandler: requireServerCapability('sendConsoleCommands', true) }, async (request, reply) => {
+  app.post('/api/v1/admin/servers/:serverId/console', { preHandler: requireAdminMutation }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverCommandSchema, request.body)
     await processes.sendCommand(params.serverId, request.principal!.userId, input.command)

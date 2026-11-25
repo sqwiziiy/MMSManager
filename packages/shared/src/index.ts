@@ -397,6 +397,9 @@ export const serverAccessPermissionsSchema = z.object({
   viewLogs: z.boolean(),
   sendConsoleCommands: z.boolean(),
   controlLifecycle: z.boolean(),
+  startServer: z.boolean(),
+  stopServer: z.boolean(),
+  restartServer: z.boolean(),
   viewPlayers: z.boolean(),
   moderatePlayers: z.boolean(),
   viewMods: z.boolean(),
@@ -421,6 +424,10 @@ export const serverAccessGrantUserSchema = z.object({
 }).strict()
 export const serverAccessAdminResultSchema = z.object({ users: z.array(serverAccessGrantUserSchema).max(500) }).strict()
 export const serverAccessUpdateSchema = z.object({ userId: z.string().uuid(), permissions: serverAccessPermissionsSchema }).strict()
+  .superRefine(({ permissions }, context) => {
+    if (permissions.sendConsoleCommands) context.addIssue({ code: 'custom', path: ['permissions', 'sendConsoleCommands'], message: 'Unrestricted console commands are Administrator-only.' })
+    if (permissions.controlLifecycle) context.addIssue({ code: 'custom', path: ['permissions', 'controlLifecycle'], message: 'Use the individual lifecycle grants.' })
+  })
 export const serverAccessSelfResultSchema = z.object({
   administrator: z.boolean(), permissions: serverAccessPermissionsSchema,
 }).strict()

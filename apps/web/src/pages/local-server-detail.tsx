@@ -140,10 +140,11 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   const statusTone = status === 'running' ? 'good' : status === 'crashed' || status === 'error' ? 'danger' : status === 'external/unmanaged' ? 'warn' : 'neutral'
   const isManaged = server.source === 'created' && server.managed
   const hasPermission = (capability: keyof ServerAccessPermissions) => isAdmin || permissions?.[capability] === true
-  const canControlLifecycle = hasPermission('controlLifecycle')
-  const canStart = canControlLifecycle && isManaged && ['stopped', 'crashed', 'error'].includes(status) && server.eula === 'accepted' && Boolean(server.jarName && server.javaMajor)
-  const canStop = canControlLifecycle && isManaged && ['running', 'starting'].includes(status)
-  const canRestart = canControlLifecycle && isManaged && status === 'running'
+  const canStartState = isManaged && ['stopped', 'crashed', 'error'].includes(status)
+  const canStart = hasPermission('startServer') && canStartState && server.eula === 'accepted' && Boolean(server.jarName && server.javaMajor)
+  const canStopState = isManaged && ['running', 'starting'].includes(status)
+  const canStop = hasPermission('stopServer') && canStopState
+  const canRestart = hasPermission('restartServer') && isManaged && status === 'running'
   const canConfirmStopped = isAdmin && isManaged && status === 'external/unmanaged'
   const canReadConsole = hasPermission('viewLogs') && isManaged && ['starting', 'running', 'stopping'].includes(status)
   const canReadPlayers = hasPermission('viewPlayers') && isManaged && status === 'running' && runtime?.ready === true
@@ -157,11 +158,10 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
       <div className="server-detail-identity"><span className="local-server-icon detail-server-icon"><Server size={19} /></span><div><div className="server-detail-title"><h1 data-no-translate>{displayName}</h1><Badge tone={statusTone}>{statusLabel(status)}</Badge></div><p>{server.software === 'unknown' ? 'Unknown software' : `${capitalize(server.software)}${server.version ? ` ${server.version}` : ''}`} <span>·</span> {server.port ? `Game port ${server.port}` : 'No game port detected'}</p></div></div>
       <div className="server-actions">
         {isAdmin && <Button kind="quiet" icon={PencilLine} onClick={() => { setNameDraft(displayName); setNameError(null); setNameDialogOpen(true) }}>Edit name</Button>}
-        {canControlLifecycle && (canStart ? <Button kind="primary" icon={Play} disabled={busy} onClick={() => void runAction('start')}>Start server</Button>
-          : canStop ? <Button kind="danger" icon={Square} disabled={busy} onClick={() => void runAction('stop')}>Stop server</Button>
-            : canConfirmStopped ? <Button icon={CircleCheck} disabled={busy} onClick={() => void runAction('confirm')}>Confirm it has stopped</Button>
-              : <Button disabled title={server.eula !== 'accepted' ? 'EULA acceptance is required' : 'This action is not available in the current state'}>{status === 'starting' ? 'Starting…' : status === 'stopping' ? 'Stopping…' : 'Start unavailable'}</Button>)}
-        <Button icon={RefreshCw} disabled={!canRestart || busy} onClick={() => void runAction('restart')}>{busy && status === 'running' ? 'Restarting…' : 'Restart'}</Button>
+        {isManaged && canStartState && <Button kind="primary" icon={Play} disabled={!canStart || busy} title={!hasPermission('startServer') ? 'Start permission has not been granted.' : server.eula !== 'accepted' ? 'EULA acceptance is required' : 'The server runtime is unavailable.'} onClick={() => void runAction('start')}>Start server</Button>}
+        {canStopState && <Button kind="danger" icon={Square} disabled={!canStop || busy} title={!hasPermission('stopServer') ? 'Stop permission has not been granted.' : undefined} onClick={() => void runAction('stop')}>Stop server</Button>}
+        {canConfirmStopped && <Button icon={CircleCheck} disabled={busy} onClick={() => void runAction('confirm')}>Confirm it has stopped</Button>}
+        {isManaged && <Button icon={RefreshCw} disabled={!canRestart || busy} title={status === 'running' && !hasPermission('restartServer') ? 'Restart permission has not been granted.' : undefined} onClick={() => void runAction('restart')}>{busy && status === 'running' ? 'Restarting…' : 'Restart'}</Button>}
       </div>
     </div>
     <div className="server-detail-tabs" role="navigation" aria-label={`${displayName} pages`}>
@@ -1073,13 +1073,19 @@ function ComingSoonDetail({ section, serverName }: { section: string; serverName
   return <div className="preview-section-layout"><Card className="preview-section-card"><div className="preview-section-header"><span className="preview-section-icon"><Icon size={20} /></span><div><h3>{sectionTitle(section)}</h3><p>This section is not available yet.</p></div><ComingSoon /></div><div className="preview-section-footer"><span>{serverName}</span><Link to="/servers">All servers <ChevronRight size={14} /></Link></div></Card></div>
 }
 
-const accessGroups: Array<{ title: string; permissions: Array<{ key: keyof ServerAccessPermissions; label: string; description: string }> }> = [
+type AccessPermissionItem = { key: keyof ServerAccessPermissions; label: string; description: string; adminOnly?: boolean }
+type AccessPermissionGroup = { title: string; permissions: AccessPermissionItem[] }
+const accessGroups: AccessPermissionGroup[] = [
   { title: 'Server visibility', permissions: [{ key: 'viewServer', label: 'View overview and status', description: 'See this server in lists and inspect its status.' }] },
   { title: 'Console and logs', permissions: [
     { key: 'viewLogs', label: 'View console and process logs', description: 'Read live output and retained process sessions.' },
-    { key: 'sendConsoleCommands', label: 'Send Minecraft console commands', description: 'Send commands to a ready panel-owned process.' },
+    { key: 'sendConsoleCommands', label: 'Unrestricted Minecraft console commands', description: 'Raw commands can bypass scoped permissions. Administrators only.', adminOnly: true },
   ] },
-  { title: 'Server lifecycle', permissions: [{ key: 'controlLifecycle', label: 'Start, stop and restart', description: 'Control an eligible panel-managed server process.' }] },
+  { title: 'Server lifecycle', permissions: [
+    { key: 'startServer', label: 'Start server', description: 'Start an eligible stopped managed server.' },
+    { key: 'stopServer', label: 'Stop server', description: 'Gracefully stop a running panel-owned process.' },
+    { key: 'restartServer', label: 'Restart server', description: 'Restart a running ready process; cannot start an offline server.' },
+  ] },
   { title: 'Players', permissions: [
     { key: 'viewPlayers', label: 'View player names and events', description: 'Read the owned process player list and player history.' },
     { key: 'moderatePlayers', label: 'Moderate players', description: 'Submit fixed kick, ban, whitelist and operator commands.' },
@@ -1107,6 +1113,23 @@ const accessDependencies: Partial<Record<keyof ServerAccessPermissions, keyof Se
 }
 const allAccessKeys = accessGroups.flatMap((group) => group.permissions.map((item) => item.key))
 function accessText(value: string) { return translateText(value, currentLocale()) }
+function applyPermissionChange(current: ServerAccessPermissions, key: keyof ServerAccessPermissions, checked: boolean): ServerAccessPermissions {
+  const next = { ...current, [key]: checked }
+  if (key === 'viewServer' && !checked) for (const field of allAccessKeys) next[field] = false
+  const parent = accessDependencies[key]
+  if (parent && checked) next[parent] = true
+  if (checked && key !== 'viewServer') next.viewServer = true
+  if (Object.values(accessDependencies).includes(key) && !checked) {
+    for (const [dependent, dependency] of Object.entries(accessDependencies) as Array<[keyof ServerAccessPermissions, keyof ServerAccessPermissions]>) if (dependency === key) next[dependent] = false
+  }
+  return next
+}
+
+function AccessGroupCheckbox({ checked, mixed, disabled, label, onChange }: { checked: boolean; mixed: boolean; disabled: boolean; label: string; onChange: (checked: boolean) => void }) {
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => { if (ref.current) ref.current.indeterminate = mixed }, [mixed])
+  return <input ref={ref} type="checkbox" aria-label={accessText(label)} aria-checked={mixed ? 'mixed' : checked} checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
+}
 
 function LocalAccessPolicy({ server, isAdmin, selfPermissions, accessError }: { server: LocalServerSummary; isAdmin: boolean; selfPermissions: ServerAccessPermissions | null; accessError: string | null }) {
   const [users, setUsers] = useState<ServerAccessGrantUser[]>([])
@@ -1114,6 +1137,7 @@ function LocalAccessPolicy({ server, isAdmin, selfPermissions, accessError }: { 
   const [draft, setDraft] = useState<ServerAccessPermissions | null>(null)
   const [loading, setLoading] = useState(isAdmin)
   const [saving, setSaving] = useState(false)
+  const [accessMode, setAccessMode] = useState<'basic' | 'advanced'>('basic')
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -1136,16 +1160,12 @@ function LocalAccessPolicy({ server, isAdmin, selfPermissions, accessError }: { 
   useEffect(() => { setNotice(null) }, [selectedId])
   const dirty = Boolean(selectedUser && draft && JSON.stringify(selectedUser.permissions) !== JSON.stringify(draft))
   function changePermission(key: keyof ServerAccessPermissions, checked: boolean) {
-    if (!draft) return
-    const next = { ...draft, [key]: checked }
-    if (key === 'viewServer' && !checked) for (const field of allAccessKeys) next[field] = false
-    const child = accessDependencies[key]
-    if (child && checked) next[child] = true
-    if (checked && key !== 'viewServer') next.viewServer = true
-    if (Object.values(accessDependencies).includes(key) && !checked) {
-      for (const [dependent, parent] of Object.entries(accessDependencies) as Array<[keyof ServerAccessPermissions, keyof ServerAccessPermissions]>) if (parent === key) next[dependent] = false
-    }
-    setDraft(next)
+    setDraft((current) => current ? applyPermissionChange(current, key, checked) : current)
+    setNotice(null)
+  }
+  function changePermissionGroup(group: AccessPermissionGroup, checked: boolean) {
+    const keys = group.permissions.filter((item) => !item.adminOnly).map((item) => item.key)
+    setDraft((current) => current ? keys.reduce((next, key) => applyPermissionChange(next, key, checked), current) : current)
     setNotice(null)
   }
   async function save() {
@@ -1173,13 +1193,27 @@ function LocalAccessPolicy({ server, isAdmin, selfPermissions, accessError }: { 
           : !users.some((user) => user.role === 'member') ? <div className="local-files-empty"><Users size={20} /><strong>{accessText('No Member accounts')}</strong><span>{accessText('Create a Member account in Users before assigning server access.')}</span></div>
             : selectedUser && draft ? <>
               <div className="access-selected-user"><div><strong>{selectedUser.displayName}</strong><span>@{selectedUser.username}</span></div><Badge tone={selectedUser.enabled ? 'good' : 'warn'}>{accessText(selectedUser.enabled ? 'Enabled' : 'Disabled')}</Badge></div>
-              <div className="access-permission-groups">{accessGroups.map((group) => <fieldset key={group.title} className="access-permission-group" disabled={!selectedUser.enabled || saving}><legend>{accessText(group.title)}</legend>{group.permissions.map(({ key, label, description }) => <label className="access-permission-row" key={key}><input type="checkbox" checked={draft[key]} disabled={!selectedUser.enabled || saving} onChange={(event) => changePermission(key, event.target.checked)} /><span><strong>{accessText(label)}</strong><small>{accessText(description)}</small></span></label>)}</fieldset>)}</div>
+              <div className="access-mode-switch" role="group" aria-label={accessText('Permission detail')}><button type="button" aria-pressed={accessMode === 'basic'} onClick={() => setAccessMode('basic')}>{accessText('Basic')}</button><button type="button" aria-pressed={accessMode === 'advanced'} onClick={() => setAccessMode('advanced')}>{accessText('Advanced')}</button></div>
+              <div className="access-permission-groups">{accessGroups.map((group) => {
+                const selectable = group.permissions.filter((item) => !item.adminOnly).map((item) => item.key)
+                const count = selectable.filter((key) => draft[key]).length
+                const all = selectable.length > 0 && count === selectable.length
+                const mixed = count > 0 && !all
+                const state = all ? 'All granted' : mixed ? 'Some granted' : 'None granted'
+                return <fieldset key={group.title} className="access-permission-group" disabled={!selectedUser.enabled || saving}><legend>{accessText(group.title)}</legend>
+                  {accessMode === 'basic' ? <label className="access-group-toggle"><AccessGroupCheckbox checked={all} mixed={mixed} disabled={!selectedUser.enabled || saving} label={group.title} onChange={(checked) => changePermissionGroup(group, checked)} /><span><strong>{accessText(group.title)}</strong><small>{accessText(state)}</small></span></label>
+                    : group.permissions.map(({ key, label, description, adminOnly }) => adminOnly
+                      ? <div className="access-permission-row access-admin-row" key={key}><LockKeyhole size={14} /><span><strong>{accessText(label)}</strong><small>{accessText(description)}</small></span><Badge tone="warn">{accessText('Administrator only')}</Badge></div>
+                      : <label className="access-permission-row" key={key}><input type="checkbox" checked={draft[key]} disabled={!selectedUser.enabled || saving} onChange={(event) => changePermission(key, event.target.checked)} /><span><strong>{accessText(label)}</strong><small>{accessText(description)}</small></span></label>)}
+                </fieldset>
+              })}</div>
+              {accessMode === 'basic' && <div className="access-admin-only"><LockKeyhole size={15} /><span>{accessText('Unrestricted console commands are Administrator-only because raw commands can bypass scoped permissions.')}</span></div>}
               <div className="access-admin-only"><LockKeyhole size={15} /><span>{accessText('Only Administrators can manage accounts, installations, runtime settings, schedules, backup restore and server deletion.')}</span></div>
               <div className="access-save-row"><span>{accessText('Changes are recorded in local audit history.')}</span><Button kind="primary" icon={saving ? RefreshCw : Check} disabled={!dirty || saving || !selectedUser.enabled} onClick={() => void save()}>{saving ? accessText('Saving…') : accessText('Save permissions')}</Button></div>
             </> : <div className="local-files-empty"><Users size={20} /><span>{accessText('Choose a Member account to review its access.')}</span></div>}
       </> : <>
         <SectionHeading title={accessText('Your server permissions')} description={accessText('Permission changes take effect immediately when an Administrator saves them.')} />
-        <div className="access-permission-groups access-self-groups">{accessGroups.map((group) => <section key={group.title} className="access-permission-group"><h4>{accessText(group.title)}</h4>{group.permissions.map(({ key, label, description }) => <div className="access-permission-row self" key={key}><span className={`access-permission-state ${visiblePermissions[key] ? 'granted' : ''}`}>{visiblePermissions[key] ? <Check size={14} /> : <LockKeyhole size={13} />}</span><span><strong>{accessText(label)}</strong><small>{accessText(description)}</small></span><Badge tone={visiblePermissions[key] ? 'good' : 'neutral'}>{accessText(visiblePermissions[key] ? 'Granted' : 'Not granted')}</Badge></div>)}</section>)}</div>
+        <div className="access-permission-groups access-self-groups">{accessGroups.map((group) => <section key={group.title} className="access-permission-group"><h4>{accessText(group.title)}</h4>{group.permissions.map(({ key, label, description, adminOnly }) => <div className="access-permission-row self" key={key}><span className={`access-permission-state ${visiblePermissions[key] ? 'granted' : ''}`}>{adminOnly ? <LockKeyhole size={13} /> : visiblePermissions[key] ? <Check size={14} /> : <LockKeyhole size={13} />}</span><span><strong>{accessText(label)}</strong><small>{accessText(description)}</small></span><Badge tone={adminOnly ? 'warn' : visiblePermissions[key] ? 'good' : 'neutral'}>{accessText(adminOnly ? 'Administrator only' : visiblePermissions[key] ? 'Granted' : 'Not granted')}</Badge></div>)}</section>)}</div>
         <div className="access-admin-only"><LockKeyhole size={15} /><span>{accessText('Only Administrators can manage accounts, installations, runtime settings, schedules, backup restore and server deletion.')}</span></div>
       </>}
     </Card>

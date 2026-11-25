@@ -1,5 +1,5 @@
 import { and, eq, isNull } from 'drizzle-orm'
-import { serverAccessPermissionsSchema, type ServerAccessPermissions } from '@mmsmanager/shared'
+import { serverAccessPermissionsSchema, serverAccessUpdateSchema, type ServerAccessPermissions } from '@mmsmanager/shared'
 import type { AppDatabase } from '../db/client.js'
 import { auditEvents, localServerEvents, localServers, serverAccessGrants, users } from '../db/schema.js'
 import type { SessionPrincipal } from './service.js'
@@ -13,7 +13,10 @@ const fullPermissions = (): ServerAccessPermissions => Object.fromEntries(permis
 
 function permissionsFromRow(row: Partial<ServerAccessPermissions> | null | undefined): ServerAccessPermissions {
   const values = noPermissions()
-  for (const field of permissionFields) values[field] = row?.[field] === true
+  for (const field of permissionFields) {
+    if (field === 'controlLifecycle' || field === 'sendConsoleCommands') continue
+    values[field] = row?.[field] === true
+  }
   return values
 }
 
@@ -77,7 +80,7 @@ export class ServerAccessService {
   }
 
   update(principal: SessionPrincipal, serverId: string, userId: string, input: ServerAccessPermissions): void {
-    const permissions = serverAccessPermissionsSchema.parse(input)
+    const permissions = serverAccessUpdateSchema.parse({ userId, permissions: input }).permissions
     const at = new Date(this.now()).toISOString()
     this.db.transaction((tx) => {
       const server = tx.select({ id: localServers.id }).from(localServers).where(eq(localServers.id, serverId)).get()

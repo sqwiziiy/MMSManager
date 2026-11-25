@@ -113,7 +113,7 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   consoleResponse.entries.forEach((entry) => consoleEntrySession.set(entry.id, currentConsoleSessionId))
   consoleSessionRows.push({ id: currentConsoleSessionId, startedAt: now, endedAt: runtimeStatus === 'running' ? null : now, outcome: runtimeStatus === 'running' ? 'running' : 'stopped', entryCount: consoleResponse.entries.length, oldestEntryId: 1, latestEntryId: 42, live: runtimeStatus === 'running' })
   await page.route('**/api/v1/servers', (route) => route.fulfill({ json: { servers: [server] } }))
-  const allAccess = { viewServer: true, viewLogs: true, sendConsoleCommands: true, controlLifecycle: true, viewPlayers: true, moderatePlayers: true, viewMods: true, manageMods: true, viewFiles: true, manageFiles: true, viewSettings: true, manageSettings: true, viewWorlds: true, viewBackups: true, createBackups: true }
+  const allAccess = { viewServer: true, viewLogs: true, sendConsoleCommands: false, controlLifecycle: false, startServer: true, stopServer: true, restartServer: true, viewPlayers: true, moderatePlayers: true, viewMods: true, manageMods: true, viewFiles: true, manageFiles: true, viewSettings: true, manageSettings: true, viewWorlds: true, viewBackups: true, createBackups: true }
   await page.route(`**/api/v1/servers/${serverId}/access`, (route) => route.fulfill({ json: { administrator: true, permissions: allAccess } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/access`, (route) => route.fulfill({ json: { users: [] } }))
   await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [{ ...server, directory: '/tmp/mmsmanager-e2e/local-fixture', javaPath: '/tmp/fake-java' }], managedRoot: '/tmp/mmsmanager-e2e/servers', importRoots: ['/tmp/mmsmanager-e2e/servers'] } }))
@@ -679,7 +679,7 @@ test('R8 administrators can grant server permissions with dependent access enabl
   await expect(page.locator('.account-users-table .data-table-row').filter({ hasText: '@r8-member' })).toBeVisible()
   const { serverId } = await mockLocalServer(page, 'stopped')
   const allCapabilities = {
-    viewServer: true, viewLogs: true, sendConsoleCommands: true, controlLifecycle: true, viewPlayers: true,
+    viewServer: true, viewLogs: true, sendConsoleCommands: false, controlLifecycle: false, startServer: true, stopServer: true, restartServer: true, viewPlayers: true,
     moderatePlayers: true, viewMods: true, manageMods: true, viewFiles: true, manageFiles: true,
     viewSettings: true, manageSettings: true, viewWorlds: true, viewBackups: true, createBackups: true,
   }
@@ -698,10 +698,28 @@ test('R8 administrators can grant server permissions with dependent access enabl
   await page.setViewportSize({ width: 1280, height: 960 })
   await page.goto(`/servers/${serverId}/access`)
   await expect(page.getByRole('heading', { name: 'Access policy' })).toBeVisible()
+  const backupsGroup = page.getByRole('checkbox', { name: 'Backups' })
+  await expect(backupsGroup).not.toBeChecked()
+  await page.getByRole('button', { name: 'Advanced' }).click()
   const viewBackups = page.getByRole('checkbox', { name: /View and download backups/ })
   const createBackups = page.getByRole('checkbox', { name: /Create backups/ })
   await createBackups.check()
   await expect(viewBackups).toBeChecked()
+  await page.getByRole('button', { name: 'Basic' }).click()
+  await expect(backupsGroup).toBeChecked()
+  await page.getByRole('button', { name: 'Advanced' }).click()
+  await expect(viewBackups).toBeChecked()
+  await expect(createBackups).toBeChecked()
+  await createBackups.uncheck()
+  await page.getByRole('button', { name: 'Basic' }).click()
+  await expect(backupsGroup).toHaveAttribute('aria-checked', 'mixed')
+  await backupsGroup.check()
+  await expect(backupsGroup).toBeChecked()
+  await page.getByRole('button', { name: 'Advanced' }).click()
+  await expect(viewBackups).toBeChecked()
+  await expect(createBackups).toBeChecked()
+  await expect(page.getByText('Unrestricted Minecraft console commands', { exact: true })).toHaveCount(1)
+  await expect(page.getByText('Administrator only', { exact: true }).first()).toBeVisible()
   await expect(page.getByRole('button', { name: 'Save permissions' })).toBeEnabled()
   await page.getByRole('button', { name: 'Save permissions' }).click()
   await expect(page.getByText('Permissions saved and active immediately.')).toBeVisible()
@@ -717,7 +735,15 @@ test('R8 administrators can grant server permissions with dependent access enabl
   await expect(page.getByRole('heading', { name: 'Правила доступа' }).first()).toBeVisible()
   await expect(page.getByText('Доступ к серверу', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Сохранить права' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Базовый' })).toBeVisible()
+  await page.getByRole('button', { name: 'Расширенный' }).click()
+  await expect(page.getByText('Неограниченные команды консоли Minecraft', { exact: true })).toBeVisible()
+  await expect(page.getByText('Только администраторам', { exact: true }).first()).toBeVisible()
   await page.screenshot({ path: screenshotPath('r8-access-admin-ru-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'R8 Access policy at 390px')
+  await page.screenshot({ path: screenshotPath('r8-access-admin-ru-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 1280, height: 960 })
   await page.goto('/settings')
   await page.getByRole('button', { name: 'Язык и оформление' }).click()
   appearance = page.locator('form.appearance-form')

@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { eq } from 'drizzle-orm'
 import { openDatabase } from './client.js'
-import { localServerConsoleEntries, machineSamples, machines, serverAccessGrants, users } from './schema.js'
+import { localServerConsoleEntries, localServers, machineSamples, machines, serverAccessGrants, users } from './schema.js'
 
 describe('additive database migrations', () => {
   let directory: string | null = null
@@ -54,7 +54,8 @@ describe('additive database migrations', () => {
     expect(opened.db.select().from(localServerConsoleEntries).where(eq(localServerConsoleEntries.serverId, serverId)).all()).toMatchObject([{ serverId, sessionId: null, message: 'Preserved legacy console fixture' }])
     expect(opened.db.select().from(serverAccessGrants).where(eq(serverAccessGrants.userId, memberId)).get()).toMatchObject({
       serverId, viewServer: true, viewLogs: true, viewPlayers: true, viewMods: true, sendConsoleCommands: false,
-      controlLifecycle: false, moderatePlayers: false, manageMods: false, viewFiles: false, manageFiles: false,
+      controlLifecycle: false, startServer: false, stopServer: false, restartServer: false,
+      moderatePlayers: false, manageMods: false, viewFiles: false, manageFiles: false,
       viewSettings: false, manageSettings: false, viewWorlds: false, viewBackups: false, createBackups: false,
     })
     expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'server_templates')).toBeTruthy()
@@ -75,5 +76,48 @@ describe('additive database migrations', () => {
     opened = await openDatabase({ path: databasePath })
     expect(opened.db.select().from(users).where(eq(users.id, userId)).get()?.passwordHash).toBe('fixture-only-preserved-hash')
     expect((await readdir(directory)).filter((name) => name.includes('.pre-migration-') && name.endsWith('.backup'))).toHaveLength(1)
+  })
+
+  it('maps an existing grouped lifecycle grant to all three actions and keeps unrelated grants', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'mmsmanager-access-migration-'))
+    const oldMigrations = join(directory, 'before-granular-access')
+    await mkdir(join(oldMigrations, 'meta'), { recursive: true })
+    const source = fileURLToPath(new URL('../../drizzle/', import.meta.url))
+    const journal = JSON.parse(await readFile(join(source, 'meta', '_journal.json'), 'utf8')) as { version: string; dialect: string; entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> }
+    const oldEntries = journal.entries.filter((entry) => entry.idx <= 17)
+    for (const entry of oldEntries) await copyFile(join(source, `${entry.tag}.sql`), join(oldMigrations, `${entry.tag}.sql`))
+    await writeFile(join(oldMigrations, 'meta', '_journal.json'), JSON.stringify({ version: journal.version, dialect: journal.dialect, entries: oldEntries }, null, 2))
+
+    const databasePath = join(directory, 'state.sqlite')
+    opened = await openDatabase({ path: databasePath, migrationsFolder: oldMigrations })
+    const adminId = randomUUID()
+    const memberId = randomUUID()
+    const serverId = randomUUID()
+    const at = '2026-11-25T11:00:00.000Z'
+    await opened.db.insert(users).values([
+      { id: adminId, username: 'legacy-admin', usernameKey: 'legacy-admin', displayName: 'Legacy Admin', role: 'administrator', passwordHash: 'fixture-admin-hash', createdAt: at, updatedAt: at, passwordChangedAt: at },
+      { id: memberId, username: 'legacy-member', usernameKey: 'legacy-member', displayName: 'Legacy Member', role: 'member', passwordHash: 'fixture-member-hash', createdAt: at, updatedAt: at, passwordChangedAt: at },
+    ])
+    await opened.db.insert(localServers).values({ id: serverId, name: 'Legacy grant fixture', directory: '/fixture/legacy-grant', source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath: null, javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: adminId, createdAt: at, updatedAt: at })
+    opened.native.prepare('INSERT INTO server_access_grants (server_id, user_id, view_server, view_logs, send_console_commands, control_lifecycle, view_players, moderate_players, view_mods, manage_mods, view_files, manage_files, view_settings, manage_settings, view_worlds, view_backups, create_backups, created_at, updated_at, updated_by) VALUES (?, ?, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ?, ?, ?)').run(serverId, memberId, at, at, adminId)
+    opened.native.close()
+    opened = null
+
+    opened = await openDatabase({ path: databasePath })
+    expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
+    expect(opened.native.pragma('foreign_key_check')).toEqual([])
+    expect(opened.db.select().from(serverAccessGrants).where(eq(serverAccessGrants.serverId, serverId)).get()).toMatchObject({
+      userId: memberId, viewServer: true, viewLogs: true, viewPlayers: true, viewFiles: true, viewBackups: true,
+      sendConsoleCommands: false, controlLifecycle: false, startServer: true, stopServer: true, restartServer: true,
+      moderatePlayers: false, manageFiles: false, manageMods: false, manageSettings: false, createBackups: false,
+      updatedBy: adminId, createdAt: at, updatedAt: at,
+    })
+    expect(opened.db.select().from(users).all()).toHaveLength(2)
+    expect(opened.db.select().from(localServers).all()).toHaveLength(1)
+    opened.native.close()
+    opened = null
+    opened = await openDatabase({ path: databasePath })
+    expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
+    expect(opened.db.select().from(serverAccessGrants).where(eq(serverAccessGrants.serverId, serverId)).get()).toMatchObject({ startServer: true, stopServer: true, restartServer: true })
   })
 })
