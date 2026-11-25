@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   Activity, AlertTriangle, Archive, ArrowDownToLine, Ban, Check, ChevronRight, CircleCheck, Clock3, Cpu, FilePlus2, FileText,
-  Folder, FolderPlus, Globe, HardDrive, Layers3, LockKeyhole, Package, PencilLine, Play, RefreshCw, RotateCcw, ScrollText,
+  Folder, FolderPlus, FolderUp, Globe, HardDrive, Layers3, LockKeyhole, Package, PencilLine, Play, RefreshCw, RotateCcw, ScrollText,
   Search, Send, Server, Settings2, Shield, Square, Terminal, Trash2, Upload, Users, Wifi,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
@@ -11,8 +11,10 @@ import type { LocalServerSummary, ServerConsoleEntry, ServerModEntry, ServerMods
 import {
   confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getServerConsole, getServerProperties, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, previewServerPropertiesRestore, restoreServerFileRecovery, restoreServerProperties, restoreTrashedServerFile, sendPlayerAction,
   sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer, updateServerProperties,
-  getServerMods, uploadServerMod, uploadServerFile, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
+  getServerMods, uploadServerMod, uploadServerFiles, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
 } from '../api/servers'
+import type { ServerFileUploadRequest } from '../api/servers'
+import { translateText } from '../i18n/catalog'
 import { useAuth } from '../state/use-auth'
 import { Badge, Button, Card, ComingSoon, SectionHeading } from '../components/ui'
 import { LocalServerBackups } from './local-server-backups'
@@ -492,12 +494,83 @@ function formatWorldSize(value: number): string {
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GiB`
 }
 
+type BrowserFileEntry = {
+  name: string
+  isFile: boolean
+  isDirectory: boolean
+  file?: (success: (file: File) => void, failure?: (error: DOMException) => void) => void
+  createReader?: () => { readEntries: (success: (entries: BrowserFileEntry[]) => void, failure?: (error: DOMException) => void) => void }
+}
+
+const uploadErrorText: Record<string, string> = {
+  BAD_REQUEST: 'The upload request is invalid.',
+  FILE_ALREADY_EXISTS: 'A file or folder with that path already exists. Nothing was overwritten.',
+  FILE_BATCH_EMPTY: 'Choose at least one file or folder.',
+  FILE_BATCH_LIMIT: 'The upload exceeds its file, folder or total size limit.',
+  FILE_BATCH_MISMATCH: 'The selected files did not match the upload list. No files were published.',
+  FILE_CONTENT_REJECTED: 'A text file is not valid UTF-8 or exceeds the text limit.',
+  FILE_MOUNT_CHECK_UNAVAILABLE: 'Filesystem boundaries could not be checked, so the upload was stopped.',
+  FILE_MOUNT_REJECTED: 'Uploads cannot cross a nested filesystem boundary.',
+  FILE_NAME_COLLISION: 'Two files or folders have names that collide. Nothing was overwritten.',
+  FILE_PATH_REJECTED: 'The upload contains an unsafe or too-deep folder path.',
+  FILE_PROTECTED: 'A selected path is protected. Use the dedicated server tools for that item.',
+  FILE_TOO_LARGE: 'A file exceeds the 64 MiB limit.',
+  FILE_UPLOAD_FAILED: 'The upload could not be completed. Refresh the folder and try again.',
+  SERVER_NOT_PANEL_MANAGED: 'Files can only be uploaded to servers managed by MMSManager.',
+}
+
+function describeUploadFailure(issue: unknown): { message: string; path: string | null } {
+  const candidate = issue as { message?: unknown; code?: unknown }
+  const raw = typeof candidate?.message === 'string' ? candidate.message : 'The file upload could not be completed.'
+  const code = typeof candidate?.code === 'string' ? candidate.code : ''
+  const path = /(?:Upload failed for |File |Folder )“([^”]+)”/.exec(raw)?.[1]
+    ?? /“([^”]+)” already exists/.exec(raw)?.[1]
+    ?? null
+  const english = uploadErrorText[code] ?? raw
+  return { message: translateText(english, currentLocale()), path }
+}
+
+async function collectDroppedEntries(items: DataTransferItemList): Promise<{ files: { file: File; relativePath: string }[]; directories: string[] }> {
+  const files: { file: File; relativePath: string }[] = []
+  const directories: string[] = []
+  const visit = async (entry: BrowserFileEntry, parent: string): Promise<void> => {
+    const relativePath = parent ? `${parent}/${entry.name}` : entry.name
+    if (entry.isFile && entry.file) {
+      const file = await new Promise<File>((resolve, reject) => entry.file!(resolve, reject))
+      files.push({ file, relativePath })
+      return
+    }
+    if (!entry.isDirectory || !entry.createReader) return
+    directories.push(relativePath)
+    const reader = entry.createReader()
+    while (true) {
+      const batch = await new Promise<BrowserFileEntry[]>((resolve, reject) => reader.readEntries(resolve, reject))
+      if (!batch.length) break
+      for (const child of batch) await visit(child, relativePath)
+    }
+  }
+  const candidates = Array.from(items)
+  for (const item of candidates) {
+    const directoryItem = item as DataTransferItem & { webkitGetAsEntry?: () => BrowserFileEntry | null }
+    const entry = directoryItem.webkitGetAsEntry?.()
+    if (entry) await visit(entry, '')
+    else {
+      const file = item.getAsFile()
+      if (file) files.push({ file, relativePath: file.name })
+    }
+  }
+  return { files, directories }
+}
+
 function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; managed: boolean; runtimeStatus: string }) {
   const [path, setPath] = useState('')
   const [inventory, setInventory] = useState<ServerFileList | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<number | null>(null)
+  const [uploadError, setUploadError] = useState<{ message: string; path: string | null } | null>(null)
+  const [dragActive, setDragActive] = useState(false)
+  const [folderPickerSupported, setFolderPickerSupported] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [editor, setEditor] = useState<ServerFileRead | null>(null)
@@ -511,6 +584,17 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
   const [dialogText, setDialogText] = useState('')
   const [trashOpen, setTrashOpen] = useState(false)
   const [trash, setTrash] = useState<ServerFileTrash[]>([])
+  const uploadRequest = useRef<ServerFileUploadRequest | null>(null)
+  const fileInput = useRef<HTMLInputElement | null>(null)
+  const folderInput = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => () => uploadRequest.current?.cancel(), [])
+  useEffect(() => {
+    const input = folderInput.current as (HTMLInputElement & { webkitdirectory?: boolean }) | null
+    const supported = Boolean(input && 'webkitdirectory' in input)
+    if (input && supported) { input.webkitdirectory = true; input.setAttribute('directory', '') }
+    setFolderPickerSupported(supported)
+  }, [])
 
   const reload = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
@@ -584,14 +668,50 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
     finally { setBusy(false) }
   }
 
-  async function uploadFile(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) return
-    setBusy(true); setProgress(0); setError(null)
-    try { setInventory(await uploadServerFile(serverId, path, file, setProgress)); setNotice(`Uploaded ${file.name}.`) }
-    catch (issue) { setError(issue instanceof Error ? issue.message : 'The file could not be uploaded.') }
-    finally { setBusy(false); window.setTimeout(() => setProgress(null), 900) }
+  async function uploadSelection(files: { file: File; relativePath: string }[], directories: string[]) {
+    if (!files.length && !directories.length) return
+    setBusy(true); setProgress(0); setError(null); setNotice(null); setUploadError(null)
+    try {
+      const request = uploadServerFiles(serverId, path, files, directories, setProgress)
+      uploadRequest.current = request
+      setInventory(await request.promise)
+      setNotice('Upload complete.')
+    } catch (issue) {
+      setUploadError(describeUploadFailure(issue))
+    } finally {
+      uploadRequest.current = null
+      setBusy(false); setProgress(null); setDragActive(false)
+    }
+  }
+
+  function uploadPickedFiles(event: React.ChangeEvent<HTMLInputElement>, kind: 'files' | 'folder') {
+    const selected = Array.from(event.currentTarget.files ?? [])
+    event.currentTarget.value = ''
+    if (!selected.length) {
+      if (kind === 'folder') setUploadError({ message: translateText('This folder has no files. Use New folder to create an empty folder.', currentLocale()), path: null })
+      return
+    }
+    const files = selected.map((file) => ({ file, relativePath: kind === 'folder' ? file.webkitRelativePath || file.name : file.name }))
+    setUploadError(null)
+    void uploadSelection(files, [])
+  }
+
+  async function uploadDroppedFiles(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault(); setDragActive(false)
+    try {
+      const selected = await collectDroppedEntries(event.dataTransfer.items)
+      if (!selected.files.length && !selected.directories.length) {
+        setUploadError({ message: translateText('Drop files or folders to upload them.', currentLocale()), path: null })
+        return
+      }
+      void uploadSelection(selected.files, selected.directories)
+    } catch (issue) {
+      setUploadError(describeUploadFailure(issue))
+    }
+  }
+
+  function cancelUpload() {
+    uploadRequest.current?.cancel()
   }
 
   async function download(entry: ServerFileEntry) {
@@ -639,12 +759,16 @@ function LocalFiles({ serverId, managed, runtimeStatus }: { serverId: string; ma
   const changed = Boolean(editor && editorText !== editor.text)
   return <div className="local-files-layout">
     <Card className="local-files-card"><div className="local-files-header"><div><h3>Files</h3></div><div className="local-files-header-actions"><Button icon={RotateCcw} disabled={busy || loading} onClick={() => void reload()}>Refresh</Button><Button icon={Archive} onClick={() => void toggleTrash()}>{trashOpen ? 'Hide trash' : `Trash${inventory?.trashCount ? ` · ${inventory.trashCount}` : ''}`}</Button></div></div>
-      <div className="local-files-toolbar"><nav className="local-files-breadcrumbs" aria-label="Server folder path"><button type="button" onClick={() => setPath('')}>Server root</button>{inventory?.breadcrumbs.map((crumb) => <span key={crumb.path}><ChevronRight size={13} /><button type="button" onClick={() => setPath(crumb.path)}>{crumb.name}</button></span>)}</nav><div className="local-files-actions"><Button icon={FolderPlus} disabled={busy} onClick={() => { setDialog('folder'); setDialogName(''); setDialogText('') }}>New folder</Button><Button icon={FilePlus2} disabled={busy} onClick={() => { setDialog('file'); setDialogName(''); setDialogText('') }}>New text file</Button><label className="local-file-upload-button"><Upload size={15} />Upload<input type="file" accept=".txt,.log,.md,.json,.yaml,.yml,.toml,.xml,.csv,.cfg,.ini,.conf,.png,.jpg,.jpeg,.webp" disabled={busy} onChange={(event) => void uploadFile(event)} /></label></div></div>
-      {progress !== null && <div className="local-file-progress" role="status"><span>Uploading file</span><progress max={100} value={progress} /><strong>{progress}%</strong></div>}
-      {error && <div className="local-inline-error" role="alert">{error}<Button icon={RotateCcw} onClick={() => void reload()}>Retry</Button></div>}{notice && <div className="local-saved-note" role="status"><Check size={15} />{notice}</div>}
+      <div className="local-files-toolbar"><nav className="local-files-breadcrumbs" aria-label="Server folder path"><button type="button" onClick={() => setPath('')}>Server root</button>{inventory?.breadcrumbs.map((crumb) => <span key={crumb.path}><ChevronRight size={13} /><button type="button" onClick={() => setPath(crumb.path)}>{crumb.name}</button></span>)}</nav><div className="local-files-actions"><Button icon={FolderPlus} disabled={busy} onClick={() => { setDialog('folder'); setDialogName(''); setDialogText('') }}>New folder</Button><Button icon={FilePlus2} disabled={busy} onClick={() => { setDialog('file'); setDialogName(''); setDialogText('') }}>New text file</Button><label className="local-file-upload-button"><Upload size={15} /><span>Upload files</span><input ref={fileInput} data-testid="server-file-upload-input" type="file" multiple disabled={busy} onChange={(event) => uploadPickedFiles(event, 'files')} /></label><label className={`local-file-upload-button${folderPickerSupported ? '' : ' is-unavailable'}`} aria-disabled={!folderPickerSupported} title={folderPickerSupported ? undefined : 'Folder selection is not supported in this browser. Select multiple files instead.'}><FolderUp size={15} /><span>Upload folder</span><input ref={folderInput} data-testid="server-folder-upload-input" type="file" multiple disabled={busy || !folderPickerSupported} onChange={(event) => uploadPickedFiles(event, 'folder')} /></label></div></div>
+      {!folderPickerSupported && <p className="local-file-picker-note">Folder selection is not supported in this browser. Select multiple files instead.</p>}
+      {progress !== null && <div className="local-file-progress" role="status"><span>Uploading files</span><progress max={100} value={progress} /><strong>{progress}%</strong><Button icon={Square} disabled={progress >= 100} onClick={cancelUpload}>Cancel upload</Button></div>}
+      {error && <div className="local-inline-error" role="alert">{error}<Button icon={RotateCcw} onClick={() => void reload()}>Retry</Button></div>}
+      {uploadError && <div className="local-inline-error local-file-upload-error" role="alert"><span>{uploadError.message}</span>{uploadError.path && <code data-no-translate>{uploadError.path}</code>}<Button icon={RotateCcw} onClick={() => { setUploadError(null); void reload() }}>Refresh</Button></div>}
+      {notice && <div className="local-saved-note" role="status"><Check size={15} />{notice}</div>}
       {runtimeStatus === 'running' && <div className="local-file-warning"><RefreshCw size={15} /> The server is running. File edits may require a restart and should avoid files currently in use.</div>}
       <div className="local-file-list-head"><span>Name</span><span>Size</span><span>Last modified</span><span>Actions</span></div>
-      {loading ? <div className="local-files-empty"><span className="loading-pulse" /> Loading managed server files…</div> : !inventory ? <div className="local-files-empty"><AlertTriangle size={19} /><strong>Folder unavailable</strong><span>{error ?? 'The server directory could not be read.'}</span></div> : <div className="local-file-list">
+      {loading ? <div className="local-files-empty"><span className="loading-pulse" /> Loading managed server files…</div> : !inventory ? <div className="local-files-empty"><AlertTriangle size={19} /><strong>Folder unavailable</strong><span>{error ?? 'The server directory could not be read.'}</span></div> : <div className={`local-file-list${dragActive ? ' is-drag-active' : ''}`} onDragEnter={(event) => { if (Array.from(event.dataTransfer.types).includes('Files')) setDragActive(true) }} onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes('Files')) { event.preventDefault(); setDragActive(true) } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragActive(false) }} onDrop={(event) => void uploadDroppedFiles(event)}>
+        {dragActive && <div className="local-file-drop-message" role="status">Drop files or folders to upload them.</div>}
         {path && <div className="local-file-row local-file-up"><div className="local-file-primary"><span className="local-file-icon"><Folder size={17} /></span><button type="button" onClick={() => setPath(parentPath)}>Parent folder</button></div><span>—</span><span>—</span><span /> </div>}
         {inventory.entries.map((entry) => <div className="local-file-row" key={entry.path}>
           <div className="local-file-primary"><span className={`local-file-icon ${entry.kind === 'folder' ? 'is-folder' : ''}`}>{entry.kind === 'folder' ? <Folder size={17} /> : entry.contentState === 'protected' || entry.contentState === 'unsafe' ? <LockKeyhole size={16} /> : <FileText size={16} />}</span>

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { chmod, link, lstat, mkdir, open, readdir, realpath, rename, rm, unlink } from 'node:fs/promises'
+import { chmod, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, unlink } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { desc, eq, isNull, and } from 'drizzle-orm'
 import type { AppDatabase } from '../db/client.js'
@@ -8,15 +8,23 @@ import { localServerEvents, localServerFileRecoveries, localServerFileTrash, loc
 import type { ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
 import type { ServerProcessManager } from './processes.js'
+import { longestMountForPath, parseLinuxMountInfo } from '../machine/storage-volumes.js'
 
-export const MAX_SERVER_FILE_UPLOAD_BYTES = 16 * 1024 * 1024
+export const MAX_SERVER_FILE_UPLOAD_BYTES = 64 * 1024 * 1024
+export const MAX_SERVER_FILE_UPLOAD_BATCH_BYTES = 256 * 1024 * 1024
+export const MAX_SERVER_FILE_UPLOAD_COUNT = 100
+export const MAX_SERVER_FILE_UPLOAD_DIRECTORY_COUNT = 200
+export const MAX_SERVER_FILE_UPLOAD_PATH_DEPTH = 16
+export const MAX_SERVER_FILE_UPLOAD_MANIFEST_BYTES = 64 * 1024
 export const MAX_SERVER_FILE_DOWNLOAD_BYTES = 16 * 1024 * 1024
 export const MAX_SERVER_FILE_TEXT_BYTES = 512 * 1024
 const MAX_DIRECTORY_ENTRIES = 500
 const TEXT_EXTENSIONS = new Set(['.txt', '.log', '.md', '.json', '.yaml', '.yml', '.toml', '.xml', '.csv', '.cfg', '.ini', '.conf'])
-const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp'])
-const SCRIPT_EXTENSIONS = new Set(['.sh', '.bash', '.zsh', '.fish', '.bat', '.cmd', '.ps1', '.exe', '.dll', '.so', '.dylib', '.jar', '.class', '.py', '.js', '.ts', '.mjs', '.cjs'])
+const SCRIPT_EXTENSIONS = new Set(['.sh', '.bash', '.zsh', '.fish', '.bat', '.cmd', '.ps1', '.exe', '.dll', '.so', '.dylib', '.jar', '.class', '.py', '.js', '.ts', '.mjs', '.cjs', '.mcfunction', '.lua', '.wasm'])
 const WORLD_NAMES = new Set(['world', 'world_nether', 'world_the_end'])
+
+export type ServerFileUploadManifest = { files: string[]; directories: string[] }
+export type ServerFileUploadPart = { relativePath: string; stream: AsyncIterable<Buffer | string>; truncated: () => boolean }
 
 export class ServerFilesError extends Error {
   constructor(readonly code: string, message: string) { super(message) }
@@ -46,18 +54,21 @@ function safeParts(path: string, allowRoot = false): string[] {
   }
   if (!path && allowRoot) return []
   const parts = path.split('/')
-  if (!parts.length || parts.some((part) => !part || part === '.' || part === '..' || part.length > 255 || part.includes(':') || containsPathControl(part) || /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(part))) {
+  if (!parts.length || parts.length > MAX_SERVER_FILE_UPLOAD_PATH_DEPTH || parts.some((part) => !part || part === '.' || part === '..' || part.length > 255 || part.includes(':') || containsPathControl(part) || /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(part))) {
     throw new ServerFilesError('FILE_PATH_REJECTED', 'The server-relative path contains an invalid segment.')
   }
   if (parts.some((part) => part.toLowerCase() === '.mmsmanager')) {
     throw new ServerFilesError('FILE_PATH_PROTECTED', 'MMSManager private operation files are not exposed in the file browser.')
   }
+  if (parts.some((part) => /^\.mms-file-[0-9a-f-]+\.tmp$/i.test(part))) throw new ServerFilesError('FILE_PATH_PROTECTED', 'Temporary file-manager paths are reserved for safe writes.')
   return parts
 }
 function protectedReason(parts: string[], worldFolders: ReadonlySet<string> = WORLD_NAMES): string | null {
   const lower = parts.map((part) => part.toLowerCase())
   const name = lower.at(-1) ?? ''
+  if (lower.some((part) => part === '.git' || part === '.ssh' || part === '.config' || part.startsWith('.mms'))) return 'Private application paths are protected from the file manager.'
   if (lower.some((part) => part === 'mods' || part === 'plugins')) return 'Use the Mods page to manage loader artifacts.'
+  if (lower.some((part) => part === 'datapacks')) return 'Datapack scripts and world data are protected from generic file uploads.'
   if (lower.some((part) => worldFolders.has(part))) return 'World data is protected until the world backup workflow is available.'
   if (name === 'server.properties') return 'Use the typed Properties editor for this configuration file.'
   if (name === 'server.jar' || SCRIPT_EXTENSIONS.has(extname(name))) return 'Executable server assets are protected from file-manager changes.'
@@ -91,7 +102,13 @@ export class ServerFileService {
   private readonly recoveryRoot: string
   private readonly mutations = new Set<string>()
 
-  constructor(private readonly db: AppDatabase, private readonly servers: ServerRegistry, private readonly processes: ServerProcessManager, private readonly now: () => number = Date.now) {
+  constructor(
+    private readonly db: AppDatabase,
+    private readonly servers: ServerRegistry,
+    private readonly processes: ServerProcessManager,
+    private readonly now: () => number = Date.now,
+    private readonly readMountInfo: () => Promise<string> = () => readFile('/proc/self/mountinfo', 'utf8'),
+  ) {
     this.recoveryRoot = join(servers.dataDirectory, 'server-file-recoveries')
   }
 
@@ -160,58 +177,253 @@ export class ServerFileService {
   }
 
   async upload(serverId: string, actorUserId: string, directoryPath: string, name: string, stream: AsyncIterable<Buffer | string>, truncated: () => boolean): Promise<ServerFileList> {
+    return this.uploadBatch(serverId, actorUserId, directoryPath, { files: [name], directories: [] }, (async function* () {
+      yield { relativePath: name, stream, truncated }
+    })())
+  }
+
+  async uploadBatch(
+    serverId: string,
+    actorUserId: string,
+    directoryPath: string,
+    manifest: ServerFileUploadManifest,
+    uploads: AsyncIterable<ServerFileUploadPart>,
+  ): Promise<ServerFileList> {
     return this.withMutation(serverId, async () => {
       const root = await this.serverRoot(serverId)
-      const directoryParts = safeParts(directoryPath, true)
-      const nameParts = safeParts(name)
-      if (nameParts.length !== 1) throw new ServerFilesError('FILE_NAME_REJECTED', 'Upload a file with a single safe filename.')
-      const fileName = nameParts[0]!
-      const extension = extname(fileName).toLowerCase()
-      const reason = this.protectedReason(serverId, [...directoryParts, fileName])
-      if (reason) throw new ServerFilesError('FILE_PROTECTED', reason)
-      if (!TEXT_EXTENSIONS.has(extension) && !IMAGE_EXTENSIONS.has(extension)) throw new ServerFilesError('FILE_TYPE_REJECTED', 'Uploads support UTF-8 text and common image files only.')
-      const directory = await this.resolveExisting(root, directoryParts, 'directory')
-      const target = join(directory.absolute, fileName)
-      if (await pathExists(target)) throw new ServerFilesError('FILE_ALREADY_EXISTS', 'A file with that name already exists. Rename it or move it first.')
-      const temporary = join(directory.absolute, `.mms-file-${randomUUID()}.tmp`)
-      const handle = await open(temporary, 'wx', 0o600)
-      let total = 0
-      const chunks: Buffer[] = []
-      let imageHeader = Buffer.alloc(0)
-      try {
-        for await (const value of stream) {
-          const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
-          total += chunk.byteLength
-          if (total > MAX_SERVER_FILE_UPLOAD_BYTES) throw new ServerFilesError('FILE_TOO_LARGE', 'Uploads are limited to 16 MiB.')
-          if (TEXT_EXTENSIONS.has(extension)) chunks.push(chunk)
-          else if (imageHeader.byteLength < 16) imageHeader = Buffer.concat([imageHeader, chunk.subarray(0, 16 - imageHeader.byteLength)])
-          await handle.write(chunk)
-        }
-        if (truncated()) throw new ServerFilesError('FILE_TOO_LARGE', 'The upload exceeded its size limit.')
-        if (TEXT_EXTENSIONS.has(extension)) {
-          const content = Buffer.concat(chunks, total)
-          if (content.byteLength > MAX_SERVER_FILE_TEXT_BYTES || decodeText(content) === null) throw new ServerFilesError('FILE_CONTENT_REJECTED', 'Text uploads must be valid UTF-8 and no larger than 512 KiB.')
-        } else if (!validImageHeader(extension, imageHeader)) {
-          throw new ServerFilesError('FILE_CONTENT_REJECTED', 'The image bytes do not match the selected PNG, JPEG or WebP extension.')
-        }
-        await handle.sync()
-      } catch (error) {
-        await handle.close()
-        await rm(temporary, { force: true })
-        throw error
+      const baseParts = safeParts(directoryPath, true)
+      const baseReason = this.protectedReason(serverId, baseParts)
+      if (baseReason) throw new ServerFilesError('FILE_PROTECTED', baseReason)
+      const base = await this.resolveExisting(root, baseParts, 'directory')
+      if (!Array.isArray(manifest.files) || !Array.isArray(manifest.directories)
+        || manifest.files.length > MAX_SERVER_FILE_UPLOAD_COUNT
+        || manifest.directories.length > MAX_SERVER_FILE_UPLOAD_DIRECTORY_COUNT
+        || manifest.files.some((path) => typeof path !== 'string')
+        || manifest.directories.some((path) => typeof path !== 'string')) {
+        throw new ServerFilesError('FILE_BATCH_LIMIT', 'The upload exceeds the file or folder count limit.')
       }
-      await handle.close()
-      try {
-        await this.assertSameDirectory(root, directoryParts, directory.stat)
-        await link(temporary, target)
-        await unlink(temporary)
-        this.audit(serverId, actorUserId, 'server-file-uploaded', { path: [...directoryParts, fileName].join('/'), sizeBytes: total })
-      } catch (error) {
-        await rm(temporary, { force: true })
-        if (fsError(error) && error.code === 'EEXIST') throw new ServerFilesError('FILE_ALREADY_EXISTS', 'A file with that name already exists.')
-        throw error
+      if (manifest.files.length === 0 && manifest.directories.length === 0) throw new ServerFilesError('FILE_BATCH_EMPTY', 'Choose at least one file or folder.')
+
+      const fileParts = manifest.files.map((path) => safeParts(path))
+      const requestedDirectoryParts = manifest.directories.map((path) => safeParts(path))
+      const filePaths = fileParts.map((parts) => parts.join('/'))
+      const directoryPaths = new Map<string, string[]>()
+      const portablePath = (value: string) => value.normalize('NFC').toLowerCase()
+      const portableDirectories = new Map<string, string>()
+      const fileKeys = new Set<string>()
+      for (const parts of [...fileParts, ...requestedDirectoryParts]) {
+        if (baseParts.length + parts.length > MAX_SERVER_FILE_UPLOAD_PATH_DEPTH) throw new ServerFilesError('FILE_PATH_REJECTED', 'The upload folder hierarchy is deeper than the allowed limit.')
       }
-      return this.list(serverId, directoryParts.join('/'))
+      for (const parts of requestedDirectoryParts) {
+        for (let depth = 1; depth <= parts.length; depth += 1) {
+          const path = parts.slice(0, depth).join('/')
+          const key = portablePath(path)
+          const previous = portableDirectories.get(key)
+          if (previous && previous !== path) throw new ServerFilesError('FILE_NAME_COLLISION', 'Folder names in this upload collide after Unicode or case normalization.')
+          portableDirectories.set(key, path)
+          directoryPaths.set(path, parts.slice(0, depth))
+        }
+      }
+      for (const parts of fileParts) {
+        const path = parts.join('/')
+        const key = portablePath(path)
+        if (fileKeys.has(key)) throw new ServerFilesError('FILE_NAME_COLLISION', `Two uploaded files use the same path: ${path}.`)
+        if (portableDirectories.has(key)) throw new ServerFilesError('FILE_NAME_COLLISION', `A file and folder use the same path: ${path}.`)
+        fileKeys.add(key)
+        for (let depth = 1; depth < parts.length; depth += 1) {
+          const folderPath = parts.slice(0, depth).join('/')
+          const folderKey = portablePath(folderPath)
+          const previous = portableDirectories.get(folderKey)
+          if (previous && previous !== folderPath) throw new ServerFilesError('FILE_NAME_COLLISION', `Folder paths collide after Unicode or case normalization: ${folderPath}.`)
+          portableDirectories.set(folderKey, folderPath)
+          directoryPaths.set(folderPath, parts.slice(0, depth))
+        }
+      }
+      for (const key of fileKeys) {
+        if (portableDirectories.has(key)) throw new ServerFilesError('FILE_NAME_COLLISION', 'A file and folder use the same path after Unicode or case normalization.')
+      }
+      if (directoryPaths.size > MAX_SERVER_FILE_UPLOAD_DIRECTORY_COUNT) throw new ServerFilesError('FILE_BATCH_LIMIT', 'The upload exceeds the folder count limit.')
+      for (const path of directoryPaths.keys()) {
+        const reason = this.protectedReason(serverId, [...baseParts, ...directoryPaths.get(path)!])
+        if (reason) throw new ServerFilesError('FILE_PROTECTED', `Folder “${path}” is protected. ${reason}`)
+      }
+      for (let index = 0; index < fileParts.length; index += 1) {
+        const reason = this.protectedReason(serverId, [...baseParts, ...fileParts[index]!])
+        if (reason) throw new ServerFilesError('FILE_PROTECTED', `File “${filePaths[index]}” is protected. ${reason}`)
+      }
+
+      let mountInfo: string
+      try { mountInfo = await this.readMountInfo() }
+      catch { throw new ServerFilesError('FILE_MOUNT_CHECK_UNAVAILABLE', 'Uploads are unavailable because filesystem boundaries could not be verified.') }
+      const mounts = parseLinuxMountInfo(mountInfo)
+      const rootMount = longestMountForPath(root, mounts)
+      if (!rootMount) throw new ServerFilesError('FILE_MOUNT_CHECK_UNAVAILABLE', 'Uploads are unavailable because filesystem boundaries could not be verified.')
+      const assertMount = async (parts: string[]) => {
+        let currentInfo: string
+        try { currentInfo = await this.readMountInfo() }
+        catch { throw new ServerFilesError('FILE_MOUNT_CHECK_UNAVAILABLE', 'Uploads are unavailable because filesystem boundaries could not be verified.') }
+        const currentMounts = parseLinuxMountInfo(currentInfo)
+        const currentRootMount = longestMountForPath(root, currentMounts)
+        const targetMount = longestMountForPath(join(root, ...parts), currentMounts)
+        if (!currentRootMount || !targetMount) throw new ServerFilesError('FILE_MOUNT_CHECK_UNAVAILABLE', 'Uploads are unavailable because filesystem boundaries could not be verified.')
+        if (targetMount.mountPoint !== currentRootMount.mountPoint) throw new ServerFilesError('FILE_MOUNT_REJECTED', 'Uploads cannot cross a nested filesystem boundary.')
+      }
+      await assertMount(baseParts)
+
+      const createdDirectories: string[][] = []
+      const directoryStats = new Map<string, Awaited<ReturnType<typeof lstat>>>([['', base.stat]])
+      const staged: { relativePath: string; absolutePath: string; temporaryPath: string; parentParts: string[]; parentStat: Awaited<ReturnType<typeof lstat>>; sizeBytes: number; tempStat?: Awaited<ReturnType<typeof lstat>> }[] = []
+      const published: { absolutePath: string; dev: number; ino: number }[] = []
+      let totalBytes = 0
+      let committed = false
+      let currentPath: string | null = null
+      let currentUploadStream: AsyncIterable<Buffer | string> | null = null
+      const cleanupDirectories = async () => {
+        for (const parts of [...createdDirectories].reverse()) {
+          try { await rmdir(join(root, ...parts)) } catch { /* only empty directories created by this batch are removed */ }
+        }
+      }
+      try {
+        for (const [relativePath, parts] of [...directoryPaths.entries()].sort((a, b) => a[1].length - b[1].length)) {
+          const fullParts = [...baseParts, ...parts]
+          currentPath = relativePath
+          await assertMount(fullParts)
+          const absolutePath = join(root, ...fullParts)
+          let stat: Awaited<ReturnType<typeof lstat>> | null = null
+          try { stat = (await this.resolveExisting(root, fullParts, 'directory')).stat }
+          catch (error) {
+            if (!(error instanceof ServerFilesError) || error.code !== 'FILE_NOT_FOUND') throw error
+          }
+          if (stat) {
+            directoryStats.set(relativePath, stat)
+            continue
+          }
+          const parentParts = fullParts.slice(0, -1)
+          const parentPath = parts.slice(0, -1).join('/')
+          const parentStat = directoryStats.get(parentPath)
+          if (!parentStat) throw new ServerFilesError('FILE_NOT_DIRECTORY', `The parent folder for “${relativePath}” is unavailable.`)
+          await this.assertSameDirectory(root, parentParts, parentStat)
+          await assertMount(fullParts)
+          let madeDirectory = false
+          try { await mkdir(absolutePath, { mode: 0o700 }); madeDirectory = true }
+          catch (error) { if (!(fsError(error) && error.code === 'EEXIST')) throw error }
+          if (madeDirectory) createdDirectories.push(fullParts)
+          const created = await lstat(absolutePath)
+          const canonical = await realpath(absolutePath)
+          if (!created.isDirectory() || created.isSymbolicLink() || created.dev !== parentStat.dev || !within(root, canonical)) throw new ServerFilesError('FILE_UNSAFE', `The upload folder “${relativePath}” is not a safe managed directory.`)
+          await assertMount(fullParts)
+          directoryStats.set(relativePath, created)
+        }
+
+        for (const parts of fileParts) {
+          const relativePath = parts.join('/')
+          const fullParts = [...baseParts, ...parts]
+          currentPath = relativePath
+          await assertMount(fullParts)
+          if (await pathExists(join(root, ...fullParts))) throw new ServerFilesError('FILE_ALREADY_EXISTS', `“${relativePath}” already exists. Files are never overwritten.`)
+        }
+
+        let index = 0
+        for await (const upload of uploads) {
+          if (index >= fileParts.length) throw new ServerFilesError('FILE_BATCH_MISMATCH', 'The uploaded file list does not match its manifest.')
+          const parts = fileParts[index]!
+          const relativePath = filePaths[index]!
+          currentPath = relativePath
+          currentUploadStream = upload.stream
+          const actualParts = safeParts(upload.relativePath)
+          if (actualParts.join('/') !== relativePath) throw new ServerFilesError('FILE_BATCH_MISMATCH', `The selected file “${relativePath}” did not match the upload manifest.`)
+          const extension = extname(parts.at(-1) ?? '').toLowerCase()
+          const parentParts = [...baseParts, ...parts.slice(0, -1)]
+          const parentRelative = parts.slice(0, -1).join('/')
+          const parentStat = directoryStats.get(parentRelative)
+          if (!parentStat) throw new ServerFilesError('FILE_NOT_DIRECTORY', `The parent folder for “${relativePath}” is unavailable.`)
+          await this.assertSameDirectory(root, parentParts, parentStat)
+          await assertMount(parentParts)
+          const parentAbsolute = join(root, ...parentParts)
+          const target = join(parentAbsolute, parts.at(-1)!)
+          const temporary = join(parentAbsolute, `.mms-file-${randomUUID()}.tmp`)
+          const handle = await open(temporary, 'wx', 0o600)
+          const record: (typeof staged)[number] = { relativePath, absolutePath: target, temporaryPath: temporary, parentParts, parentStat, sizeBytes: 0 }
+          staged.push(record)
+          let fileBytes = 0
+          const textParts: Buffer[] | null = TEXT_EXTENSIONS.has(extension) ? [] : null
+          try {
+            for await (const value of upload.stream) {
+              const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
+              fileBytes += chunk.byteLength
+              totalBytes += chunk.byteLength
+              if (fileBytes > MAX_SERVER_FILE_UPLOAD_BYTES) throw new ServerFilesError('FILE_TOO_LARGE', `“${relativePath}” exceeds the 64 MiB per-file limit.`)
+              if (totalBytes > MAX_SERVER_FILE_UPLOAD_BATCH_BYTES) throw new ServerFilesError('FILE_BATCH_LIMIT', 'The upload exceeds the 256 MiB batch limit.')
+              if (textParts) {
+                if (fileBytes > MAX_SERVER_FILE_TEXT_BYTES) throw new ServerFilesError('FILE_CONTENT_REJECTED', `Text file “${relativePath}” exceeds the 512 KiB text limit.`)
+                textParts.push(chunk)
+              }
+              let offset = 0
+              while (offset < chunk.byteLength) {
+                const result = await handle.write(chunk, offset, chunk.byteLength - offset)
+                if (result.bytesWritten <= 0) throw new ServerFilesError('FILE_WRITE_FAILED', `The file “${relativePath}” could not be staged completely.`)
+                offset += result.bytesWritten
+              }
+            }
+            if (upload.truncated()) throw new ServerFilesError('FILE_TOO_LARGE', `“${relativePath}” exceeds the 64 MiB per-file limit.`)
+            if (textParts && decodeText(Buffer.concat(textParts, fileBytes)) === null) throw new ServerFilesError('FILE_CONTENT_REJECTED', `Text file “${relativePath}” must contain valid UTF-8.`)
+            await handle.sync()
+          } catch (error) {
+            try { for await (const chunk of upload.stream) void chunk } catch { /* interrupted upload stream */ }
+            throw error
+          } finally { await handle.close() }
+          record.sizeBytes = fileBytes
+          record.tempStat = await lstat(temporary)
+          if (!record.tempStat.isFile() || record.tempStat.isSymbolicLink() || record.tempStat.nlink !== 1) throw new ServerFilesError('FILE_UNSAFE', `The staged file “${relativePath}” is not a regular unlinked file.`)
+          currentUploadStream = null
+          index += 1
+        }
+        if (index !== fileParts.length) throw new ServerFilesError('FILE_BATCH_MISMATCH', 'The uploaded file list does not match its manifest.')
+
+        for (const record of staged) {
+          currentPath = record.relativePath
+          await assertMount(record.parentParts)
+          await this.assertSameDirectory(root, record.parentParts, record.parentStat)
+          try { await link(record.temporaryPath, record.absolutePath) }
+          catch (error) {
+            if (fsError(error) && error.code === 'EEXIST') throw new ServerFilesError('FILE_ALREADY_EXISTS', `“${record.relativePath}” already exists. Files are never overwritten.`)
+            throw error
+          }
+          const targetStat = await lstat(record.absolutePath)
+          if (!record.tempStat || targetStat.dev !== record.tempStat.dev || targetStat.ino !== record.tempStat.ino || targetStat.nlink !== 2) throw new ServerFilesError('FILE_CONFLICT', `The destination for “${record.relativePath}” changed during upload.`)
+          published.push({ absolutePath: record.absolutePath, dev: targetStat.dev, ino: targetStat.ino })
+        }
+
+        for (const record of staged) await unlink(record.temporaryPath)
+
+        this.audit(serverId, actorUserId, 'server-file-batch-uploaded', {
+          directory: baseParts.join('/'), fileCount: staged.length, directoryCount: directoryPaths.size, totalBytes,
+        })
+        const inventory = await this.list(serverId, baseParts.join('/'))
+        committed = true
+        return inventory
+      } catch (error) {
+        if (currentUploadStream) {
+          try { for await (const chunk of currentUploadStream) void chunk } catch { /* interrupted upload stream */ }
+          currentUploadStream = null
+        }
+        if (currentPath && error instanceof ServerFilesError && !error.message.includes(currentPath)) {
+          throw new ServerFilesError(error.code, `Upload failed for “${currentPath}”: ${error.message}`)
+        }
+        if (currentPath && !(error instanceof ServerFilesError)) throw new ServerFilesError('FILE_UPLOAD_FAILED', `Upload failed for “${currentPath}”. No incomplete files were published.`)
+        throw error
+      } finally {
+        if (!committed) {
+          for (const item of [...published].reverse()) {
+            try {
+              const current = await lstat(item.absolutePath)
+              if (current.isFile() && !current.isSymbolicLink() && current.dev === item.dev && current.ino === item.ino) await unlink(item.absolutePath)
+            } catch { /* leave a changed destination untouched */ }
+          }
+        }
+        for (const record of staged) await rm(record.temporaryPath, { force: true }).catch(() => undefined)
+        if (!committed) await cleanupDirectories()
+      }
     })
   }
 
@@ -637,10 +849,4 @@ async function readPrivateFile(path: string, maxBytes: number): Promise<{ bytes:
     if (bytes.byteLength > maxBytes) throw new ServerFilesError('FILE_RECOVERY_UNSAFE', 'The private recovery copy exceeded its size limit.')
     return { bytes }
   } finally { await handle.close() }
-}
-
-function validImageHeader(extension: string, bytes: Buffer): boolean {
-  if (extension === '.png') return bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-  if (extension === '.jpg' || extension === '.jpeg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-  return extension === '.webp' && bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
 }

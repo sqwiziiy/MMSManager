@@ -123,7 +123,11 @@ import { ServerProcessError, ServerProcessManager } from './servers/processes.js
 import { ServerPropertiesError, ServerPropertiesManager } from './servers/properties.js'
 import { ServerStatusError, ServerStatusService } from './servers/status.js'
 import { MAX_MOD_JAR_BYTES, ServerModsError, ServerModsService } from './servers/mods.js'
-import { MAX_SERVER_FILE_UPLOAD_BYTES, ServerFileService, ServerFilesError } from './servers/files.js'
+import {
+  MAX_SERVER_FILE_UPLOAD_BATCH_BYTES, MAX_SERVER_FILE_UPLOAD_BYTES, MAX_SERVER_FILE_UPLOAD_COUNT,
+  MAX_SERVER_FILE_UPLOAD_DIRECTORY_COUNT, MAX_SERVER_FILE_UPLOAD_MANIFEST_BYTES, ServerFileService,
+  ServerFilesError, type ServerFileUploadManifest,
+} from './servers/files.js'
 import { ServerWorldService, ServerWorldsError } from './servers/worlds.js'
 import { ServerHistoryService } from './servers/history.js'
 import { ServerBackupError, ServerBackupService } from './servers/backups.js'
@@ -316,7 +320,8 @@ export async function createApiApp(options: {
       const contentType = request.headers['content-type']?.toLowerCase() ?? ''
       const isAvatarUpload = request.url === '/api/v1/profile/avatar' && request.method === 'POST'
       const isModUpload = /^\/api\/v1\/admin\/servers\/[0-9a-f-]{36}\/mods$/.test(request.url) && request.method === 'POST'
-      const expectsMultipart = isAvatarUpload || isModUpload
+      const isFileUpload = /^\/api\/v1\/admin\/servers\/[0-9a-f-]{36}\/files\/upload(?:-batch)?(?:\?|$)/.test(request.url) && request.method === 'POST'
+      const expectsMultipart = isAvatarUpload || isModUpload || isFileUpload
       if (expectsMultipart ? !contentType.startsWith('multipart/form-data;') : request.method !== 'DELETE' && !contentType.startsWith('application/json')) {
         return reply.code(415).send({ error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'The request content type is not supported.' } })
       }
@@ -859,6 +864,84 @@ export async function createApiApp(options: {
     if (!part) throw new InvalidRequestError('A file is required.')
     const inventory = await files.upload(params.serverId, request.principal!.userId, query.path, part.filename, part.file, () => part.file.truncated)
     return reply.code(201).send(serverFileListSchema.parse(inventory))
+  })
+  app.post('/api/v1/admin/servers/:serverId/files/upload-batch', {
+    preHandler: requireAdminMutation,
+    bodyLimit: MAX_SERVER_FILE_UPLOAD_BATCH_BYTES + MAX_SERVER_FILE_UPLOAD_MANIFEST_BYTES + 256 * 1024,
+  }, async (request, reply) => {
+    const params = parse(localServerIdSchema, request.params)
+    const query = parse(serverFilePathQuerySchema, request.query)
+    const parts = request.parts({
+      preservePath: true,
+      limits: {
+        fields: 1,
+        files: MAX_SERVER_FILE_UPLOAD_COUNT,
+        parts: MAX_SERVER_FILE_UPLOAD_COUNT + 1,
+        fileSize: MAX_SERVER_FILE_UPLOAD_BYTES,
+        fieldSize: MAX_SERVER_FILE_UPLOAD_MANIFEST_BYTES,
+      },
+    })
+    const drainRemainingParts = async () => {
+      try {
+        for await (const part of parts) if (part.type === 'file') part.file.resume()
+      } catch { /* preserve the original multipart validation error */ }
+    }
+    let manifest: ServerFileUploadManifest
+    try {
+      const first = await parts.next()
+      if (first.done || first.value.type !== 'field' || first.value.fieldname !== 'manifest' || first.value.valueTruncated) {
+        await drainRemainingParts()
+        throw new InvalidRequestError('A bounded file upload manifest is required before the file parts.')
+      }
+      const raw = first.value.value
+      if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > MAX_SERVER_FILE_UPLOAD_MANIFEST_BYTES) {
+        await drainRemainingParts()
+        throw new InvalidRequestError('The file upload manifest is invalid or too large.')
+      }
+      let parsed: unknown
+      try { parsed = JSON.parse(raw) as unknown } catch {
+        await drainRemainingParts()
+        throw new InvalidRequestError('The file upload manifest is not valid JSON.')
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+        || Object.keys(parsed).sort().join(',') !== 'directories,files'
+        || !Array.isArray((parsed as { files?: unknown }).files)
+        || !Array.isArray((parsed as { directories?: unknown }).directories)
+        || (parsed as { files: unknown[] }).files.length > MAX_SERVER_FILE_UPLOAD_COUNT
+        || (parsed as { directories: unknown[] }).directories.length > MAX_SERVER_FILE_UPLOAD_DIRECTORY_COUNT
+        || [...(parsed as { files: unknown[] }).files, ...(parsed as { directories: unknown[] }).directories].some((value) => typeof value !== 'string' || value.length > 2048)) {
+        await drainRemainingParts()
+        throw new InvalidRequestError('The file upload manifest is invalid or exceeds its limits.')
+      }
+      manifest = parsed as ServerFileUploadManifest
+    } catch (error) {
+      await drainRemainingParts()
+      throw error
+    }
+
+    async function* fileParts() {
+      let fileCount = 0
+      for await (const part of parts) {
+        if (part.type !== 'file') throw new InvalidRequestError('Only declared file parts are accepted in a file upload batch.')
+        if (fileCount >= manifest.files.length) {
+          part.file.resume()
+          throw new InvalidRequestError('The upload includes an undeclared file part.')
+        }
+        if (part.fieldname !== 'file') {
+          part.file.resume()
+          throw new InvalidRequestError('The file part name does not match the upload manifest.')
+        }
+        fileCount += 1
+        yield { relativePath: part.filename, stream: part.file, truncated: () => part.file.truncated }
+      }
+    }
+    try {
+      const inventory = await files.uploadBatch(params.serverId, request.principal!.userId, query.path, manifest, fileParts())
+      return reply.code(201).send(serverFileListSchema.parse(inventory))
+    } catch (error) {
+      await drainRemainingParts()
+      throw error
+    }
   })
   app.post('/api/v1/admin/servers/:serverId/files/create', { preHandler: requireAdminMutation }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)

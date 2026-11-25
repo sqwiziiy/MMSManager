@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 
@@ -219,16 +220,25 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   let folderCreated = false
   let fileRecoveries: Array<{ id: string; path: string; sizeBytes: number; sha256: string; createdAt: string }> = []
   let fileTrash: Array<{ id: string; name: string; originalPath: string; kind: 'file' | 'folder'; sizeBytes: number | null; deletedAt: string }> = []
+  const uploadedPaths = new Set<string>()
+  const uploadRequests: Array<{ path: string; body: string }> = []
   const safeFileEntry = (name: string, path: string) => ({ name, path, kind: 'file' as const, sizeBytes: fileText.length, modifiedAt: now, contentState: 'editable' as const, reason: null, canDownload: true, canEdit: true, canRename: true, canTrash: true })
   const fileInventory = (path: string) => ({
     serverId, path, breadcrumbs: path.split('/').filter(Boolean).map((name, index, parts) => ({ name, path: parts.slice(0, index + 1).join('/') })),
     entries: path === '' ? [
       { name: 'config', path: 'config', kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'read-only', reason: null, canDownload: false, canEdit: false, canRename: true, canTrash: true },
       { name: 'server.properties', path: 'server.properties', kind: 'file', sizeBytes: 180, modifiedAt: now, contentState: 'protected', reason: 'Use the typed Properties editor for this configuration file.', canDownload: false, canEdit: false, canRename: false, canTrash: false },
-    ] : path === 'config' ? [
+      ...Array.from(uploadedPaths).filter((entry) => !entry.includes('/')).map((entry) => ({ name: entry, path: entry, kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'read-only', reason: null, canDownload: false, canEdit: false, canRename: true, canTrash: true })),
+    ] : [
       ...(filePresent ? [safeFileEntry('server-note.txt', filePath)] : []),
       ...(folderCreated ? [{ name: 'notes', path: 'config/notes', kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'read-only', reason: null, canDownload: false, canEdit: false, canRename: true, canTrash: true }] : []),
-    ] : [],
+      ...Array.from(uploadedPaths).filter((entry) => entry.startsWith(`${path}/`) && !entry.slice(path.length + 1).includes('/')).map((entry) => {
+        const name = entry.slice(path.length + 1)
+        return uploadedPaths.has(`${entry}/`) || Array.from(uploadedPaths).some((other) => other.startsWith(`${entry}/`))
+          ? { name, path: entry, kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'read-only', reason: null, canDownload: false, canEdit: false, canRename: true, canTrash: true }
+          : safeFileEntry(name, entry)
+      }),
+    ],
     truncated: false, trashCount: fileTrash.length,
   })
   await page.route(`**/api/v1/admin/servers/${serverId}/files**`, async (route) => {
@@ -266,6 +276,22 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
       return route.fulfill({ status: 201, json: fileInventory(input.path.includes('/') ? input.path.split('/').slice(0, -1).join('/') : '') })
     }
     if (method === 'POST' && pathname.endsWith('/files/move')) return route.fulfill({ json: fileInventory('config') })
+    if (method === 'POST' && pathname.endsWith('/files/upload-batch')) {
+      const body = request.postDataBuffer()?.toString('utf8') ?? ''
+      uploadRequests.push({ path: url.searchParams.get('path') ?? '', body })
+      const marker = body.indexOf('name="manifest"')
+      const valueStart = body.indexOf('\r\n\r\n', marker) + 4
+      const valueEnd = body.indexOf('\r\n', valueStart)
+      const manifest = JSON.parse(body.slice(valueStart, valueEnd)) as { files: string[]; directories: string[] }
+      const base = url.searchParams.get('path') ?? ''
+      for (const directory of manifest.directories) uploadedPaths.add([base, directory].filter(Boolean).join('/'))
+      for (const relativeFile of manifest.files) {
+        const parts = relativeFile.split('/')
+        for (let index = 1; index < parts.length; index += 1) uploadedPaths.add([base, ...parts.slice(0, index)].filter(Boolean).join('/'))
+        uploadedPaths.add([base, relativeFile].filter(Boolean).join('/'))
+      }
+      return route.fulfill({ status: 201, json: fileInventory(base) })
+    }
     if (method === 'POST' && pathname.endsWith('/files/upload')) return route.fulfill({ status: 201, json: fileInventory(url.searchParams.get('path') ?? '') })
     if (method === 'DELETE') {
       const input = request.postDataJSON() as { path: string }
@@ -285,7 +311,7 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
     submittedCommand = (route.request().postDataJSON() as { command?: string }).command
     return route.fulfill({ status: 202, json: { ok: true } })
   })
-  return { serverId, get submittedCommand() { return submittedCommand }, get submittedPlayerAction() { return submittedPlayerAction } }
+  return { serverId, get submittedCommand() { return submittedCommand }, get submittedPlayerAction() { return submittedPlayerAction }, get uploadRequests() { return uploadRequests } }
 }
 
 test('first-run administrator setup creates the protected local workspace', async ({ page }) => {
@@ -884,6 +910,55 @@ test('managed files edit with recovery, trash and restore at desktop and mobile 
   await page.goto(`/servers/${serverId}/files`)
   await expectNoHorizontalOverflow(page, 'managed file manager mobile')
   await page.screenshot({ path: screenshotPath('stage-05c-file-manager-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('managed files upload multiple files and preserve selected folder hierarchy', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  const fixture = await mockLocalServer(page)
+  await page.goto(`/servers/${fixture.serverId}/files`)
+  await page.getByRole('button', { name: 'config', exact: true }).click()
+
+  const multipleInput = page.getByTestId('server-file-upload-input')
+  await multipleInput.setInputFiles([
+    { name: 'first.txt', mimeType: 'text/plain', buffer: Buffer.from('MULTI-UPLOAD-FIRST') },
+    { name: 'second.dat', mimeType: 'application/octet-stream', buffer: Buffer.from('MULTI-UPLOAD-SECOND') },
+  ])
+  await expect(page.getByText('Upload complete.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'first.txt', exact: true })).toBeVisible()
+  await page.screenshot({ path: screenshotPath('stage-06hr-r05-files-desktop.png'), fullPage: true })
+  expect(fixture.uploadRequests[0]?.path).toBe('config')
+  expect(fixture.uploadRequests[0]?.body).toContain('MULTI-UPLOAD-FIRST')
+  expect(fixture.uploadRequests[0]?.body).toContain('MULTI-UPLOAD-SECOND')
+
+  const scratch = mkdtempSync(join(tmpdir(), 'mmsmanager-stage6hr-upload-'))
+  const selectedFolder = join(scratch, 'upload-pack')
+  mkdirSync(join(selectedFolder, 'nested'), { recursive: true })
+  writeFileSync(join(selectedFolder, 'root.txt'), 'FOLDER-UPLOAD-ROOT')
+  writeFileSync(join(selectedFolder, 'nested', 'nested.bin'), 'FOLDER-UPLOAD-NESTED')
+  try {
+    const folderInput = page.getByTestId('server-folder-upload-input')
+    await expect(folderInput).toBeEnabled()
+    await folderInput.setInputFiles(selectedFolder)
+    await expect(page.getByText('Upload complete.', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'upload-pack', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'nested', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'nested', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'nested.bin', exact: true })).toBeVisible()
+    const folderRequest = fixture.uploadRequests.at(-1)
+    expect(folderRequest?.path).toBe('config')
+    expect(folderRequest?.body).toContain('upload-pack/root.txt')
+    expect(folderRequest?.body).toContain('upload-pack/nested/nested.bin')
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto(`/servers/${fixture.serverId}/files`)
+    await page.getByRole('button', { name: 'config', exact: true }).click()
+    await page.getByRole('button', { name: 'upload-pack', exact: true }).click()
+    await expectNoHorizontalOverflow(page, 'uploaded folder hierarchy mobile')
+    await page.screenshot({ path: screenshotPath('stage-06hr-r05-files-mobile.png'), fullPage: true, animations: 'disabled' })
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
 })
 
 test('managed worlds and server history use isolated real-data API fixtures', async ({ page }) => {

@@ -293,19 +293,30 @@ export async function getServerMods(serverId: string, signal?: AbortSignal): Pro
   return response.mods
 }
 
-export function uploadServerFile(serverId: string, directory: string, file: File, onProgress: (percent: number) => void): Promise<ServerFileList> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
-    const query = new URLSearchParams({ path: directory })
-    const url = `/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/upload?${query}`
-    xhr.open('POST', url)
-    xhr.withCredentials = true
-    xhr.setRequestHeader('accept', 'application/json')
-    const csrf = apiCsrfToken()
-    if (csrf) xhr.setRequestHeader('x-mms-csrf', csrf)
-    xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.min(99, Math.round(event.loaded / event.total * 100))) }
+export type ServerFileUploadItem = { file: File; relativePath: string }
+export type ServerFileUploadRequest = { promise: Promise<ServerFileList>; cancel: () => void }
+
+export function uploadServerFiles(
+  serverId: string,
+  directory: string,
+  files: ServerFileUploadItem[],
+  directories: string[],
+  onProgress: (percent: number) => void,
+): ServerFileUploadRequest {
+  const xhr = new XMLHttpRequest()
+  const query = new URLSearchParams({ path: directory })
+  const url = `/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/upload-batch?${query}`
+  xhr.open('POST', url)
+  xhr.withCredentials = true
+  xhr.timeout = 15 * 60 * 1000
+  xhr.setRequestHeader('accept', 'application/json')
+  const csrf = apiCsrfToken()
+  if (csrf) xhr.setRequestHeader('x-mms-csrf', csrf)
+  xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.min(99, Math.round(event.loaded / event.total * 100))) }
+  const promise = new Promise<ServerFileList>((resolve, reject) => {
     xhr.onerror = () => reject(apiNetworkError('The file upload could not reach the local API.'))
-    xhr.onabort = () => reject(new Error('The file upload was cancelled.'))
+    xhr.ontimeout = () => reject(new Error('The upload took too long. Refresh the folder to check whether the complete batch was saved.'))
+    xhr.onabort = () => reject(new Error('Upload cancelled. Refresh the folder to check whether the complete batch was saved.'))
     xhr.onload = () => {
       reportSessionExpiry(xhr.status, url)
       let raw: unknown = null
@@ -318,9 +329,11 @@ export function uploadServerFile(serverId: string, directory: string, file: File
       catch { reject(apiInvalidResponseError()) }
     }
     const body = new FormData()
-    body.append('file', file, file.name)
+    body.append('manifest', JSON.stringify({ files: files.map((item) => item.relativePath), directories }))
+    for (const item of files) body.append('file', item.file, item.relativePath)
     xhr.send(body)
   })
+  return { promise, cancel: () => xhr.abort() }
 }
 
 export async function downloadServerFile(serverId: string, path: string): Promise<void> {

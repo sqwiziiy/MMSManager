@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -24,6 +24,17 @@ import { ServerProcessManager } from './servers/processes.js'
 
 const ADMIN_PASSWORD = 'synthetic admin passphrase 7fX!4pQz'
 const requestHeaders = { origin: WEB_ORIGIN, host: '127.0.0.1:4174' }
+
+function multipartFiles(boundary: string, manifest: { files: string[]; directories: string[] }, files: { path: string; bytes: Buffer }[]): Buffer {
+  const chunks: Buffer[] = [Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="manifest"\r\n\r\n${JSON.stringify(manifest)}\r\n`)]
+  for (const file of files) chunks.push(
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.path}"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+    file.bytes,
+    Buffer.from('\r\n'),
+  )
+  chunks.push(Buffer.from(`--${boundary}--\r\n`))
+  return Buffer.concat(chunks)
+}
 
 describe('authenticated local API', () => {
   let opened: Awaited<ReturnType<typeof openDatabase>>
@@ -513,6 +524,36 @@ describe('authenticated local API', () => {
     const createFolder = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/files/create`, headers: adminHeaders, payload: { path: 'route-folder', kind: 'folder' } })
     expect(createFolder.statusCode).toBe(201)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files`, headers: adminHeaders })).json().entries.some((entry: { name: string }) => entry.name === 'route-folder')).toBe(true)
+    const uploadBoundary = '----mmsmanager-real-file-batch'
+    const uploadManifest = { files: ['nested/chunk.bin', 'notes/asset.bin'], directories: ['empty/child'] }
+    const binaryBytes = Buffer.from([0x00, 0xff, 0x10, 0x80, 0x41, 0x0a])
+    const uploadBody = multipartFiles(uploadBoundary, uploadManifest, [
+      { path: uploadManifest.files[0]!, bytes: binaryBytes },
+      { path: uploadManifest.files[1]!, bytes: Buffer.from([0x7f, 0x00, 0x25]) },
+    ])
+    const multipartHeaders = {
+      ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken,
+      'content-type': `multipart/form-data; boundary=${uploadBoundary}`,
+    }
+    const uploadedBatch = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/files/upload-batch?path=`, headers: multipartHeaders, payload: uploadBody })
+    expect(uploadedBatch.statusCode, uploadedBatch.body).toBe(201)
+    expect(uploadedBatch.json()).toMatchObject({ path: '', entries: expect.arrayContaining([expect.objectContaining({ name: 'empty', kind: 'folder' }), expect.objectContaining({ name: 'nested', kind: 'folder' }), expect.objectContaining({ name: 'notes', kind: 'folder' })]) })
+    expect(await readFile(join(managedDirectory, 'nested', 'chunk.bin'))).toEqual(binaryBytes)
+    expect(await readFile(join(managedDirectory, 'notes', 'asset.bin'))).toEqual(Buffer.from([0x7f, 0x00, 0x25]))
+    expect(await readdir(join(managedDirectory, 'empty', 'child'))).toEqual([])
+    const nestedInventory = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files?path=nested`, headers: adminHeaders })
+    expect(nestedInventory.statusCode).toBe(200)
+    expect(nestedInventory.json().entries).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'chunk.bin', sizeBytes: binaryBytes.byteLength })]))
+    const overwriteAttempt = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/files/upload-batch?path=`, headers: multipartHeaders, payload: uploadBody })
+    expect(overwriteAttempt.statusCode).toBe(409)
+    expect(overwriteAttempt.json()).toMatchObject({ error: { code: 'FILE_ALREADY_EXISTS' } })
+    expect(await readFile(join(managedDirectory, 'nested', 'chunk.bin'))).toEqual(binaryBytes)
+    const unsafeBody = multipartFiles(uploadBoundary, { files: ['../escape.bin'], directories: [] }, [{ path: '../escape.bin', bytes: Buffer.from('no') }])
+    const unsafeUpload = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/files/upload-batch?path=`, headers: multipartHeaders, payload: unsafeBody })
+    expect(unsafeUpload.statusCode).toBe(400)
+    expect(unsafeUpload.json()).toMatchObject({ error: { code: 'FILE_PATH_REJECTED' } })
+    const noCsrfUpload = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/files/upload-batch?path=`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': `multipart/form-data; boundary=${uploadBoundary}` }, payload: uploadBody })
+    expect(noCsrfUpload.statusCode).toBe(403)
 
     const backupId = updated.json().properties.backups[0].id as string
     const restorePreview = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/properties/backups/${backupId}/preview`, headers: adminHeaders })
@@ -546,6 +587,7 @@ describe('authenticated local API', () => {
     const memberCsrf = memberCookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
     const memberHeaders = { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }
     expect(memberLogin.statusCode).toBe(200)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/files/upload-batch?path=`, headers: { ...memberHeaders, 'content-type': `multipart/form-data; boundary=${uploadBoundary}` }, payload: uploadBody })).statusCode).toBe(403)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/runtime-settings`, headers: memberHeaders })).statusCode).toBe(403)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/automation`, headers: memberHeaders })).statusCode).toBe(403)
     expect((await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/automation`, headers: memberHeaders, payload: { enabled: false, frequency: 'daily', localTime: '14:30', weekday: null } })).statusCode).toBe(403)
