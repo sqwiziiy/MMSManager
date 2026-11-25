@@ -12,6 +12,7 @@ import { useMachineStatus } from '../state/use-machine-monitor'
 import { useAuth } from '../state/use-auth'
 import type { AuthUser } from '@mmsmanager/shared'
 import { updateUserPreferences } from '../api/auth'
+import { useUiPreferences } from '../i18n/locale-context'
 
 type NavItem = { label: string; to: string; icon: LucideIcon; exact?: boolean }
 const operations: NavItem[] = [
@@ -29,6 +30,7 @@ const administration: NavItem[] = [
 
 export function AppShell({ children, onCreate, onSignOut, user, workspaceName }: { children: React.ReactNode; onCreate: () => void; onSignOut: () => void; user: AuthUser; workspaceName: string }) {
   const { replaceSnapshot } = useAuth()
+  const { preferences: uiPreferences } = useUiPreferences()
   const [collapsed, setCollapsed] = useState(user.preferences.compactNavigation)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
@@ -113,7 +115,7 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
   }, [location.pathname, accountNavigation, workspaceName, registeredServers])
 
   return (
-    <div className={`app-frame ${collapsed ? 'sidebar-collapsed' : ''}`}>
+    <div className={`app-frame theme-${uiPreferences.theme} accent-${uiPreferences.accent} density-${uiPreferences.density} ${uiPreferences.reducedMotion ? 'motion-reduced' : ''} ${collapsed ? 'sidebar-collapsed' : ''}`}>
       {mobileOpen && <button aria-label="Close navigation" className="mobile-scrim" onClick={() => setMobileOpen(false)} />}
       <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
         <div className="brand-row">
@@ -135,7 +137,7 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
         <div className="sidebar-bottom">
           <SidebarMachineStatus />
           <button className="profile-trigger" onClick={() => setProfileOpen((value) => !value)} aria-expanded={profileOpen}>
-            <ProfileAvatar user={user} /><span className="profile-copy"><strong>{user.displayName}</strong><small>{user.role === 'administrator' ? 'Administrator' : 'Member'}</small></span><ChevronDown size={15} className="profile-chevron" />
+            <ProfileAvatar user={user} /><span className="profile-copy"><strong data-no-translate>{user.displayName}</strong><small>{user.role === 'administrator' ? 'Administrator' : 'Member'}</small></span><ChevronDown size={15} className="profile-chevron" />
           </button>
           {profileOpen && <div className="profile-menu">
             <NavLink to="/profile"><ProfileAvatar user={user} small /><span><strong>Profile</strong><small>Account details and security</small></span></NavLink>
@@ -148,7 +150,7 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
 
       <main className="main-panel">
         <header className="topbar">
-          <div className="topbar-left"><IconButton icon={Menu} label="Open navigation" className="menu-mobile" onClick={() => setMobileOpen(true)} /><span className="topbar-page">{pageTitle}</span><span className="breadcrumb-divider">/</span><span className="breadcrumb-current">Workspace</span></div>
+          <div className="topbar-left"><IconButton icon={Menu} label="Open navigation" className="menu-mobile" onClick={() => setMobileOpen(true)} /><span className="topbar-page" data-no-translate={location.pathname.startsWith('/servers/') || ![...operations, ...library, ...accountNavigation].some((item) => item.to === location.pathname) ? '' : undefined}>{pageTitle}</span><span className="breadcrumb-divider">/</span><span className="breadcrumb-current">Workspace</span></div>
           <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd>Ctrl K</kbd></button><span className="topbar-separator" /><TopbarMachineStatus />{user.role === 'administrator' && <Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button>}</div>
         </header>
         {sidebarPreferenceError && <div className="sidebar-preference-error" role="status">Sidebar preference could not be saved.</div>}
@@ -187,12 +189,12 @@ function QuickSearch({ onClose, includeUsers, registeredServers }: { onClose: ()
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const navigate = useNavigate()
-  const entries = [
+  const entries: Array<{ label: string; to: string; icon: LucideIcon; group: string; dynamicLabel?: boolean }> = [
     ...operations.map(({ label, to, icon }) => ({ label, to, icon, group: 'Workspace' })),
     { label: 'Machine history', to: '/machine/history', icon: CalendarDays, group: 'Machine' },
     ...library.map(({ label, to, icon }) => ({ label, to, icon, group: 'Library' })),
     ...administration.filter((item) => includeUsers || item.to !== '/users').map(({ label, to, icon }) => ({ label, to, icon, group: 'Account' })),
-    ...registeredServers.map((server) => ({ label: server.name, to: `/servers/${server.id}/overview`, icon: Server, group: 'Servers' })),
+    ...registeredServers.map((server) => ({ label: server.name, to: `/servers/${server.id}/overview`, icon: Server, group: 'Servers', dynamicLabel: true })),
   ]
   const shown = entries.filter((entry) => entry.label.toLowerCase().includes(query.toLowerCase()))
   const openEntry = (to: string) => {
@@ -215,7 +217,7 @@ function QuickSearch({ onClose, includeUsers, registeredServers }: { onClose: ()
     <div className="quick-search-dialog" role="dialog" aria-modal="true" aria-label="Search pages">
       <div className="quick-search-input"><Search size={18} /><input autoFocus value={query} onKeyDown={handleKeyDown} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0) }} placeholder="Search pages and servers" aria-label="Search pages and servers" /><kbd>ESC</kbd><IconButton icon={X} label="Close search" onClick={onClose} /></div>
       <div className="quick-search-results" role="listbox" aria-label="Search results">
-        {shown.length ? shown.map(({ label, to, icon: Icon, group }, index) => <button id={`quick-result-${index}`} role="option" aria-selected={index === activeIndex} className={index === activeIndex ? 'active' : ''} key={to} onMouseEnter={() => setActiveIndex(index)} onClick={() => openEntry(to)}><span className="search-result-icon"><Icon size={16} /></span><span>{label}</span><small>{group}</small><ChevronRight size={14} /></button>) : <div className="search-empty">No matching pages</div>}
+        {shown.length ? shown.map(({ label, to, icon: Icon, group, dynamicLabel }, index) => <button id={`quick-result-${index}`} role="option" aria-selected={index === activeIndex} className={index === activeIndex ? 'active' : ''} key={to} onMouseEnter={() => setActiveIndex(index)} onClick={() => openEntry(to)}><span className="search-result-icon"><Icon size={16} /></span><span data-no-translate={dynamicLabel ? '' : undefined}>{label}</span><small>{group}</small><ChevronRight size={14} /></button>) : <div className="search-empty">No matching pages</div>}
       </div>
       <div className="quick-search-foot"><span><kbd>↑</kbd><kbd>↓</kbd> to navigate</span><span><kbd>Enter</kbd> to open</span></div>
     </div>

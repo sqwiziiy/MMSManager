@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { AlertCircle, ArrowDownToLine, Check, CircleUserRound, Clock3, KeyRound, LoaderCircle, LockKeyhole, Plus, Save, ShieldCheck, Trash2, UserRoundPlus, Users, X } from 'lucide-react'
+import { AlertCircle, ArrowDownToLine, Check, CircleUserRound, Clock3, KeyRound, LoaderCircle, LockKeyhole, Palette, Plus, Save, ShieldCheck, Trash2, UserRoundPlus, Users, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import type { AdminUser, AuditRecord, LandingPage, MonitoringSettings, UserRole } from '@mmsmanager/shared'
 import {
@@ -14,6 +14,10 @@ import { useMachineHistory } from '../state/use-machine-monitor'
 import { NotificationsPanel } from '../components/notifications'
 import { getMonitoringSettings, updateMonitoringSettings } from '../api/monitoring'
 import { DEFAULT_MONITORING_SETTINGS } from '@mmsmanager/shared'
+import { saveUiPreferencesInput } from '../i18n/preferences'
+import { useUiPreferences } from '../i18n/locale-context'
+import type { UiPreferences } from '../i18n/locale-context'
+import { currentLocale, translateText } from '../i18n/catalog'
 
 type Notice = { tone: 'ok' | 'error'; message: string }
 
@@ -21,10 +25,16 @@ function requestMessage(error: unknown): string {
   return error instanceof ApiRequestError ? error.message : 'The local API could not complete this request.'
 }
 
+function auditActionLabel(action: string): string {
+  const locale = currentLocale()
+  const label = translateText(action.replaceAll('.', ' '), locale)
+  return label.replace(/^\p{L}/u, (letter) => letter.toLocaleUpperCase(locale))
+}
+
 function shortDate(value: string | null): string {
   if (!value) return 'Never'
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? 'Unavailable' : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+  return Number.isNaN(date.getTime()) ? 'Unavailable' : new Intl.DateTimeFormat(currentLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
 function initials(name: string, fallback: string): string {
@@ -122,7 +132,7 @@ export function UsersPage() {
       {loading ? <div className="account-loading"><LoaderCircle className="auth-spinner" size={17} />Loading accounts</div> : users.length === 0 ? <div className="account-empty">No accounts are available.</div> : <>
         <div className="data-table account-users-table"><div className="data-table-head"><span>User</span><span>Role</span><span>Last sign in</span><span>Sessions</span><span>Access</span><span>Actions</span></div>
           {visibleUsers.map((user) => <div className="data-table-row account-user-row" key={user.id}>
-            <span className="user-cell"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} /><span><strong>{user.displayName}</strong><small>@{user.username}</small></span></span>
+            <span className="user-cell"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} /><span><strong data-no-translate>{user.displayName}</strong><small data-no-translate>@{user.username}</small></span></span>
             <label className="sr-only" htmlFor={`role-${user.id}`}>Role for {user.username}</label>
             <select id={`role-${user.id}`} className="account-role-select" value={user.role} disabled={savingId === user.id} onChange={(event) => void saveRole(user, event.target.value as UserRole)}><option value="administrator">Administrator</option><option value="member">Member</option></select>
             <span className="account-last-seen">{shortDate(user.lastLoginAt)}</span><span className="account-session-count">{user.activeSessionCount}</span>
@@ -131,13 +141,13 @@ export function UsersPage() {
           </div>)}
         </div>
         <div className="account-users-mobile">{visibleUsers.map((user) => <article className="account-mobile-user" key={`${user.id}-mobile`}>
-          <div className="account-mobile-header"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} /><div><strong>{user.displayName}</strong><small>@{user.username}</small></div><Badge tone={user.enabled ? 'good' : 'neutral'}>{user.enabled ? 'Enabled' : 'Disabled'}</Badge></div>
+          <div className="account-mobile-header"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} /><div><strong data-no-translate>{user.displayName}</strong><small data-no-translate>@{user.username}</small></div><Badge tone={user.enabled ? 'good' : 'neutral'}>{user.enabled ? 'Enabled' : 'Disabled'}</Badge></div>
           <div className="account-mobile-fields"><label>Role<select value={user.role} disabled={savingId === user.id} onChange={(event) => void saveRole(user, event.target.value as UserRole)}><option value="administrator">Administrator</option><option value="member">Member</option></select></label><span><small>Last sign in</small><strong>{shortDate(user.lastLoginAt)}</strong></span><span><small>Active sessions</small><strong>{user.activeSessionCount}</strong></span></div>
           <div className="account-mobile-actions"><Button kind="secondary" icon={KeyRound} onClick={() => setResetTarget(user)}>Reset password</Button><Button kind={user.enabled ? 'danger' : 'secondary'} icon={user.enabled ? LockKeyhole : ShieldCheck} disabled={savingId === user.id} onClick={() => setToggleTarget(user)}>{user.enabled ? 'Disable account' : 'Enable account'}</Button><Button kind="quiet" icon={Trash2} title={user.id === auth.snapshot?.user.id ? 'You cannot delete the account you are using.' : undefined} disabled={savingId === user.id || user.id === auth.snapshot?.user.id} onClick={() => setDeleteTarget(user)}>Delete account</Button></div>
         </article>)}</div>
       </>}
     </Card>
-    <Card className="audit-card"><SectionHeading title="Recent security activity" description="Real local account events. Passwords and session tokens are never included." /><div className="audit-list">{audit.slice(0, 8).map((event) => <div className="audit-row" key={event.id}><span className={`audit-state ${event.outcome === 'success' ? 'audit-state-ok' : ''}`} /><div><strong>{event.action.replaceAll('.', ' ')}</strong><small>{event.actor ?? 'System'}{event.subject ? ` · ${event.subject}` : ''}</small></div><time>{shortDate(event.occurredAt)}</time></div>)}</div>{audit.length === 0 && <p className="audit-empty">No security events have been recorded yet.</p>}</Card>
+    <Card className="audit-card"><SectionHeading title="Recent security activity" description="Real local account events. Passwords and session tokens are never included." /><div className="audit-list">{audit.slice(0, 8).map((event) => <div className="audit-row" key={event.id}><span className={`audit-state ${event.outcome === 'success' ? 'audit-state-ok' : ''}`} /><div><strong>{auditActionLabel(event.action)}</strong><small>{event.actor ? <span data-no-translate>{event.actor}</span> : 'System'}{event.subject ? <> · <span data-no-translate>{event.subject}</span></> : null}</small></div><time>{shortDate(event.occurredAt)}</time></div>)}</div>{audit.length === 0 && <p className="audit-empty">No security events have been recorded yet.</p>}</Card>
 
     {createOpen && <CreateUserDialog onClose={() => setCreateOpen(false)} onCreated={async (name) => { setCreateOpen(false); setNotice({ tone: 'ok', message: `${name} was created. Share their initial password outside this app.` }); await load() }} />}
     {resetTarget && <ResetPasswordDialog user={resetTarget} onClose={() => setResetTarget(null)} onReset={async (name) => { setResetTarget(null); setNotice({ tone: 'ok', message: `Password reset for ${name}; previous sessions were revoked.` }); await load() }} />}
@@ -296,7 +306,7 @@ export function ProfilePage() {
     <NoticeBar notice={notice} />
     <Card className="profile-card account-profile-card">
       <div className="profile-card-cover" />
-      <div className="profile-card-main"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} size="large" /><div className="profile-card-identity"><h2>{user.displayName}</h2><p>@{user.username}</p><Badge tone="accent">{user.role === 'administrator' ? 'Administrator' : 'Member'}</Badge></div><span className="profile-created"><Clock3 size={14} />Joined {shortDate(user.createdAt)}</span></div>
+      <div className="profile-card-main"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} size="large" /><div className="profile-card-identity"><h2 data-no-translate>{user.displayName}</h2><p data-no-translate>@{user.username}</p><Badge tone="accent">{user.role === 'administrator' ? 'Administrator' : 'Member'}</Badge></div><span className="profile-created"><Clock3 size={14} />Joined {shortDate(user.createdAt)}</span></div>
       <div className="profile-details-grid"><div><span>Username</span><strong>@{user.username}</strong></div><div><span>Role</span><strong>{user.role === 'administrator' ? 'Administrator' : 'Member'}</strong></div><div><span>Last sign in</span><strong>{shortDate(user.lastLoginAt)}</strong></div><div><span>Workspace</span><strong>{snapshot.workspace.displayName}</strong></div></div>
     </Card>
     <div className="account-profile-grid">
@@ -310,10 +320,11 @@ export function ProfilePage() {
   </div>
 }
 
-type SettingsTab = 'Workspace' | 'Personal' | 'Notifications' | 'Monitoring'
+type SettingsTab = 'Workspace' | 'Personal' | 'Language & appearance' | 'Notifications' | 'Monitoring'
 
 export function SettingsPage() {
   const auth = useAuth()
+  const { setPreview, clearPreview } = useUiPreferences()
   const { history } = useMachineHistory()
   const isAdmin = auth.snapshot?.user.role === 'administrator'
   const snapshot = auth.snapshot!
@@ -322,6 +333,13 @@ export function SettingsPage() {
   const [workspaceLanding, setWorkspaceLanding] = useState<LandingPage>(snapshot.workspace.defaultLanding)
   const [compactNavigation, setCompactNavigation] = useState(snapshot.user.preferences.compactNavigation)
   const [personalLanding, setPersonalLanding] = useState<LandingPage>(snapshot.user.preferences.defaultLanding)
+  const [appearanceDraft, setAppearanceDraft] = useState<UiPreferences>({
+    language: snapshot.user.preferences.language,
+    theme: snapshot.user.preferences.theme,
+    accent: snapshot.user.preferences.accent,
+    density: snapshot.user.preferences.density,
+    reducedMotion: snapshot.user.preferences.reducedMotion,
+  })
   const [monitoringSettings, setMonitoringSettings] = useState<MonitoringSettings>(DEFAULT_MONITORING_SETTINGS)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<Notice | null>(null)
@@ -348,7 +366,7 @@ export function SettingsPage() {
     return () => controller.abort()
   }, [isAdmin, tab])
 
-  const tabList: SettingsTab[] = isAdmin ? ['Workspace', 'Personal', 'Monitoring', 'Notifications'] : ['Personal', 'Notifications']
+  const tabList: SettingsTab[] = isAdmin ? ['Workspace', 'Personal', 'Language & appearance', 'Monitoring', 'Notifications'] : ['Personal', 'Language & appearance', 'Notifications']
   const saveWorkspace = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setBusy(true)
@@ -371,6 +389,27 @@ export function SettingsPage() {
     } catch (error) { setNotice({ tone: 'error', message: requestMessage(error) }) }
     finally { setBusy(false) }
   }
+  const previewAppearance = (next: Partial<UiPreferences>) => {
+    setAppearanceDraft((value) => ({ ...value, ...next }))
+    setPreview(next)
+  }
+  const resetAppearance = () => {
+    const defaults: UiPreferences = { language: 'en', theme: 'dark', accent: 'moss', density: 'comfortable', reducedMotion: false }
+    setAppearanceDraft(defaults)
+    setPreview(defaults)
+  }
+  const saveAppearance = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setBusy(true)
+    setNotice(null)
+    try {
+      const next = await updateUserPreferences(saveUiPreferencesInput(appearanceDraft, compactNavigation, personalLanding))
+      auth.replaceSnapshot(next)
+      clearPreview()
+      setNotice({ tone: 'ok', message: 'Your preferences were saved.' })
+    } catch (error) { setNotice({ tone: 'error', message: requestMessage(error) }) }
+    finally { setBusy(false) }
+  }
   const saveMonitoring = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setBusy(true)
@@ -385,11 +424,22 @@ export function SettingsPage() {
   return <div className="page-stack">
     <PageHeading title="Settings" description="Persistent settings for this local workspace and your account." />
     <NoticeBar notice={notice} />
-    <div className="settings-layout account-settings-layout"><nav className="settings-nav" aria-label="Settings sections">{tabList.map((name) => <button key={name} className={name === tab ? 'selected' : ''} onClick={() => setTab(name)}>{name === 'Workspace' ? <Users size={16} /> : name === 'Personal' ? <CircleUserRound size={16} /> : name === 'Monitoring' ? <Clock3 size={16} /> : <AlertCircle size={16} />}{name}</button>)}</nav>
+    <div className="settings-layout account-settings-layout"><nav className="settings-nav" aria-label="Settings sections">{tabList.map((name) => <button key={name} className={name === tab ? 'selected' : ''} onClick={() => setTab(name)}>{name === 'Workspace' ? <Users size={16} /> : name === 'Personal' ? <CircleUserRound size={16} /> : name === 'Language & appearance' ? <Palette size={16} /> : name === 'Monitoring' ? <Clock3 size={16} /> : <AlertCircle size={16} />}{name}</button>)}</nav>
       <Card className="settings-content account-settings-content">
-        <div className="settings-content-heading"><div><h2>{tab}</h2><p>{tab === 'Workspace' ? 'Shared defaults for the single local workspace' : tab === 'Personal' ? 'Saved to your account and applied on this device' : 'Saved operational alerts for your local account'}</p></div><Badge tone="good">{tab === 'Notifications' ? 'In-app' : 'Persistent'}</Badge></div>
+        <div className="settings-content-heading"><div><h2>{tab}</h2><p>{tab === 'Workspace' ? 'Shared defaults for the single local workspace' : tab === 'Personal' ? 'Saved to your account and applied on this device' : tab === 'Language & appearance' ? 'Language and display settings for your account' : tab === 'Monitoring' ? 'Saved operational settings for the local machine' : 'Saved operational alerts for your local account'}</p></div><Badge tone="good">{tab === 'Notifications' ? 'In-app' : 'Persistent'}</Badge></div>
         {tab === 'Workspace' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveWorkspace(event)}><Field label="Workspace name"><input required maxLength={60} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} /></Field><Field label="Default landing page"><select value={workspaceLanding} onChange={(event) => setWorkspaceLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-readonly-row"><div><strong>Machine history timezone</strong><small>Configured when the local collector starts; raw timestamps remain UTC.</small></div><span>{history?.timeZone ?? 'Unavailable'}</span></div><div className="settings-footer"><span>Workspace changes apply for all local users.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save workspace'}</Button></div></form>}
         {tab === 'Personal' && <form className="account-settings-form" onSubmit={(event) => void savePersonal(event)}><div className="settings-row account-settings-row"><div><strong>Compact navigation</strong><small>Remember a narrower sidebar for your account.</small></div><label className="account-switch"><input aria-label="Compact navigation" type="checkbox" checked={compactNavigation} onChange={(event) => setCompactNavigation(event.target.checked)} /><span aria-hidden="true" /></label></div><Field label="Default landing page"><select value={personalLanding} onChange={(event) => setPersonalLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-footer"><span>Saved to your profile.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save preferences'}</Button></div></form>}
+        {tab === 'Language & appearance' && <form className="account-settings-form appearance-form" onSubmit={(event) => void saveAppearance(event)}>
+          <div className="appearance-grid">
+            <Field label="Language"><select value={appearanceDraft.language} onChange={(event) => previewAppearance({ language: event.target.value as UiPreferences['language'] })}><option value="en">English</option><option value="ru">Русский</option></select></Field>
+            <Field label="Theme"><select value={appearanceDraft.theme} onChange={(event) => previewAppearance({ theme: event.target.value as UiPreferences['theme'] })}><option value="dark">Dark</option><option value="light">Light</option><option value="system">Follow system</option></select></Field>
+            <Field label="Accent color"><select value={appearanceDraft.accent} onChange={(event) => previewAppearance({ accent: event.target.value as UiPreferences['accent'] })}><option value="moss">Moss</option><option value="blue">Blue</option><option value="clay">Clay</option></select></Field>
+            <Field label="Display density"><select value={appearanceDraft.density} onChange={(event) => previewAppearance({ density: event.target.value as UiPreferences['density'] })}><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></Field>
+          </div>
+          <div className="settings-row account-settings-row"><div><strong>Reduce motion</strong><small>Use shorter transitions and avoid non-essential movement.</small></div><label className="account-switch"><input aria-label="Reduce motion" type="checkbox" checked={appearanceDraft.reducedMotion} onChange={(event) => previewAppearance({ reducedMotion: event.target.checked })} /><span aria-hidden="true" /></label></div>
+          <p className="appearance-help">Language changes menus, settings and help text. Minecraft values and user-entered names stay unchanged. Appearance changes preview immediately and are saved to your account.</p>
+          <div className="settings-footer"><Button type="button" kind="secondary" disabled={busy} onClick={resetAppearance}>Reset appearance</Button><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save preferences'}</Button></div>
+        </form>}
         {tab === 'Monitoring' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveMonitoring(event)}><div className="settings-readonly-row"><div><strong>Live sample interval</strong><small>CPU, memory and network updates from one shared host sampler.</small></div><Field label="Seconds"><input type="number" min={1} max={60} step={1} value={monitoringSettings.fastSampleMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, fastSampleMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>History save interval</strong><small>Raw snapshots are saved less often; minute summaries include readings between saves.</small></div><Field label="Seconds"><input type="number" min={5} max={60} step={1} value={monitoringSettings.historySaveMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, historySaveMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>Disk refresh interval</strong><small>Disk usage refreshes separately from quick metrics.</small></div><Field label="Seconds"><input type="number" min={10} max={60} step={1} value={monitoringSettings.diskRefreshMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, diskRefreshMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>Server status check</strong><small>The dashboard player count updates after this interval.</small></div><Field label="Seconds"><input type="number" min={5} max={30} step={1} value={monitoringSettings.statusPollMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, statusPollMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-footer"><span>Changes apply immediately. History is retained using the current policy.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Applying' : 'Apply monitoring'}</Button></div></form>}
         {tab === 'Notifications' && <NotificationsPanel />}
       </Card>

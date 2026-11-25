@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import type { LandingPage, UserRole } from '@mmsmanager/shared'
+import type { LandingPage, UserPreferencesUpdate, UserRole } from '@mmsmanager/shared'
 import { hashPassword, makeDummyPasswordHash, validatePasswordBytes, verifyPassword } from './password.js'
 
 const BOOTSTRAP_TTL_MS = 30 * 60 * 1000
@@ -29,6 +29,11 @@ type UserRow = {
   passwordChangedAt: string
   compactNavigation?: number | boolean | null
   defaultLanding?: LandingPage | null
+  language?: 'en' | 'ru' | null
+  theme?: 'dark' | 'light' | 'system' | null
+  accent?: 'moss' | 'blue' | 'clay' | null
+  density?: 'comfortable' | 'compact' | null
+  reducedMotion?: number | boolean | null
 }
 
 type BootstrapRow = {
@@ -84,6 +89,10 @@ function isEnabled(value: number | boolean | null | undefined): boolean {
 
 function mapUser(row: UserRow) {
   const defaultLanding = row.defaultLanding === 'machine' ? 'machine' as const : 'dashboard' as const
+  const language = row.language === 'ru' ? 'ru' as const : 'en' as const
+  const theme = row.theme === 'light' || row.theme === 'system' ? row.theme : 'dark' as const
+  const accent = row.accent === 'blue' || row.accent === 'clay' ? row.accent : 'moss' as const
+  const density = row.density === 'compact' ? 'compact' as const : 'comfortable' as const
   return {
     id: row.id,
     username: row.username,
@@ -96,6 +105,11 @@ function mapUser(row: UserRow) {
     preferences: {
       compactNavigation: Boolean(row.compactNavigation),
       defaultLanding,
+      language,
+      theme,
+      accent,
+      density,
+      reducedMotion: Boolean(row.reducedMotion),
     },
   }
 }
@@ -295,11 +309,25 @@ export class AuthService {
     }).immediate()
   }
 
-  updateUserPreferences(principal: SessionPrincipal, input: { compactNavigation: boolean; defaultLanding: LandingPage }): void {
+  updateUserPreferences(principal: SessionPrincipal, input: UserPreferencesUpdate): void {
     const time = nowIso(this.now())
     this.native.transaction(() => {
-      this.native.prepare('INSERT INTO user_preferences (user_id, compact_navigation, default_landing, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET compact_navigation = excluded.compact_navigation, default_landing = excluded.default_landing, updated_at = excluded.updated_at')
-        .run(principal.userId, Number(input.compactNavigation), input.defaultLanding, time)
+      const current = this.getUserRow(principal.userId)
+      const preferences = {
+        compactNavigation: Boolean(current?.compactNavigation),
+        defaultLanding: current?.defaultLanding === 'machine' ? 'machine' : 'dashboard',
+        language: current?.language === 'ru' ? 'ru' : 'en',
+        theme: current?.theme === 'light' || current?.theme === 'system' ? current.theme : 'dark',
+        accent: current?.accent === 'blue' || current?.accent === 'clay' ? current.accent : 'moss',
+        density: current?.density === 'compact' ? 'compact' : 'comfortable',
+        reducedMotion: Boolean(current?.reducedMotion),
+        ...input,
+      }
+      this.native.prepare(`INSERT INTO user_preferences (user_id, compact_navigation, default_landing, language, theme, accent, density, reduced_motion, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET compact_navigation = excluded.compact_navigation,
+        default_landing = excluded.default_landing, language = excluded.language, theme = excluded.theme, accent = excluded.accent,
+        density = excluded.density, reduced_motion = excluded.reduced_motion, updated_at = excluded.updated_at`)
+        .run(principal.userId, Number(preferences.compactNavigation), preferences.defaultLanding, preferences.language, preferences.theme, preferences.accent, preferences.density, Number(preferences.reducedMotion), time)
       this.recordAudit(principal.userId, principal.userId, 'profile.preferences.updated', 'success', time)
     }).immediate()
   }
@@ -336,6 +364,8 @@ export class AuthService {
 
   listUsers() {
     const rows = this.native.prepare(`SELECT ${USER_COLUMNS}, COALESCE(p.compact_navigation, 0) AS compactNavigation, COALESCE(p.default_landing, 'dashboard') AS defaultLanding,
+      COALESCE(p.language, 'en') AS language, COALESCE(p.theme, 'dark') AS theme, COALESCE(p.accent, 'moss') AS accent,
+      COALESCE(p.density, 'comfortable') AS density, COALESCE(p.reduced_motion, 0) AS reducedMotion,
       (SELECT count(*) FROM sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > ? AND s.last_seen_at > ?) AS activeSessionCount
       FROM users u LEFT JOIN user_preferences p ON p.user_id = u.id ORDER BY u.created_at, u.username_key`)
       .all(nowIso(this.now()), nowIso(this.now() - SESSION_IDLE_MS)) as Array<UserRow & { activeSessionCount: number }>
@@ -444,12 +474,16 @@ export class AuthService {
   }
 
   private getUserRow(userId: string): UserRow | undefined {
-    return this.native.prepare(`SELECT ${USER_COLUMNS}, COALESCE(p.compact_navigation, 0) AS compactNavigation, COALESCE(p.default_landing, 'dashboard') AS defaultLanding
+    return this.native.prepare(`SELECT ${USER_COLUMNS}, COALESCE(p.compact_navigation, 0) AS compactNavigation, COALESCE(p.default_landing, 'dashboard') AS defaultLanding,
+      COALESCE(p.language, 'en') AS language, COALESCE(p.theme, 'dark') AS theme, COALESCE(p.accent, 'moss') AS accent,
+      COALESCE(p.density, 'comfortable') AS density, COALESCE(p.reduced_motion, 0) AS reducedMotion
       FROM users u LEFT JOIN user_preferences p ON p.user_id = u.id WHERE u.id = ?`).get(userId) as UserRow | undefined
   }
 
   private adminUser(userId: string) {
     const row = this.native.prepare(`SELECT ${USER_COLUMNS}, COALESCE(p.compact_navigation, 0) AS compactNavigation, COALESCE(p.default_landing, 'dashboard') AS defaultLanding,
+      COALESCE(p.language, 'en') AS language, COALESCE(p.theme, 'dark') AS theme, COALESCE(p.accent, 'moss') AS accent,
+      COALESCE(p.density, 'comfortable') AS density, COALESCE(p.reduced_motion, 0) AS reducedMotion,
       (SELECT count(*) FROM sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > ? AND s.last_seen_at > ?) AS activeSessionCount
       FROM users u LEFT JOIN user_preferences p ON p.user_id = u.id WHERE u.id = ?`).get(nowIso(this.now()), nowIso(this.now() - SESSION_IDLE_MS), userId) as (UserRow & { activeSessionCount: number }) | undefined
     if (!row) throw new AuthFailure('not-found')

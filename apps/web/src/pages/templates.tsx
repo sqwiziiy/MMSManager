@@ -6,6 +6,7 @@ import { getInstallCatalog } from '../api/servers'
 import { apiErrorMessage } from '../api/client'
 import { createServerTemplate, deleteServerTemplate, duplicateServerTemplate, getServerTemplates, updateServerTemplate } from '../api/templates'
 import { useAuth } from '../state/use-auth'
+import { currentLocale } from '../i18n/catalog'
 import { Badge, Button, Card, EmptyNote, PageHeading } from '../components/ui'
 
 type EditorState = 'new' | ServerTemplate | null
@@ -92,7 +93,7 @@ export function TemplatesPage({ onCreate }: { onCreate: (template: ServerTemplat
         const versionUnavailable = support[template.id] === 'unsupported'
         return <Card className="template-card" key={template.id}>
           <div className="template-card-heading"><span className="template-icon"><Layers3 size={17} /></span><div><strong>{template.name}</strong><small>{template.software[0]!.toUpperCase() + template.software.slice(1)} · {template.version}</small></div>{supportBadge(template)}</div>
-          <div className="template-specs"><div><span>Memory range</span><strong>{template.minMemoryMb.toLocaleString()}–{template.maxMemoryMb.toLocaleString()} MB</strong></div><div><span>Last updated</span><strong>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(template.updatedAt))}</strong></div></div>
+          <div className="template-specs"><div><span>Memory range</span><strong>{template.minMemoryMb.toLocaleString(currentLocale())}–{template.maxMemoryMb.toLocaleString(currentLocale())} MB</strong></div><div><span>Last updated</span><strong>{new Intl.DateTimeFormat(currentLocale(), { dateStyle: 'medium' }).format(new Date(template.updatedAt))}</strong></div></div>
           <div className="template-card-note">Java, port and EULA are chosen separately in the create wizard.</div>
           <div className="template-actions">
             {isAdmin && <Button kind="primary" icon={Server} disabled={versionUnavailable} title={versionUnavailable ? 'This version is no longer in the available catalog.' : undefined} onClick={() => onCreate(template)}>Use template</Button>}

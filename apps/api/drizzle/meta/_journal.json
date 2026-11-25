@@ -99,6 +99,13 @@
       "when": 1795610000000,
       "tag": "0013_stage_06hr_storage_volumes",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1795610200000,
+      "tag": "0014_stage_06hr_user_interface_preferences",
+      "breakpoints": true
     }
   ]
 }

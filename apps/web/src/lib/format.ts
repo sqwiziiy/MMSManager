@@ -1,3 +1,5 @@
+import { currentLocale } from '../i18n/catalog'
+
 export function formatBytes(bytes: number | null, precision = 1): string {
   if (bytes === null || !Number.isFinite(bytes) || bytes < 0) return 'Unavailable'
   if (bytes < 1024) return `${Math.round(bytes)} B`
@@ -9,7 +11,7 @@ export function formatBytes(bytes: number | null, precision = 1): string {
     unit = next
     if (amount < 1024) break
   }
-  return `${amount.toFixed(precision)} ${unit}`
+  return `${new Intl.NumberFormat(currentLocale(), { minimumFractionDigits: precision, maximumFractionDigits: precision }).format(amount)} ${unit}`
 }
 
 export function formatRate(bytesPerSecond: number | null): string {
@@ -23,7 +25,7 @@ export function formatPercent(value: number | null): string {
 
 export function formatTimestamp(value: string | null | undefined, timeZone?: string): string {
   if (!value) return 'Waiting for first sample'
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(currentLocale(), {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -32,5 +34,5 @@ export function formatTimestamp(value: string | null | undefined, timeZone?: str
 }
 
 export function formatConfiguredDate(value: string, timeZone: string, options?: Intl.DateTimeFormatOptions): string {
-  return new Intl.DateTimeFormat(undefined, { timeZone, ...options }).format(new Date(value))
+  return new Intl.DateTimeFormat(currentLocale(), { timeZone, ...options }).format(new Date(value))
 }

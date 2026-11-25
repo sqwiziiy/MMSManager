@@ -90,7 +90,7 @@ import {
   userPasswordResetSchema,
   userDeleteRequestSchema,
   userDeleteResultSchema,
-  userPreferencesSchema,
+  userPreferencesUpdateSchema,
   userUpdateSchema,
   workspacePreferencesSchema,
   serverImportPreviewSchema,
@@ -514,7 +514,7 @@ export async function createApiApp(options: {
     return authMeSchema.parse(options.auth.getMe(request.principal!))
   })
   app.patch('/api/v1/profile/preferences', { preHandler: requireMutationAuth }, async (request) => {
-    const input = parse(userPreferencesSchema, request.body)
+    const input = parse(userPreferencesUpdateSchema, request.body)
     options.auth.updateUserPreferences(request.principal!, input)
     return authMeSchema.parse(options.auth.getMe(request.principal!))
   })

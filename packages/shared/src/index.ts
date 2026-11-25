@@ -106,7 +106,21 @@ export const profileUpdateSchema = z.object({ displayName: displayNameSchema }).
 export const userPreferencesSchema = z.object({
   compactNavigation: z.boolean(),
   defaultLanding: landingPageSchema,
+  language: z.enum(['en', 'ru']).default('en'),
+  theme: z.enum(['dark', 'light', 'system']).default('dark'),
+  accent: z.enum(['moss', 'blue', 'clay']).default('moss'),
+  density: z.enum(['comfortable', 'compact']).default('comfortable'),
+  reducedMotion: z.boolean().default(false),
 }).strict()
+export const userPreferencesUpdateSchema = z.object({
+  compactNavigation: z.boolean().optional(),
+  defaultLanding: landingPageSchema.optional(),
+  language: z.enum(['en', 'ru']).optional(),
+  theme: z.enum(['dark', 'light', 'system']).optional(),
+  accent: z.enum(['moss', 'blue', 'clay']).optional(),
+  density: z.enum(['comfortable', 'compact']).optional(),
+  reducedMotion: z.boolean().optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, { message: 'At least one preference is required.' })
 export const workspacePreferencesSchema = z.object({
   displayName: z.string().trim().min(1).max(60),
   defaultLanding: landingPageSchema,
@@ -959,6 +973,8 @@ export type NotificationsResponse = z.infer<typeof notificationsResponseSchema>
 export type MachineDay = z.infer<typeof machineDaySchema>
 export type UserRole = z.infer<typeof userRoleSchema>
 export type LandingPage = z.infer<typeof landingPageSchema>
+export type UserPreferences = z.infer<typeof userPreferencesSchema>
+export type UserPreferencesUpdate = z.infer<typeof userPreferencesUpdateSchema>
 export type AuthUser = z.infer<typeof authUserSchema>
 export type AuthMe = z.infer<typeof authMeSchema>
 export type AdminUser = z.infer<typeof adminUserSchema>

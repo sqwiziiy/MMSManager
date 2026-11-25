@@ -12,9 +12,10 @@ import { AuthLoadingPage, LoginPage, SetupPage } from '../pages/auth-pages'
 import { AuthProvider } from '../state/auth-provider'
 import { useAuth } from '../state/use-auth'
 import { MachineMonitorProvider } from '../state/machine-monitor'
+import { LocaleProvider } from '../i18n/locale'
 
 export function App() {
-  return <BrowserRouter><AuthProvider><SessionRouter /></AuthProvider></BrowserRouter>
+  return <BrowserRouter><AuthProvider><LocaleProvider><SessionRouter /></LocaleProvider></AuthProvider></BrowserRouter>
 }
 
 function SessionRouter() {

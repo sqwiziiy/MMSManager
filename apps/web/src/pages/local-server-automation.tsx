@@ -1,3 +1,4 @@
+import { currentLocale } from "../i18n/catalog"
 import { useEffect, useState } from 'react'
 import { AlertTriangle, BellRing, CalendarClock, Check, Clock3, LoaderCircle, Save, ShieldCheck } from 'lucide-react'
 import type { ServerAutomation, ServerAutomationJob, ServerAutomationUpdate } from '@mmsmanager/shared'
@@ -8,7 +9,7 @@ const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frida
 
 function localDateTime(value: string | null, timeZone: string): string {
   if (!value) return '—'
-  return new Intl.DateTimeFormat(undefined, { timeZone, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+  return new Intl.DateTimeFormat(currentLocale(), { timeZone, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 }
 
 function jobLabel(job: ServerAutomationJob): string {

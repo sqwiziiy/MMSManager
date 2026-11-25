@@ -192,9 +192,18 @@ export const userPreferences = sqliteTable('user_preferences', {
   userId: text('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
   compactNavigation: integer('compact_navigation', { mode: 'boolean' }).notNull().default(false),
   defaultLanding: text('default_landing', { enum: ['dashboard', 'machine'] }).notNull().default('dashboard'),
+  language: text('language', { enum: ['en', 'ru'] }).notNull().default('en'),
+  theme: text('theme', { enum: ['dark', 'light', 'system'] }).notNull().default('dark'),
+  accent: text('accent', { enum: ['moss', 'blue', 'clay'] }).notNull().default('moss'),
+  density: text('density', { enum: ['comfortable', 'compact'] }).notNull().default('comfortable'),
+  reducedMotion: integer('reduced_motion', { mode: 'boolean' }).notNull().default(false),
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
   check('user_preferences_landing_check', sql`${table.defaultLanding} IN ('dashboard', 'machine')`),
+  check('user_preferences_language_check', sql`${table.language} IN ('en', 'ru')`),
+  check('user_preferences_theme_check', sql`${table.theme} IN ('dark', 'light', 'system')`),
+  check('user_preferences_accent_check', sql`${table.accent} IN ('moss', 'blue', 'clay')`),
+  check('user_preferences_density_check', sql`${table.density} IN ('comfortable', 'compact')`),
 ])
 
 export const serverTemplates = sqliteTable('server_templates', {

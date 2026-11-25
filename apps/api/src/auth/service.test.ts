@@ -104,6 +104,18 @@ describe('Argon2id authentication and bootstrap', () => {
     clock += 8 * 24 * 60 * 60 * 1000
     expect(auth.authenticate(later.sessionToken)).toBeNull()
   })
+
+  it('persists language and appearance per account while partial navigation updates preserve them', async () => {
+    const { principal } = await bootstrap()
+    auth.updateUserPreferences(principal, { language: 'ru', theme: 'light', accent: 'blue', density: 'compact', reducedMotion: true })
+    expect(auth.getMe(principal).user.preferences).toMatchObject({ language: 'ru', theme: 'light', accent: 'blue', density: 'compact', reducedMotion: true })
+
+    auth.updateUserPreferences(principal, { compactNavigation: true, defaultLanding: 'machine' })
+    expect(auth.getMe(principal).user.preferences).toEqual({
+      compactNavigation: true, defaultLanding: 'machine', language: 'ru', theme: 'light', accent: 'blue', density: 'compact', reducedMotion: true,
+    })
+    expect(opened.native.prepare('PRAGMA integrity_check').pluck().get()).toBe('ok')
+  })
 })
 
 describe('additive Stage 2 database migration', () => {

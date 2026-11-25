@@ -1218,6 +1218,98 @@ test('Stage 6H dashboard and machine layouts fit the 390/768/1280/1920px matrix'
   }
 })
 
+test('R4 language and appearance preferences switch, persist and fit mobile', async ({ page }) => {
+  await signIn(page)
+  await page.setViewportSize({ width: 1280, height: 960 })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Language & appearance' }).click()
+  const form = page.locator('form.appearance-form')
+  const selectors = form.locator('select')
+  await selectors.nth(0).selectOption('ru')
+  await selectors.nth(1).selectOption('light')
+  await selectors.nth(2).selectOption('blue')
+  await selectors.nth(3).selectOption('compact')
+  await form.locator('.account-switch').click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+  await expect(page.getByRole('link', { name: /Серверы/ })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Настройки', exact: true })).toBeVisible()
+  await form.locator('.settings-footer button').last().click()
+  await expect(page.locator('.app-frame')).toHaveClass(/theme-light.*accent-blue.*density-compact.*motion-reduced/)
+  await page.screenshot({ path: screenshotPath('r4-settings-ru-desktop.png'), fullPage: true, animations: 'disabled' })
+
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+  await expect(page.getByRole('link', { name: /Серверы/ })).toBeVisible()
+  await expect(page.locator('.app-frame')).toHaveClass(/theme-light.*accent-blue.*density-compact.*motion-reduced/)
+  await page.getByRole('button', { name: 'Язык и оформление' }).click()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'Russian appearance settings at 390px')
+  const settingsNavFits = await page.locator('.settings-nav').evaluate((nav) => {
+    const right = nav.getBoundingClientRect().right
+    return [...nav.querySelectorAll('button')].every((button) => button.getBoundingClientRect().right <= right + 1 && button.getBoundingClientRect().width > 80)
+  })
+  expect(settingsNavFits).toBe(true)
+  await page.screenshot({ path: screenshotPath('r4-settings-ru-mobile.png'), fullPage: true, animations: 'disabled' })
+
+  await selectors.nth(0).selectOption('en')
+  await selectors.nth(1).selectOption('dark')
+  await selectors.nth(2).selectOption('moss')
+  await selectors.nth(3).selectOption('comfortable')
+  await form.locator('.account-switch').click()
+  await form.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  await expect(page.getByRole('link', { name: /Servers/ })).toBeVisible()
+  await expect(page.locator('.app-frame')).toHaveClass(/theme-dark.*accent-moss.*density-comfortable/)
+})
+
+test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page }) => {
+  test.setTimeout(120_000)
+  await signIn(page)
+  await page.setViewportSize({ width: 1280, height: 960 })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Language & appearance' }).click()
+  const form = page.locator('form.appearance-form')
+  await form.locator('select').nth(0).selectOption('ru')
+  await form.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+  const { serverId } = await mockLocalServer(page)
+  const workspaceRoutes = ['/', '/servers', '/machine', '/machine/history', '/activity', '/backups', '/templates', '/users', '/profile', '/settings']
+  const serverSections = ['overview', 'console', 'logs', 'players', 'mods', 'files', 'properties', 'worlds', 'runtime', 'backups', 'automation', 'access']
+  const translatedChecks: Record<string, string> = {
+    '/': 'История ресурсов компьютера', '/servers': 'Зарегистрированные серверы', '/machine': 'Ресурсы компьютера',
+    '/activity': 'События', '/users': 'Пользователи', '/profile': 'Профиль', '/settings': 'Настройки',
+    '/servers/properties': 'Свойства сервера', '/servers/console': 'Текущая консоль', '/servers/access': 'Просмотр прав доступа',
+  }
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 960 })
+    for (const route of workspaceRoutes) {
+      await page.goto(route)
+      await expect(page.locator('.page-content')).toBeVisible()
+      await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+      if (translatedChecks[route]) await expect(page.locator('.page-content')).toContainText(translatedChecks[route]!)
+      await expectNoHorizontalOverflow(page, `Russian ${route} at ${width}px`)
+      await page.screenshot({ path: screenshotPath(`r4-ru-${route === '/' ? 'dashboard' : route.slice(1).replaceAll('/', '-')}-${width}.png`), fullPage: true, animations: 'disabled' })
+    }
+    for (const section of serverSections) {
+      const route = `/servers/${serverId}/${section}`
+      await page.goto(route)
+      await expect(page.locator('.page-content')).toBeVisible()
+      await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+      const sectionCheck = translatedChecks[`/servers/${section}`]
+      if (sectionCheck) await expect(page.locator('.page-content')).toContainText(sectionCheck)
+      await expectNoHorizontalOverflow(page, `Russian ${section} at ${width}px`)
+      if (section === 'access') await expectAccessBadgeFits(page, `Russian ${section} at ${width}px`)
+      await page.screenshot({ path: screenshotPath(`r4-ru-server-${section}-${width}.png`), fullPage: true, animations: 'disabled' })
+    }
+  }
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Язык и оформление' }).click()
+  const restoreForm = page.locator('form.appearance-form')
+  await restoreForm.locator('select').nth(0).selectOption('en')
+  await restoreForm.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+})
+
 test('Stage 6H user deletion requires typed confirmation and preserves audit history', async ({ page }) => {
   await signIn(page)
   await page.setViewportSize({ width: 1280, height: 960 })
@@ -1246,5 +1338,5 @@ test('Stage 6H user deletion requires typed confirmation and preserves audit his
   await deleteButton.click()
   await expect(page.locator('.account-notice')).toContainText('was deleted')
   await expect(page.locator('.account-users-table .account-user-row').filter({ hasText: username })).toHaveCount(0)
-  await expect(page.locator('.audit-list')).toContainText('user deleted')
+  await expect(page.locator('.audit-list')).toContainText('User deleted')
 })

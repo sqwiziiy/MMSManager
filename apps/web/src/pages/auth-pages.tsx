@@ -5,6 +5,7 @@ import { ApiRequestError } from '../api/auth'
 import { Button, Field } from '../components/ui'
 import { useAuth } from '../state/use-auth'
 import type { AuthMe } from '@mmsmanager/shared'
+import { LanguagePicker } from '../i18n/locale'
 
 function intendedPath(state: unknown): string | null {
   if (!state || typeof state !== 'object' || !('from' in state)) return null
@@ -57,6 +58,7 @@ export function SetupPage() {
   return <main className="auth-stage">
     <section className="auth-shell" aria-labelledby="setup-title">
       <AuthBrand />
+      <LanguagePicker />
       <div className="auth-card">
         <div className="auth-icon"><ShieldCheck size={20} strokeWidth={1.7} /></div>
         <p className="auth-eyebrow">Local administrator setup</p>
@@ -107,6 +109,7 @@ export function LoginPage() {
   return <main className="auth-stage">
     <section className="auth-shell auth-shell-login" aria-labelledby="login-title">
       <AuthBrand />
+      <LanguagePicker />
       <div className="auth-card">
         <div className="auth-icon"><LockKeyhole size={19} strokeWidth={1.7} /></div>
         <p className="auth-eyebrow">Local workspace</p>

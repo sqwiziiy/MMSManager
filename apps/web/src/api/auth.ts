@@ -8,7 +8,7 @@ import {
   publicHealthSchema,
   workspacePreferencesSchema,
 } from '@mmsmanager/shared'
-import type { AuthMe, LandingPage, UserRole } from '@mmsmanager/shared'
+import type { AuthMe, LandingPage, UserPreferencesUpdate, UserRole } from '@mmsmanager/shared'
 import { apiRequest } from './client'
 export { ApiRequestError } from './client'
 
@@ -45,7 +45,7 @@ export function updateProfile(displayName: string) {
   return readResponse('/api/v1/profile', authMeSchema, { method: 'PATCH', body: JSON.stringify({ displayName }) })
 }
 
-export function updateUserPreferences(input: { compactNavigation: boolean; defaultLanding: LandingPage }) {
+export function updateUserPreferences(input: UserPreferencesUpdate) {
   return readResponse('/api/v1/profile/preferences', authMeSchema, { method: 'PATCH', body: JSON.stringify(input) })
 }
 

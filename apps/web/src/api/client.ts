@@ -34,7 +34,7 @@ function statusFallback(status: number, fallback?: string): string {
     case 409: return 'The item changed or conflicts with another request. Refresh and try again.'
     case 422: return 'Some values were rejected. Review them and try again.'
     case 429: return 'Too many requests. Wait a moment and retry.'
-    default: return status >= 500 ? 'The local API could not complete this request. Retry in a moment.' : `The local API returned HTTP ${status}.`
+    default: return status >= 500 ? 'The local workspace could not complete this request. Retry in a moment.' : 'This request could not be completed. Review the details and try again.'
   }
 }
 

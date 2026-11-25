@@ -1,3 +1,4 @@
+import { currentLocale } from "../i18n/catalog"
 import type { MachineResourcePoint } from '@mmsmanager/shared'
 import { formatConfiguredDate } from '../lib/format'
 
@@ -69,9 +70,9 @@ export function LiveResourceChart({
   const axisOptions: Intl.DateTimeFormatOptions = sameDate
     ? { hour: '2-digit', minute: '2-digit', second: span < 60 * 60 * 1000 ? '2-digit' : undefined }
     : { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
-  const observedFrom = new Intl.DateTimeFormat(undefined, { timeZone, ...axisOptions }).format(new Date(first!))
-  const observedTo = new Intl.DateTimeFormat(undefined, { timeZone, ...axisOptions }).format(new Date(last!))
-  const pointDescription = (at: string, value: number) => `${new Intl.DateTimeFormat(undefined, { timeZone, dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(at))}: ${label} ${value.toFixed(1)}%`
+  const observedFrom = new Intl.DateTimeFormat(currentLocale(), { timeZone, ...axisOptions }).format(new Date(first!))
+  const observedTo = new Intl.DateTimeFormat(currentLocale(), { timeZone, ...axisOptions }).format(new Date(last!))
+  const pointDescription = (at: string, value: number) => `${new Intl.DateTimeFormat(currentLocale(), { timeZone, dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(at))}: ${label} ${value.toFixed(1)}%`
 
   return <div className="live-chart-wrap">
     <div className="timeline-summary">

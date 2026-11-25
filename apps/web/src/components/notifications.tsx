@@ -5,10 +5,11 @@ import type { NotificationsResponse } from '@mmsmanager/shared'
 import { ApiRequestError } from '../api/client'
 import { getNotifications, markNotificationRead } from '../api/notifications'
 import { Badge, Button } from './ui'
+import { currentLocale } from '../i18n/catalog'
 
 function formatTime(value: string): string {
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? 'Time unavailable' : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+  return Number.isNaN(date.getTime()) ? 'Time unavailable' : new Intl.DateTimeFormat(currentLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
 function errorMessage(error: unknown): string {
