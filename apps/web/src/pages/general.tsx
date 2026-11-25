@@ -1,21 +1,22 @@
-import { currentLocale } from "../i18n/catalog"
+import { currentLocale, translateText } from "../i18n/catalog"
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { FormEvent } from 'react'
 import {
-  Activity, Archive, ArrowRight, CalendarDays, ChevronRight, CircleHelp,
+  Activity, AlertTriangle, Archive, ArrowRight, CalendarDays, ChevronRight, CircleHelp,
   Cpu, Database, FolderSearch, HardDrive, MemoryStick, Monitor, Plus,
   RefreshCw, Search, Server, Shield, Users, Wifi,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import type { LocalServerSummary, MachineHistory, MachineResourcePoint, ServerBackup } from '@mmsmanager/shared'
+import type { LocalServerSummary, MachineHistory, MachineResourcePoint, ServerBackup, ServerRemovalOperation } from '@mmsmanager/shared'
 import type { ActivityCategory, ActivityItem } from '@mmsmanager/shared'
 import { MetricTrack } from '../components/charts'
-import { Badge, Button, Card, EmptyNote, PageHeading, SectionHeading } from '../components/ui'
+import { Badge, Button, Card, EmptyNote, Field, PageHeading, SectionHeading } from '../components/ui'
 import { useMachineMonitor } from '../state/use-machine-monitor'
 import { primaryStorageVolume, useMachineStorage } from '../state/use-machine-storage'
 import { LiveResourceChart } from '../components/live-chart'
 import { mergeResourcePoints } from '../lib/resource-points'
 import { formatBytes, formatPercent, formatRate, formatTimestamp } from '../lib/format'
-import { getLocalServers, getServerBackups, getServerInventory } from '../api/servers'
+import { getLocalServers, getServerBackups, getServerInventory, getServerRemovalHistory, retryServerRemoval } from '../api/servers'
 import { getMachineHistory } from '../api/machine'
 import type { ServerInventory } from '@mmsmanager/shared'
 import { useAuth } from '../state/use-auth'
@@ -34,6 +35,11 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
   const [loadingLocal, setLoadingLocal] = useState(true)
   const [localError, setLocalError] = useState<string | null>(null)
   const [importOpen, setImportOpen] = useState(false)
+  const [removalHistory, setRemovalHistory] = useState<ServerRemovalOperation[]>([])
+  const [retryingRemoval, setRetryingRemoval] = useState<ServerRemovalOperation | null>(null)
+  const [retryConfirmation, setRetryConfirmation] = useState('')
+  const [retryError, setRetryError] = useState<string | null>(null)
+  const [retryBusy, setRetryBusy] = useState(false)
   const { snapshot } = useAuth()
   const isAdmin = snapshot?.user.role === 'administrator'
   const loadLocal = useCallback(async (signal?: AbortSignal) => {
@@ -58,13 +64,35 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
     void loadLocal(controller.signal)
     return () => controller.abort()
   }, [loadLocal])
+  useEffect(() => {
+    if (!isAdmin) { setRemovalHistory([]); return }
+    const controller = new AbortController()
+    void getServerRemovalHistory(controller.signal).then(setRemovalHistory).catch(() => undefined)
+    return () => controller.abort()
+  }, [isAdmin])
+
+  const retryRemoval = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!retryingRemoval || retryConfirmation !== retryingRemoval.serverName) return
+    setRetryBusy(true)
+    setRetryError(null)
+    try {
+      await retryServerRemoval(retryingRemoval.id, retryConfirmation)
+      const latest = await getServerRemovalHistory()
+      setRemovalHistory(latest)
+      setRetryingRemoval(null)
+      setRetryConfirmation('')
+      await loadLocal()
+    } catch (error) { setRetryError(error instanceof Error ? translateText(error.message, currentLocale()) : translateText('The server removal could not be retried.', currentLocale())) }
+    finally { setRetryBusy(false) }
+  }
 
   const localFiltered = useMemo(() => localServers.filter((server) => {
     const matchesStatus = filter === 'All servers' || (filter === 'Running' ? server.runtimeStatus === 'running' : server.runtimeStatus !== 'running')
     return matchesStatus && `${server.name} ${server.software} ${server.version ?? ''} ${server.port ?? ''}`.toLowerCase().includes(query.toLowerCase())
   }), [localServers, filter, query])
   return <div className="page-stack">
-    <PageHeading title="Servers" actions={isAdmin ? <div className="servers-page-actions"><Button icon={Plus} onClick={onCreate}>Create server</Button><Button kind="primary" icon={FolderSearch} disabled title="ZIP import is coming soon">Import from ZIP · Coming soon</Button><Button kind="secondary" icon={FolderSearch} onClick={() => setImportOpen(true)}>Register host folder</Button></div> : undefined} />
+    <PageHeading title="Servers" actions={isAdmin ? <div className="servers-page-actions"><Button icon={Plus} onClick={onCreate}>Create server</Button><Button kind="primary" icon={FolderSearch} onClick={() => setImportOpen(true)}>Import from ZIP</Button></div> : undefined} />
     {localError && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Local server inventory unavailable</strong><small>{localError}</small></span><Button icon={RefreshCw} onClick={() => void loadLocal()}>Retry</Button></div>}
     <div className="list-toolbar"><div className="filter-tabs" role="tablist" aria-label="Filter servers">{(['All servers', 'Running', 'Other'] as const).map((item) => <button key={item} role="tab" aria-selected={filter === item} className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item}<span>{item === 'All servers' ? localServers.length : item === 'Running' ? localServers.filter((server) => server.runtimeStatus === 'running').length : localServers.filter((server) => server.runtimeStatus !== 'running').length}</span></button>)}</div>
       <label className="inline-search"><Search size={15} /><input aria-label="Search servers" placeholder="Search servers" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div>
@@ -76,7 +104,26 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
         return <Link className="local-server-card-link" to={`/servers/${server.id}/overview`} key={server.id}><Card className="local-server-card"><div className="local-server-card-header"><span className="local-server-icon"><Server size={17} /></span><div><strong data-no-translate>{server.name}</strong><small>{server.source === 'imported' ? 'Imported folder' : 'Created by MMSManager'}</small></div><Badge tone={tone}>{runtimeStatus === 'external/unmanaged' ? 'Unmanaged' : runtimeStatus[0]!.toUpperCase() + runtimeStatus.slice(1)}</Badge></div><div className="local-server-facts"><div><span>Software</span><strong>{server.software === 'unknown' ? 'Unknown' : `${server.software[0]!.toUpperCase()}${server.software.slice(1)}${server.version ? ` ${server.version}` : ''}`}</strong></div><div><span>Game port</span><strong>{server.port ?? 'Not detected'}</strong></div><div><span>Memory</span><strong>{server.minMemoryMb}–{server.maxMemoryMb} MB</strong></div><div><span>EULA</span><strong>{server.eula === 'accepted' ? 'Accepted' : server.eula === 'not-accepted' ? 'Not accepted' : 'Not found'}</strong></div></div>{server.worldFolders.length > 0 && <div className="local-server-worlds" data-no-translate>Detected folders {server.worldFolders.join(' · ')}</div>}<div className="local-server-card-footer"><span>{server.managed ? 'Process controls available' : 'Imported · read only'}</span><span>Open details <ChevronRight size={13} /></span></div></Card></Link>
       })}</div> : <Card className="local-server-empty-card"><div className="empty-list"><FolderSearch size={20} /><strong>{localServers.length ? 'No servers match this filter' : 'No local servers registered'}</strong><span>{localServers.length ? 'Try another name or state.' : isAdmin ? 'Create a managed server or import a folder inside an allowed root.' : 'An administrator has not added a local server yet.'}</span></div></Card>}
     </section>
+    {isAdmin && removalHistory.length > 0 && <section className="server-removal-history" aria-labelledby="server-removal-history-title">
+      <details><summary id="server-removal-history-title">{translateText('Removed server history', currentLocale())}<Badge>{removalHistory.length}</Badge></summary>
+        <div className="server-removal-history-list">{removalHistory.map((item) => <article className="server-removal-history-row" key={item.id}>
+          <div><strong data-no-translate>{item.serverName}</strong><span>{translateText(item.mode === 'unregister' ? 'Unregistered · files kept' : item.state === 'purged' ? 'Permanent deletion completed' : item.state === 'recovery-required' ? 'Recovery needed' : item.state === 'failed' ? 'Removal failed' : 'Permanent deletion pending', currentLocale())}</span>
+            <small>{new Date(item.updatedAt).toLocaleString(currentLocale())}{item.errorMessage ? ` · ${translateText(item.errorMessage, currentLocale())}` : ''}</small></div>
+          {item.mode === 'permanent' && ['failed', 'recovery-required'].includes(item.state) && <Button kind="secondary" onClick={() => { setRetryingRemoval(item); setRetryConfirmation(''); setRetryError(null) }}>{translateText('Retry cleanup', currentLocale())}</Button>}
+        </article>)}</div>
+      </details>
+    </section>}
     {importOpen && inventory && <ImportServerDialog roots={inventory.importRoots} onClose={() => setImportOpen(false)} onImported={() => loadLocal()} />}
+    {retryingRemoval && <div className="overlay-scrim"><section className="local-file-dialog server-removal-dialog" role="dialog" aria-modal="true" aria-labelledby="server-removal-retry-title">
+      <div className="local-file-dialog-heading"><span className="server-removal-dialog-icon"><AlertTriangle size={17} /></span><div><h3 id="server-removal-retry-title">{translateText('Retry permanent cleanup', currentLocale())}</h3>
+        <p>{retryingRemoval.errorMessage ? translateText(retryingRemoval.errorMessage, currentLocale()) : translateText('A previous deletion stopped before cleanup completed.', currentLocale())}</p></div></div>
+      <form onSubmit={(event) => void retryRemoval(event)}><Field label={`${translateText('Type the exact server name to confirm', currentLocale())}: ${retryingRemoval.serverName}`}><input autoFocus value={retryConfirmation} onChange={(event) => setRetryConfirmation(event.target.value)} /></Field>
+        {retryError && <p className="server-import-error" role="alert">{retryError}</p>}
+        <div className="local-file-dialog-actions"><Button type="button" disabled={retryBusy} onClick={() => setRetryingRemoval(null)}>{translateText('Cancel', currentLocale())}</Button>
+          <Button kind="danger" icon={retryBusy ? RefreshCw : Archive} disabled={retryBusy || retryConfirmation !== retryingRemoval.serverName}>{retryBusy ? translateText('Retrying', currentLocale()) : translateText('Retry cleanup', currentLocale())}</Button>
+        </div>
+      </form>
+    </section></div>}
   </div>
 }
 

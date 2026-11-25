@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { eq } from 'drizzle-orm'
 import { openDatabase } from './client.js'
-import { localServerConsoleEntries, localServers, machineSamples, machines, serverAccessGrants, users } from './schema.js'
+import { localServerConsoleEntries, machineSamples, machines, serverAccessGrants, users } from './schema.js'
 
 describe('additive database migrations', () => {
   let directory: string | null = null
@@ -41,7 +41,7 @@ describe('additive database migrations', () => {
     opened.native.prepare('INSERT INTO user_preferences (user_id, compact_navigation, default_landing, updated_at) VALUES (?, 1, ?, ?)').run(userId, 'machine', at)
     await opened.db.insert(machines).values({ id: 'local', hostname: 'fixture-host', platform: 'linux', architecture: 'x64', source: 'local', firstSeenAt: at, lastSeenAt: at })
     await opened.db.insert(machineSamples).values({ machineId: 'local', collectedAt: at, minuteStart: at, localDate: '2026-11-24', timeZone: 'Europe/Paris', cpuPercent: 12.5, coreCount: 4, loadOne: 0.5, loadFive: 0.4, loadFifteen: 0.3, memoryUsedBytes: 1024, memoryAvailableBytes: 3072, memoryTotalBytes: 4096, swapUsedBytes: 0, swapTotalBytes: 0, storageDevice: '/fixture', storageMount: '/fixture', storageUsedBytes: 100, storageAvailableBytes: 900, storageTotalBytes: 1000, networkInterface: 'fixture0', networkRxBytesPerSecond: 1, networkTxBytesPerSecond: 2, networkRxTransferredBytes: 100, networkTxTransferredBytes: 200, sampleStatus: 'complete', unavailableFields: '[]', source: 'fixture' })
-    await opened.db.insert(localServers).values({ id: serverId, name: 'Legacy console fixture', directory: '/fixture/legacy-console', source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath: '/fixture/java', javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: at, updatedAt: at })
+    opened.native.prepare('INSERT INTO local_servers (id, name, directory, source, software, version, jar_name, java_path, java_major, required_java_major, min_memory_mb, max_memory_mb, eula, managed, world_folders, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(serverId, 'Legacy console fixture', '/fixture/legacy-console', 'created', 'vanilla', '1.21.4', 'server.jar', '/fixture/java', 21, 21, 512, 1024, 'accepted', 1, '[]', userId, at, at)
     opened.native.prepare('INSERT INTO local_server_console_entries (server_id, occurred_at, source, severity, message) VALUES (?, ?, ?, ?, ?)').run(serverId, at, 'stdout', 'info', 'Preserved legacy console fixture')
     opened.native.close()
     opened = null
@@ -60,6 +60,9 @@ describe('additive database migrations', () => {
     expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'server_templates')).toBeTruthy()
     expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'user_notification_reads')).toBeTruthy()
     expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'machine_storage_samples')).toBeTruthy()
+    expect(opened.native.prepare('SELECT removed_at AS removedAt FROM local_servers WHERE id = ?').get(serverId)).toEqual({ removedAt: null })
+    expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'local_server_removal_operations')).toBeTruthy()
+    expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'server_zip_imports')).toBeTruthy()
     const backups = (await readdir(directory)).filter((name) => name.includes('.pre-migration-') && name.endsWith('.backup'))
     expect(backups).toHaveLength(1)
     expect((await lstat(join(directory, backups[0]!))).mode & 0o777).toBe(0o600)

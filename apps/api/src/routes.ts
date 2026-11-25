@@ -103,6 +103,15 @@ import {
   serverMetadataUpdateSchema,
   serverImportRequestSchema,
   serverInventorySchema,
+  serverZipImportPublishSchema,
+  serverZipImportPublishResultSchema,
+  serverZipImportUploadResultSchema,
+  serverZipImportIdParamSchema,
+  serverRemovalRequestSchema,
+  serverRemovalRetrySchema,
+  serverRemovalIdParamSchema,
+  serverRemovalOperationListSchema,
+  serverRemovalResultSchema,
   serverInstallRequestSchema,
   serverTemplateIdParamSchema,
   serverTemplateInputSchema,
@@ -142,6 +151,8 @@ import { ServerRuntimeSettingsError, ServerRuntimeSettingsService } from './serv
 import { ActivityFeedError, ActivityFeedService } from './activity/feed.js'
 import { ServerTemplateError, ServerTemplateService } from './servers/templates.js'
 import { NotificationError, NotificationService } from './activity/notifications.js'
+import { ServerRemovalError, ServerRemovalService } from './servers/removals.js'
+import { MAX_SERVER_ZIP_BYTES, ServerZipImportError, ServerZipImportService } from './servers/zip-import.js'
 
 class InvalidRequestError extends Error {}
 
@@ -285,6 +296,10 @@ export async function createApiApp(options: {
   const files = new ServerFileService(options.db, options.servers, processes, options.now)
   const backups = new ServerBackupService(options.db, options.servers, processes, options.now)
   await backups.prepare()
+  const removals = new ServerRemovalService(options.db, options.servers, processes, options.now)
+  await removals.prepare()
+  const zipImports = new ServerZipImportService(options.db, options.servers, options.javaRuntimes, options.now)
+  await zipImports.prepare()
   const automation = new ServerAutomationService(options.db, backups, options.timeZone, options.now)
   await automation.prepare()
   app.addHook('onReady', async () => { automation.start() })
@@ -328,7 +343,8 @@ export async function createApiApp(options: {
       const isAvatarUpload = request.url === '/api/v1/profile/avatar' && request.method === 'POST'
       const isModUpload = /^\/api\/v1\/admin\/servers\/[0-9a-f-]{36}\/mods$/.test(request.url) && request.method === 'POST'
       const isFileUpload = /^\/api\/v1\/admin\/servers\/[0-9a-f-]{36}\/files\/upload(?:-batch)?(?:\?|$)/.test(request.url) && request.method === 'POST'
-      const expectsMultipart = isAvatarUpload || isModUpload || isFileUpload
+      const isServerZipUpload = request.url === '/api/v1/admin/server-imports/zip' && request.method === 'POST'
+      const expectsMultipart = isAvatarUpload || isModUpload || isFileUpload || isServerZipUpload
       if (expectsMultipart ? !contentType.startsWith('multipart/form-data;') : request.method !== 'DELETE' && !contentType.startsWith('application/json')) {
         return reply.code(415).send({ error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'The request content type is not supported.' } })
       }
@@ -391,6 +407,14 @@ export async function createApiApp(options: {
   }
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ServerRemovalError) {
+      const status = error.code.endsWith('_NOT_FOUND') ? 404 : error.code.includes('BUSY') || error.code.includes('STOPPED') || error.code.includes('UNSAFE') || error.code.includes('UNMANAGED') || error.code.includes('RECOVERY') || error.code.includes('COLLISION') ? 409 : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
+    if (error instanceof ServerZipImportError) {
+      const status = error.code.includes('NOT_FOUND') ? 404 : error.code.includes('LIMIT') || error.code.includes('TOO_LARGE') ? 413 : error.code.includes('NOT_READY') || error.code.includes('UNSUPPORTED') || error.code.includes('INCOMPATIBLE') || error.code.includes('COLLISION') || error.code.includes('CHANGED') ? 409 : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
     if (error instanceof ServerAccessError) return reply.code(error.code === 'SERVER_ACCESS_NOT_FOUND' || error.code === 'ACCESS_USER_NOT_FOUND' ? 404 : 400).send({ error: { code: error.code, message: error.message } })
     if (error instanceof NotificationError) return reply.code(404).send({ error: { code: error.code, message: error.message } })
     if (error instanceof ActivityFeedError) return reply.code(400).send({ error: { code: error.code, message: error.message } })
@@ -402,7 +426,7 @@ export async function createApiApp(options: {
     if (error instanceof ServerProcessError) {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
         : error.code.includes('TIMEOUT') ? 504
-          : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') || error.code.endsWith('_NOT_RUNNING') || error.code.endsWith('_BUSY') || error.code.endsWith('_NOT_STOPPED') || error.code.includes('RECOVERY_REQUIRED') || error.code === 'PROCESS_NOT_OWNED' || error.code === 'SERVER_NOT_PANEL_MANAGED' || error.code === 'RESTART_NOT_RUNNING' ? 409
+          : error.code.endsWith('_CONFLICT') || error.code.includes('ALREADY') || error.code.includes('STILL_RUNNING') || error.code.includes('RATE_LIMITED') || error.code.endsWith('_NOT_RUNNING') || error.code.endsWith('_BUSY') || error.code.endsWith('_NOT_STOPPED') || error.code.includes('RECOVERY_REQUIRED') || error.code === 'PROCESS_NOT_OWNED' || error.code === 'SERVER_NOT_PANEL_MANAGED' || error.code === 'SERVER_DELETE_UNMANAGED' || error.code === 'RESTART_NOT_RUNNING' ? 409
           : error.code.includes('UNAVAILABLE') ? 503 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
@@ -693,6 +717,42 @@ export async function createApiApp(options: {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverMetadataUpdateSchema, request.body)
     return serverImportResultSchema.parse({ server: await options.servers.updateMetadata(params.serverId, input.name, request.principal!.userId) })
+  })
+  app.get('/api/v1/admin/server-removals', { preHandler: requireAdmin }, async () => serverRemovalOperationListSchema.parse({ operations: removals.list() }))
+  app.post('/api/v1/admin/servers/:serverId/remove', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverRemovalRequestSchema, request.body)
+    return serverRemovalResultSchema.parse({ operation: await removals.remove(params.serverId, input.mode, input.confirmation, request.principal!.userId) })
+  })
+  app.post('/api/v1/admin/server-removals/:id/retry', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(serverRemovalIdParamSchema, request.params)
+    const input = parse(serverRemovalRetrySchema, request.body)
+    return serverRemovalResultSchema.parse({ operation: await removals.retry(params.id, input.confirmation, request.principal!.userId) })
+  })
+  app.post('/api/v1/admin/server-imports/zip', {
+    preHandler: requireAdminMutation,
+    bodyLimit: MAX_SERVER_ZIP_BYTES + 1024 * 1024,
+  }, async (request, reply) => {
+    const file = await request.file()
+    if (!file || file.fieldname !== 'archive') {
+      file?.file.resume()
+      throw new ServerZipImportError('ZIP_FILE_REQUIRED', 'Choose one ZIP archive to upload.')
+    }
+    const preview = await zipImports.stage(file.filename, file.file, () => file.file.truncated, request.principal!.userId)
+    return reply.code(201).send(serverZipImportUploadResultSchema.parse({ preview }))
+  })
+  app.post('/api/v1/admin/server-imports/:token/publish', { preHandler: requireAdminMutation }, async (request, reply) => {
+    const params = parse(serverZipImportIdParamSchema, request.params)
+    const body = typeof request.body === 'object' && request.body !== null ? request.body as Record<string, unknown> : {}
+    const input = parse(serverZipImportPublishSchema, { ...body, token: params.token })
+    const server = await zipImports.publish(input, request.principal!.userId)
+    let started = false
+    let startError: string | null = null
+    if (input.startAfterImport) {
+      try { await processes.start(server.id, request.principal!.userId); started = true }
+      catch (error) { startError = error instanceof Error ? error.message.slice(0, 300) : 'The imported server was created but did not start.' }
+    }
+    return reply.code(201).send(serverZipImportPublishResultSchema.parse({ server, importState: 'published', started, startError }))
   })
   app.get('/api/v1/admin/server-installs/catalog', { preHandler: requireAdmin }, async (request) => {
     const query = parse(installCatalogQuerySchema, request.query)

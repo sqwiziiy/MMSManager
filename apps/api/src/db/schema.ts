@@ -268,8 +268,9 @@ export const localServers = sqliteTable('local_servers', {
   createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+  removedAt: text('removed_at'),
 }, (table) => [
-  uniqueIndex('local_servers_directory_unique').on(table.directory),
+  uniqueIndex('local_servers_directory_unique').on(table.directory).where(sql`${table.removedAt} IS NULL`),
   index('local_servers_created_at_idx').on(table.createdAt),
   check('local_servers_source_check', sql`${table.source} IN ('created', 'imported')`),
   check('local_servers_software_check', sql`${table.software} IN ('vanilla', 'fabric', 'paper', 'unknown')`),
@@ -277,6 +278,44 @@ export const localServers = sqliteTable('local_servers', {
   check('local_servers_port_check', sql`${table.port} IS NULL OR (${table.port} >= 1 AND ${table.port} <= 65535)`),
   check('local_servers_eula_check', sql`${table.eula} IN ('accepted', 'not-accepted', 'unknown')`),
   check('local_servers_managed_check', sql`${table.managed} IN (0, 1)`),
+])
+
+export const localServerRemovalOperations = sqliteTable('local_server_removal_operations', {
+  id: text('id').primaryKey(),
+  serverId: text('server_id').notNull().references(() => localServers.id),
+  mode: text('mode', { enum: ['unregister', 'permanent'] }).notNull(),
+  state: text('state', { enum: ['prepared', 'quarantined', 'purging', 'unregistered', 'purged', 'failed', 'recovery-required'] }).notNull(),
+  actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  serverName: text('server_name').notNull(),
+  directory: text('directory').notNull(),
+  source: text('source', { enum: ['created', 'imported'] }).notNull(),
+  errorCode: text('error_code'),
+  errorMessage: text('error_message'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  index('local_server_removal_operations_server_time_idx').on(table.serverId, table.createdAt),
+  index('local_server_removal_operations_state_idx').on(table.state, table.createdAt),
+  check('local_server_removal_operations_mode_check', sql`${table.mode} IN ('unregister', 'permanent')`),
+  check('local_server_removal_operations_state_check', sql`${table.state} IN ('prepared', 'quarantined', 'purging', 'unregistered', 'purged', 'failed', 'recovery-required')`),
+])
+
+export const serverZipImports = sqliteTable('server_zip_imports', {
+  id: text('id').primaryKey(),
+  actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  uploadName: text('upload_name').notNull(),
+  compressedBytes: integer('compressed_bytes').notNull(),
+  previewJson: text('preview_json').notNull(),
+  state: text('state', { enum: ['ready', 'importing', 'published', 'expired', 'failed'] }).notNull(),
+  serverId: text('server_id').references(() => localServers.id, { onDelete: 'set null' }),
+  errorCode: text('error_code'),
+  createdAt: text('created_at').notNull(),
+  expiresAt: text('expires_at').notNull(),
+}, (table) => [
+  index('server_zip_imports_actor_time_idx').on(table.actorUserId, table.createdAt),
+  index('server_zip_imports_state_expiry_idx').on(table.state, table.expiresAt),
+  check('server_zip_imports_size_check', sql`${table.compressedBytes} >= 0`),
+  check('server_zip_imports_state_check', sql`${table.state} IN ('ready', 'importing', 'published', 'expired', 'failed')`),
 ])
 
 export const serverAccessGrants = sqliteTable('server_access_grants', {

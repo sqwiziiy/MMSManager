@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { lstat, open, realpath, readdir, mkdir, chmod } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import type { AppDatabase } from '../db/client.js'
 import { localServerEvents, localServers } from '../db/schema.js'
 
@@ -116,7 +116,7 @@ export class ServerRegistry {
   }
 
   async list() {
-    const rows = await this.db.select().from(localServers).orderBy(localServers.createdAt)
+    const rows = await this.db.select().from(localServers).where(isNull(localServers.removedAt)).orderBy(localServers.createdAt)
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -187,7 +187,7 @@ export class ServerRegistry {
       .sort()
     const eulaLine = eulaText?.split(/\r?\n/).find((line) => /^\s*eula\s*=/.test(line.trim()))
     const eula = eulaLine ? (/^\s*eula\s*=\s*true\s*$/i.test(eulaLine) ? 'accepted' : 'not-accepted') : 'unknown'
-    const existing = await this.db.select({ id: localServers.id }).from(localServers).where(eq(localServers.directory, canonical)).get()
+    const existing = await this.db.select({ id: localServers.id }).from(localServers).where(and(eq(localServers.directory, canonical), isNull(localServers.removedAt))).get()
     const dirStat = await lstat(canonical)
     if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) throw new ServerInventoryError('not-directory', 'The selected directory changed while it was being inspected.')
     const safeJar = detected.jarName && regularNames.has(detected.jarName) ? detected.jarName : null

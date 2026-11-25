@@ -976,6 +976,55 @@ export const serverHistoryDaySchema = z.object({
   sessionsTruncated: z.boolean(),
   window: z.object({ from: z.string().datetime({ offset: true }), to: z.string().datetime({ offset: true }), durationMs: z.number().int().positive() }).strict(),
 }).strict()
+export const serverZipImportPreviewSchema = z.object({
+  token: z.string().uuid(),
+  uploadName: z.string().min(1).max(255),
+  compressedBytes: z.number().int().nonnegative(),
+  extractedBytes: z.number().int().nonnegative(),
+  entryCount: z.number().int().nonnegative(),
+  fileCount: z.number().int().nonnegative(),
+  rootFolder: z.string().nullable(),
+  software: serverSoftwareSchema,
+  version: z.string().nullable(),
+  requiredJavaMajor: z.number().int().positive().nullable(),
+  jarName: z.string().nullable(),
+  port: z.number().int().min(1).max(65535).nullable(),
+  eula: serverEulaSchema,
+  worldFolders: z.array(z.string()).max(20),
+  supported: z.boolean(),
+  unsupportedReason: z.string().max(300).nullable(),
+  excludedPaths: z.array(z.string().max(300)).max(50),
+  excludedPathsTruncated: z.boolean(),
+  warnings: z.array(z.string().max(300)).max(20),
+}).strict()
+export const serverZipImportUploadResultSchema = z.object({ preview: serverZipImportPreviewSchema }).strict()
+export const serverZipImportIdParamSchema = z.object({ token: z.string().uuid() }).strict()
+export const serverZipImportPublishSchema = z.object({
+  token: z.string().uuid(),
+  name: z.string().trim().min(1).max(60),
+  javaPath: z.string().trim().min(1).max(1024),
+  minMemoryMb: z.number().int().min(512).max(131072),
+  maxMemoryMb: z.number().int().min(512).max(131072),
+  acceptEula: z.boolean(),
+  trustExecutable: z.literal(true),
+  startAfterImport: z.boolean(),
+}).strict().refine((value) => value.maxMemoryMb >= value.minMemoryMb, {
+  path: ['maxMemoryMb'], message: 'Maximum memory must be at least the minimum memory.',
+}).refine((value) => !value.startAfterImport || value.acceptEula, {
+  path: ['startAfterImport'], message: 'Accept the Minecraft EULA before choosing to start this server after import.',
+})
+export const serverZipImportPublishResultSchema = z.object({ server: localServerSummarySchema, importState: z.enum(['published']), started: z.boolean(), startError: z.string().nullable() }).strict()
+export const serverRemovalRequestSchema = z.object({ mode: z.enum(['unregister', 'permanent']), confirmation: z.string().trim().min(1).max(60) }).strict()
+export const serverRemovalIdParamSchema = z.object({ id: z.string().uuid() }).strict()
+export const serverRemovalRetrySchema = z.object({ confirmation: z.string().trim().min(1).max(60) }).strict()
+export const serverRemovalOperationSchema = z.object({
+  id: z.string().uuid(), serverId: z.string().uuid(), serverName: z.string(), mode: z.enum(['unregister', 'permanent']),
+  state: z.enum(['prepared', 'quarantined', 'purging', 'unregistered', 'purged', 'failed', 'recovery-required']),
+  errorCode: z.string().nullable(), errorMessage: z.string().nullable(),
+  createdAt: z.string().datetime({ offset: true }), updatedAt: z.string().datetime({ offset: true }),
+}).strict()
+export const serverRemovalOperationListSchema = z.object({ operations: z.array(serverRemovalOperationSchema).max(100) }).strict()
+export const serverRemovalResultSchema = z.object({ operation: serverRemovalOperationSchema }).strict()
 export const serverHistoryCalendarResultSchema = z.object({ calendar: serverHistoryCalendarSchema }).strict()
 export const serverHistoryDayResultSchema = z.object({ day: serverHistoryDaySchema }).strict()
 export const javaRuntimeSchema = z.object({
@@ -1055,6 +1104,8 @@ export type ServerMetadataUpdate = z.infer<typeof serverMetadataUpdateSchema>
 export type ServerAccessPermissions = z.infer<typeof serverAccessPermissionsSchema>
 export type ServerAccessGrantUser = z.infer<typeof serverAccessGrantUserSchema>
 export type ServerImportPreview = z.infer<typeof serverImportPreviewSchema>
+export type ServerZipImportPreview = z.infer<typeof serverZipImportPreviewSchema>
+export type ServerRemovalOperation = z.infer<typeof serverRemovalOperationSchema>
 export type ServerTemplateInput = z.infer<typeof serverTemplateInputSchema>
 export type ServerTemplate = z.infer<typeof serverTemplateSchema>
 export type JavaRuntime = z.infer<typeof javaRuntimeSchema>

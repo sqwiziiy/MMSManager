@@ -432,6 +432,37 @@ export class ServerProcessManager {
     } finally { this.fileMutations.delete(serverId) }
   }
 
+  /** Serializes a server removal against start, process lifecycle, file, backup, and restore operations. */
+  async withServerRemoval<T>(serverId: string, mode: 'unregister' | 'permanent', operation: (server: ReturnType<ServerProcessManager['serverRow']>) => Promise<T>): Promise<T> {
+    if (this.lifecycleOperations.has(serverId) || this.starting.has(serverId) || this.fileMutations.has(serverId)) {
+      throw new ServerProcessError('SERVER_OPERATION_BUSY', 'A server start, process, file, backup, or restore operation is still active.')
+    }
+    const server = this.serverRow(serverId)
+    if (server.removedAt) throw new ServerProcessError('SERVER_NOT_FOUND', 'This server has already been removed from the active inventory.')
+    if (mode === 'permanent' && (server.source !== 'created' || !server.managed)) {
+      throw new ServerProcessError('SERVER_DELETE_UNMANAGED', 'Only a panel-managed server folder can be permanently deleted. Imported folders can only be unregistered.')
+    }
+    if (server.source === 'created' && server.managed) {
+      const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+      if (runtime?.status !== undefined && runtime.status !== 'stopped') {
+        throw new ServerProcessError('SERVER_NOT_STOPPED', 'Stop the panel-owned server and confirm it is stopped before removing it.')
+      }
+      if (this.children.has(serverId) || this.starting.has(serverId)) {
+        throw new ServerProcessError('SERVER_NOT_STOPPED', 'MMSManager still has a process handle for this server.')
+      }
+      if (mode === 'permanent' && runtime?.status && !['stopped', 'crashed', 'error'].includes(runtime.status)) {
+        throw new ServerProcessError('SERVER_NOT_STOPPED', 'The server is not in a confirmed stopped state.')
+      }
+    }
+    this.lifecycleOperations.add(serverId)
+    this.fileMutations.add(serverId)
+    try { return await operation(server) }
+    finally {
+      this.fileMutations.delete(serverId)
+      this.lifecycleOperations.delete(serverId)
+    }
+  }
+
   async start(serverId: string, actorUserId: string): Promise<ServerRuntime> {
     if (this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'A server file operation is in progress.')
     if (this.starting.has(serverId)) throw new ServerProcessError('SERVER_ALREADY_STARTING', 'A start request is already being processed for this server.')

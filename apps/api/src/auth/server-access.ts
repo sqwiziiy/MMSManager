@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { serverAccessPermissionsSchema, type ServerAccessPermissions } from '@mmsmanager/shared'
 import type { AppDatabase } from '../db/client.js'
 import { auditEvents, localServerEvents, localServers, serverAccessGrants, users } from '../db/schema.js'
@@ -35,7 +35,7 @@ export class ServerAccessService {
   }
 
   authorize(principal: SessionPrincipal, serverId: string, capability: ServerCapability): ServerAccessDecision {
-    const server = this.db.select({ id: localServers.id }).from(localServers).where(eq(localServers.id, serverId)).get()
+    const server = this.db.select({ id: localServers.id }).from(localServers).where(and(eq(localServers.id, serverId), isNull(localServers.removedAt))).get()
     if (!server) return 'not-found'
     const account = this.db.select({ role: users.role, enabled: users.enabled }).from(users).where(eq(users.id, principal.userId)).get()
     if (!account?.enabled) return 'not-found'
@@ -50,18 +50,19 @@ export class ServerAccessService {
     const account = this.db.select({ role: users.role, enabled: users.enabled }).from(users).where(eq(users.id, principal.userId)).get()
     if (!account?.enabled) return []
     if (account.role === 'administrator') {
-      return this.db.select({ id: localServers.id }).from(localServers).all().map((row) => row.id)
+      return this.db.select({ id: localServers.id }).from(localServers).where(isNull(localServers.removedAt)).all().map((row) => row.id)
     }
     const rows = this.db.select({ serverId: serverAccessGrants.serverId }).from(serverAccessGrants)
       .innerJoin(users, eq(users.id, serverAccessGrants.userId)).where(and(
         eq(serverAccessGrants.userId, principal.userId), eq(users.enabled, true), eq(users.role, 'member'),
         eq(serverAccessGrants.viewServer, true), eq(serverAccessGrants[capability], true),
       )).all()
-    return rows.map((row) => row.serverId)
+    const activeIds = new Set(this.db.select({ id: localServers.id }).from(localServers).where(isNull(localServers.removedAt)).all().map((row) => row.id))
+    return rows.map((row) => row.serverId).filter((serverId) => activeIds.has(serverId))
   }
 
   listForAdmin(serverId: string) {
-    if (!this.db.select({ id: localServers.id }).from(localServers).where(eq(localServers.id, serverId)).get()) {
+    if (!this.db.select({ id: localServers.id }).from(localServers).where(and(eq(localServers.id, serverId), isNull(localServers.removedAt))).get()) {
       throw new ServerAccessError('SERVER_ACCESS_NOT_FOUND', 'This server is not available in the local inventory.')
     }
     const usersInWorkspace = this.db.select({

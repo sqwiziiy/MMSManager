@@ -203,6 +203,22 @@ done
     await waitForStatus('stopped')
   })
 
+  it('serializes permanent removal against starts and file mutations', async () => {
+    await expect(manager.withServerRemoval(managedId, 'permanent', async () => {
+      await expect(manager.start(managedId, userId)).rejects.toMatchObject({ code: 'SERVER_FILE_BUSY' })
+      await expect(manager.withServerFileMutation(managedId, async () => undefined)).rejects.toMatchObject({ code: 'SERVER_FILE_BUSY' })
+      return 'removal-reserved'
+    })).resolves.toBe('removal-reserved')
+  })
+
+  it('serializes permanent removal against starts and file mutations', async () => {
+    await expect(manager.withServerRemoval(managedId, 'permanent', async () => {
+      await expect(manager.start(managedId, userId)).rejects.toMatchObject({ code: 'SERVER_FILE_BUSY' })
+      await expect(manager.withServerFileMutation(managedId, async () => undefined)).rejects.toMatchObject({ code: 'SERVER_FILE_BUSY' })
+      return 'removal-reserved'
+    })).resolves.toBe('removal-reserved')
+  })
+
   it('times out restart safely and keeps an unresponsive child owned without force-killing it', async () => {
     await manager.start(stubbornId, userId)
     await waitForServerStatus(stubbornId, 'running')

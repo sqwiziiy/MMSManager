@@ -2,22 +2,22 @@ import { currentLocale, pluralCount } from "../i18n/catalog"
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
-  Activity, AlertTriangle, Archive, ArrowDownToLine, Ban, Check, ChevronRight, CircleCheck, Clock3, Cpu, FilePlus2, FileText,
+  Activity, AlertTriangle, Archive, ArrowDownToLine, Ban, Check, ChevronRight, CircleCheck, Clock3, Cpu, FilePlus2, FileText, LoaderCircle,
   Folder, FolderPlus, FolderUp, Globe, HardDrive, Layers3, LockKeyhole, Package, PencilLine, Play, RefreshCw, RotateCcw, ScrollText,
   Search, Send, Server, Settings2, Shield, Square, Terminal, Trash2, Upload, Users, Wifi,
 } from 'lucide-react'
-import { Link, NavLink, useLocation } from 'react-router-dom'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import type { LocalServerSummary, ServerConsoleEntry, ServerConsoleSession, ServerModEntry, ServerModsInventory, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerAccessPermissions, ServerAccessGrantUser } from '@mmsmanager/shared'
 import {
   confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getMyServerAccess, getServerAccessUsers, getServerConsole, getServerConsoleSessions, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, restoreServerFileRecovery, restoreTrashedServerFile, sendPlayerAction, updateServerAccess,
-  sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer,
+  sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer, removeLocalServer,
   getServerMods, uploadServerMod, uploadServerFiles, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
 } from '../api/servers'
 import type { ServerFileUploadRequest } from '../api/servers'
 import { ApiRequestError } from '../api/client'
 import { translateText } from '../i18n/catalog'
 import { useAuth } from '../state/use-auth'
-import { Badge, Button, Card, ComingSoon, SectionHeading } from '../components/ui'
+import { Badge, Button, Card, ComingSoon, Field, SectionHeading } from '../components/ui'
 import { LocalServerBackups } from './local-server-backups'
 import { LocalServerRuntime } from './local-server-runtime'
 import { LocalServerAutomation } from './local-server-automation'
@@ -178,7 +178,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     {(runtimeError || actionError || accessError) && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{actionError ?? runtimeError ?? accessText('Server permissions could not be refreshed.')}</span><Button icon={RefreshCw} onClick={() => { void refreshRuntime(); void getMyServerAccess(server.id).then((result) => setPermissions(result.permissions)).catch(() => undefined) }}>Retry</Button></div>}
     {runtime?.errorMessage && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{runtime.errorMessage}</span></div>}
     {runtime?.restartRequired && <div className="local-restart-banner" role="status"><RefreshCw size={16} /><span><strong>Restart required</strong><small>Server properties changed while this process was running. The new values take effect after the next start.</small></span></div>}
-    {section === 'overview' && hasPermission('viewServer') && <LocalOverview server={server} runtime={runtime} statusSample={statusSample} />}
+    {section === 'overview' && hasPermission('viewServer') && <><LocalOverview server={server} runtime={runtime} statusSample={statusSample} />{isAdmin && <LocalServerRemovalCard server={{ ...server, name: displayName }} />}</>}
     {section === 'players' && (canReadPlayers
       ? <LocalPlayers serverId={server.id} canView={hasPermission('viewPlayers')} canAct={hasPermission('moderatePlayers') && canReadPlayers} statusSample={statusSample} error={statusError} />
       : <SectionUnavailable title={isAdmin ? 'Players unavailable' : 'Administrator access required'} text={isAdmin ? 'Player names and moderation actions are available while a panel-owned server is ready.' : 'Player names and moderation actions require an administrator.'} />)}
@@ -243,6 +243,54 @@ function LocalOverview({ server, runtime, statusSample }: { server: LocalServerS
         <div className="local-detail-facts compact"><div><span>Process CPU</span><strong>{runtime?.cpuPercent === null || runtime?.cpuPercent === undefined ? 'Unavailable' : `${runtime.cpuPercent.toFixed(1)}%`}</strong><small>Share of host capacity; needs two samples</small></div><div><span>Last exit code</span><strong>{runtime?.lastExitCode ?? '—'}</strong></div></div>
       </Card>
     </div>
+  </>
+}
+
+function LocalServerRemovalCard({ server }: { server: LocalServerSummary }) {
+  const navigate = useNavigate()
+  const imported = server.source === 'imported' || !server.managed
+  const [mode, setMode] = useState<'unregister' | 'permanent' | null>(null)
+  const [confirmation, setConfirmation] = useState('')
+  const [understood, setUnderstood] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const tr = accessText
+  const execute = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!mode || confirmation !== server.name || mode === 'permanent' && !understood) return
+    setBusy(true)
+    setError(null)
+    try {
+      const operation = await removeLocalServer(server.id, { mode, confirmation })
+      window.dispatchEvent(new Event('mmsmanager:server-lifecycle'))
+      if (operation.state === 'failed' || operation.state === 'recovery-required') {
+        setError(operation.errorMessage ? tr(operation.errorMessage) : tr('The operation needs recovery. The server files were preserved.'))
+        return
+      }
+      navigate('/servers')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? tr(requestError.message) : tr('The server could not be removed.'))
+    } finally { setBusy(false) }
+  }
+  const close = () => { if (busy) return; setMode(null); setConfirmation(''); setUnderstood(false); setError(null) }
+  return <>
+    <Card className="server-removal-card">
+      <div><div className="server-removal-kicker"><AlertTriangle size={15} />{tr('Administrator actions')}</div><h3>{tr('Remove this server')}</h3><p>{imported ? tr('Unregistering removes this record and keeps the existing folder untouched.') : tr('You can unregister this server and keep its folder, or permanently delete its managed files.')}</p></div>
+      {!imported && <Link className="server-removal-backup-link" to={`/servers/${server.id}/backups`}>{tr('Review existing backups')}</Link>}
+      <div className="server-removal-actions"><Button kind="secondary" icon={Trash2} onClick={() => setMode('unregister')}>{tr('Unregister and keep files')}</Button>{!imported && <Button kind="danger" icon={Trash2} onClick={() => setMode('permanent')}>{tr('Delete server permanently')}</Button>}</div>
+    </Card>
+    {mode && <div className="local-file-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && close()}>
+      <section className="local-file-dialog server-removal-dialog" role="dialog" aria-modal="true" aria-labelledby="server-removal-title">
+        <div className="local-file-dialog-heading"><span className="server-removal-dialog-icon"><AlertTriangle size={17} /></span><div><h3 id="server-removal-title">{mode === 'unregister' ? tr('Unregister server') : tr('Permanently delete server files')}</h3><p>{mode === 'unregister' ? tr('The server record will be hidden. Its folder, worlds, backups and history are kept.') : tr('This removes the managed folder, including worlds, mods, settings and other server files. Existing backup archives, server history and audit records are kept separately. No new backup is created.')}</p></div></div>
+        {mode === 'permanent' && <p className="server-removal-backup-hint"><Link to={`/servers/${server.id}/backups`} onClick={close}>{tr('Review existing backups')}</Link> · {tr('There may be no backup for this server.')}</p>}
+        <form onSubmit={(event) => void execute(event)}>
+          <Field label={`${tr('Type the exact server name to confirm')}: ${server.name}`}><input autoFocus autoComplete="off" spellCheck={false} maxLength={60} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></Field>
+          {mode === 'permanent' && <label className="server-removal-confirm-check"><input type="checkbox" checked={understood} onChange={(event) => setUnderstood(event.target.checked)} /><span>{tr('I understand that this permanently deletes the server folder.')}</span></label>}
+          {error && <div className="local-inline-error" role="alert">{error}</div>}
+          <div className="local-file-dialog-actions"><Button type="button" disabled={busy} onClick={close}>{tr('Cancel')}</Button><Button kind={mode === 'permanent' ? 'danger' : 'primary'} icon={busy ? LoaderCircle : Trash2} disabled={busy || confirmation !== server.name || mode === 'permanent' && !understood}>{busy ? tr('Removing') : mode === 'unregister' ? tr('Unregister server') : tr('Permanently delete')}</Button></div>
+        </form>
+      </section>
+    </div>}
   </>
 }
 

@@ -25,4 +25,11 @@ describe('English and Russian interface catalog', () => {
     expect(translateText('Personal', 'ru')).toBe('Личные настройки')
     expect(translateText('Language changes menus, settings and help text. Minecraft values and user-entered names stay unchanged. Appearance changes preview immediately and are saved to your account.', 'ru')).toContain('Язык меняет меню')
   })
+
+  it('translates ZIP import and server removal failures, including variable details', () => {
+    expect(translateText('The archive contains an absolute or traversing path.', 'ru')).toContain('абсолютный путь')
+    expect(translateText('This server requires Java 17 or newer. Choose a compatible installed runtime.', 'ru')).toContain('Java 17 или новее')
+    expect(translateText('The archive exceeds the 20,000 entry limit.', 'ru')).toContain('20,000 элементов')
+    expect(translateText('Type the exact server name to confirm this action.', 'ru')).toContain('точное название сервера')
+  })
 })

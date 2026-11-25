@@ -535,9 +535,11 @@ test('admin imports a disposable local folder through a read-only preview', asyn
   writeFileSync(join(serverDirectory, 'server.jar'), 'not a real Minecraft archive')
 
   await page.goto('/servers')
-  await page.getByRole('button', { name: 'Register host folder' }).click()
+  await page.getByRole('button', { name: 'Import from ZIP' }).click()
+  const importDialog = page.getByRole('dialog', { name: 'Import a server archive' })
+  await importDialog.getByText('Advanced: register a folder already on this machine').click()
+  await importDialog.getByRole('button', { name: 'Register host folder' }).click()
   const dialog = page.getByRole('dialog', { name: 'Register a server folder' })
-  await dialog.getByText('Advanced: register a folder already on this machine').click()
   await dialog.getByLabel('Server folder path').fill(serverDirectory)
   await dialog.getByRole('button', { name: 'Inspect folder' }).click()
   await expect(dialog.getByText('Vanilla')).toBeVisible()
@@ -545,7 +547,7 @@ test('admin imports a disposable local folder through a read-only preview', asyn
   await expect(dialog.locator('.server-import-facts').getByText('Not found').first()).toBeVisible()
   await dialog.getByLabel('Display name').fill('Temporary Smoke Server')
   await page.screenshot({ path: screenshotPath('stage-04a-import-dialog-desktop.png') })
-  await dialog.getByRole('button', { name: 'Add to local registry' }).click()
+  await dialog.getByRole('button', { name: 'Add to inventory' }).click()
   await expect(page.getByText('Temporary Smoke Server')).toBeVisible()
   await expect(page.getByText(serverDirectory, { exact: true })).toHaveCount(0)
   expect(existsSync(join(serverDirectory, 'server.properties'))).toBe(true)
@@ -706,7 +708,7 @@ test('R8 administrators can grant server permissions with dependent access enabl
   expect(savedPayload).toMatchObject({ userId: 'b13c1cf8-e2a1-4a4e-9de4-4536c7796091', permissions: { viewServer: true, viewBackups: true, createBackups: true } })
   await page.screenshot({ path: screenshotPath('r8-access-desktop.png'), fullPage: true, animations: 'disabled' })
   await page.goto('/settings')
-  await page.getByRole('button', { name: 'Language & appearance' }).click()
+  await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
   let appearance = page.locator('form.appearance-form')
   await appearance.locator('select').nth(0).selectOption('ru')
   await appearance.locator('.settings-footer button').last().click()
@@ -732,7 +734,7 @@ test('R8 administrators can grant server permissions with dependent access enabl
   await expect(page.getByText('Granted', { exact: true })).toHaveCount(3)
   await page.setViewportSize({ width: 1280, height: 960 })
   await page.goto('/settings')
-  await page.getByRole('button', { name: 'Language & appearance' }).click()
+  await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
   appearance = page.locator('form.appearance-form')
   await appearance.locator('select').nth(0).selectOption('ru')
   await appearance.locator('.settings-footer button').last().click()
@@ -1405,6 +1407,18 @@ test('local accounts enforce administrator-only management and member access', a
   await dialog.getByRole('button', { name: 'Create user' }).click()
   await expect(page.locator('.account-users-table .data-table-row').filter({ hasText: '@stage-member' })).toBeVisible()
 
+  await page.goto('/servers')
+  const registeredServer = page.locator('.local-server-card-link').filter({ hasText: 'Temporary Smoke Server' })
+  const registeredServerHref = await registeredServer.getAttribute('href')
+  expect(registeredServerHref).toMatch(/^\/servers\/[^/]+\/overview$/)
+  const registeredServerId = registeredServerHref!.split('/')[2]!
+  await page.goto(`/servers/${registeredServerId}/access`)
+  await expect(page.getByRole('heading', { name: 'Access policy' })).toBeVisible()
+  await page.getByRole('combobox', { name: 'Choose member account' }).selectOption({ label: 'Stage Member · @stage-member' })
+  await page.getByRole('checkbox', { name: /View overview and status/ }).check()
+  await page.getByRole('button', { name: 'Save permissions' }).click()
+  await expect(page.getByText('Permissions saved and active immediately.')).toBeVisible()
+
   await signOut(page)
   await signIn(page, 'stage-member', memberPassword)
   await page.goto('/servers')
@@ -1460,6 +1474,7 @@ test('profile, avatar and personal preferences persist; password change revokes 
   await expect(page.locator('.profile-trigger')).toBeVisible()
   adminPassword = newPassword
   await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible()
+  await page.context().storageState({ path: browserSessionPath })
 })
 
 test('Stage 6H dashboard and machine layouts fit the 390/768/1280/1920px matrix', async ({ page }) => {
@@ -1617,4 +1632,103 @@ test('Stage 6H user deletion requires typed confirmation and preserves audit his
   await expect(page.locator('.account-notice')).toContainText('was deleted')
   await expect(page.locator('.account-users-table .account-user-row').filter({ hasText: username })).toHaveCount(0)
   await expect(page.locator('.audit-list')).toContainText('User deleted')
+})
+
+test('R9 ZIP import preview and publish are localized and responsive', async ({ page }) => {
+  await signIn(page)
+  await page.setViewportSize({ width: 1280, height: 960 })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
+  const appearance = page.locator('form.appearance-form')
+  await appearance.locator('select').nth(0).selectOption('ru')
+  await appearance.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+
+  const { serverId } = await mockLocalServer(page, 'stopped')
+  const token = 'a03c1cf8-e2a1-4a4e-9de4-4536c7796091'
+  const preview = {
+    token, uploadName: 'bundle.zip', compressedBytes: 1024, extractedBytes: 4096, entryCount: 5, fileCount: 4,
+    rootFolder: 'bundle', software: 'vanilla', version: '1.21.4', requiredJavaMajor: 21, jarName: 'server.jar',
+    port: 25565, eula: 'not-accepted', worldFolders: ['world'], supported: true, unsupportedReason: null,
+    excludedPaths: ['__MACOSX/._server.jar'], excludedPathsTruncated: false,
+    warnings: ['This archive can contain server JARs and mods. Import only files you trust; MMSManager will not execute them during import.'],
+  }
+  await page.route('**/api/v1/admin/server-imports/zip', async (route) => {
+    expect(route.request().method()).toBe('POST')
+    expect(route.request().headers()['content-type']).toContain('multipart/form-data')
+    await route.fulfill({ status: 201, json: { preview } })
+  })
+  const importedServer = {
+    id: 'f03c1cf8-e2a1-4a4e-9de4-4536c7796091', name: 'Пробный сервер', source: 'created', software: 'vanilla',
+    version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096,
+    port: 25565, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: new Date().toISOString(), runtimeStatus: 'stopped',
+  }
+  let publishBody: Record<string, unknown> | null = null
+  await page.route(`**/api/v1/admin/server-imports/${token}/publish`, async (route) => {
+    publishBody = route.request().postDataJSON() as Record<string, unknown>
+    await route.fulfill({ status: 201, json: { server: importedServer, importState: 'published', started: true, startError: null } })
+  })
+
+  await page.goto('/servers')
+  await page.getByRole('button', { name: 'Импорт из ZIP' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Импорт архива сервера' })
+  await dialog.locator('input[type="file"]').setInputFiles({ name: 'bundle.zip', mimeType: 'application/zip', buffer: Buffer.from('fixture only') })
+  await expect(dialog.getByText('Supported server')).toHaveCount(0)
+  await expect(dialog.getByText('Поддерживаемый сервер')).toBeVisible()
+  await expect(dialog.getByText('Исключённые служебные файлы')).toBeVisible()
+  await expect(dialog.getByText('Я доверяю этому JAR-файлу сервера и его модам')).toBeVisible()
+  await expect(dialog.locator('.server-zip-java-row select')).toContainText('Java 21 · Temurin (21.0.4)')
+  await expect(dialog.locator('.server-zip-java-row select')).not.toContainText('/tmp/')
+  await page.screenshot({ path: screenshotPath('stage-06hr-r9-zip-preview-ru-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'Russian ZIP import preview at 390px')
+  await page.screenshot({ path: screenshotPath('stage-06hr-r9-zip-preview-ru-mobile.png'), fullPage: true, animations: 'disabled' })
+
+  await dialog.getByLabel('Название сервера').fill('Пробный сервер')
+  await dialog.locator('.server-zip-check').nth(0).click()
+  await dialog.locator('.server-zip-check').nth(1).click()
+  await dialog.locator('.server-zip-check').nth(2).click()
+  await dialog.getByRole('button', { name: 'Импортировать сервер' }).click()
+  await expect(dialog.getByText('Сервер импортирован')).toBeVisible()
+  await expect.poll(() => publishBody).toMatchObject({ token, name: 'Пробный сервер', acceptEula: true, trustExecutable: true, startAfterImport: true })
+  await expect(dialog.getByText('Запрос на запуск сервера отправлен.')).toBeVisible()
+  expect(serverId).toBe('e03c1cf8-e2a1-4a4e-9de4-4536c7796091')
+})
+
+test('R9 permanent server removal requires typed confirmation in Russian on mobile', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.locator('.profile-trigger')).toBeVisible()
+  await page.setViewportSize({ width: 1280, height: 960 })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
+  const appearance = page.locator('form.appearance-form')
+  await appearance.locator('select').nth(0).selectOption('ru')
+  await appearance.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+  const { serverId } = await mockLocalServer(page, 'stopped')
+  let removalBody: Record<string, unknown> | null = null
+  await page.route(`**/api/v1/admin/servers/${serverId}/remove`, async (route) => {
+    removalBody = route.request().postDataJSON() as Record<string, unknown>
+    await route.fulfill({ json: { operation: {
+      id: 'a13c1cf8-e2a1-4a4e-9de4-4536c7796091', serverId, serverName: 'Local Fixture', mode: 'permanent', state: 'purged',
+      errorCode: null, errorMessage: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    } } })
+  })
+  await page.goto('/servers')
+  await page.getByRole('link', { name: /Local Fixture/ }).click()
+  await page.getByRole('button', { name: 'Навсегда удалить сервер' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Навсегда удалить файлы сервера' })
+  const confirmation = dialog.getByRole('textbox')
+  const deleteButton = dialog.getByRole('button', { name: 'Удалить безвозвратно' })
+  await expect(deleteButton).toBeDisabled()
+  await page.screenshot({ path: screenshotPath('stage-06hr-r9-server-remove-ru-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'Russian server removal dialog at 390px')
+  await page.screenshot({ path: screenshotPath('stage-06hr-r9-server-remove-ru-mobile.png'), animations: 'disabled' })
+  await confirmation.fill('Local Fixture')
+  await dialog.locator('.server-removal-confirm-check').click()
+  await expect(deleteButton).toBeEnabled()
+  await deleteButton.click()
+  await expect(page).toHaveURL(/\/servers$/)
+  await expect.poll(() => removalBody).toEqual({ mode: 'permanent', confirmation: 'Local Fixture' })
 })

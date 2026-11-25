@@ -37,11 +37,18 @@ import {
   serverBackupRestoreResultSchema,
   serverHistoryCalendarResultSchema,
   serverHistoryDayResultSchema,
+  serverZipImportUploadResultSchema,
+  serverZipImportPublishSchema,
+  serverZipImportPublishResultSchema,
+  serverRemovalRequestSchema,
+  serverRemovalRetrySchema,
+  serverRemovalOperationListSchema,
+  serverRemovalResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate, ServerAccessPermissions, ServerAccessGrantUser } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate, ServerAccessPermissions, ServerAccessGrantUser, ServerZipImportPreview, ServerRemovalOperation } from '@mmsmanager/shared'
 import type { DashboardPlayerSummary, InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
-import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestResponse, reportSessionExpiry } from './client'
+import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestHeaders, apiRequestResponse, reportSessionExpiry } from './client'
 
 function request<T>(url: string, schema: { parse: (value: unknown) => T }, init: RequestInit = {}): Promise<T> {
   return apiRequest(url, schema, init)
@@ -50,6 +57,63 @@ function request<T>(url: string, schema: { parse: (value: unknown) => T }, init:
 export async function getLocalServers(signal?: AbortSignal): Promise<LocalServerSummary[]> {
   const response = await request('/api/v1/servers', localServerListSchema, { signal })
   return response.servers
+}
+
+export async function uploadServerZip(file: File, onProgress: (loaded: number, total: number | null) => void, signal?: AbortSignal): Promise<ServerZipImportPreview> {
+  const path = '/api/v1/admin/server-imports/zip'
+  const form = new FormData()
+  form.append('archive', file, file.name)
+  const headers = apiRequestHeaders(path, { method: 'POST', body: form })
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    const onAbort = () => xhr.abort()
+    const cleanup = () => signal?.removeEventListener('abort', onAbort)
+    xhr.open('POST', path)
+    xhr.withCredentials = true
+    headers.forEach((value, key) => xhr.setRequestHeader(key, value))
+    xhr.upload.onprogress = (event) => onProgress(event.loaded, event.lengthComputable ? event.total : null)
+    xhr.onerror = () => { cleanup(); reject(apiNetworkError('The ZIP upload could not reach the local API.')) }
+    xhr.onabort = () => { cleanup(); reject(new DOMException('Upload cancelled.', 'AbortError')) }
+    xhr.onload = () => {
+      cleanup()
+      reportSessionExpiry(xhr.status, path)
+      let payload: unknown
+      try { payload = JSON.parse(xhr.responseText) } catch { payload = null }
+      if (xhr.status < 200 || xhr.status >= 300) { reject(apiErrorFromPayload(xhr.status, payload, undefined, xhr.getResponseHeader('x-mms-request-id'))); return }
+      try { resolve(serverZipImportUploadResultSchema.parse(payload).preview) }
+      catch { reject(apiInvalidResponseError()) }
+    }
+    if (signal?.aborted) { xhr.abort(); return }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    xhr.send(form)
+  })
+}
+
+export async function publishServerZip(input: {
+  token: string; name: string; javaPath: string; minMemoryMb: number; maxMemoryMb: number;
+  acceptEula: boolean; trustExecutable: true; startAfterImport: boolean
+}): Promise<{ server: LocalServerSummary; started: boolean; startError: string | null }> {
+  const parsed = serverZipImportPublishSchema.parse(input)
+  return request('/api/v1/admin/server-imports/' + encodeURIComponent(parsed.token) + '/publish', serverZipImportPublishResultSchema, {
+    method: 'POST', body: JSON.stringify(parsed),
+  })
+}
+
+export async function removeLocalServer(serverId: string, input: { mode: 'unregister' | 'permanent'; confirmation: string }): Promise<ServerRemovalOperation> {
+  const parsed = serverRemovalRequestSchema.parse(input)
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/remove`, serverRemovalResultSchema, { method: 'POST', body: JSON.stringify(parsed) })
+  return response.operation
+}
+
+export async function getServerRemovalHistory(signal?: AbortSignal): Promise<ServerRemovalOperation[]> {
+  const response = await request('/api/v1/admin/server-removals', serverRemovalOperationListSchema, { signal })
+  return response.operations
+}
+
+export async function retryServerRemoval(id: string, confirmation: string): Promise<ServerRemovalOperation> {
+  const body = serverRemovalRetrySchema.parse({ confirmation })
+  const response = await request(`/api/v1/admin/server-removals/${encodeURIComponent(id)}/retry`, serverRemovalResultSchema, { method: 'POST', body: JSON.stringify(body) })
+  return response.operation
 }
 
 export async function getMyServerAccess(serverId: string, signal?: AbortSignal): Promise<{ administrator: boolean; permissions: ServerAccessPermissions }> {

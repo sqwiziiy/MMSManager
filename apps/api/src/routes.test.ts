@@ -36,6 +36,90 @@ function multipartFiles(boundary: string, manifest: { files: string[]; directori
   return Buffer.concat(chunks)
 }
 
+function crc32(bytes: Buffer): number {
+  let value = 0xffffffff
+  for (const byte of bytes) {
+    value ^= byte
+    for (let bit = 0; bit < 8; bit += 1) value = (value >>> 1) ^ ((value & 1) ? 0xedb88320 : 0)
+  }
+  return (value ^ 0xffffffff) >>> 0
+}
+
+function storedZip(entries: { path: string; bytes: Buffer; unixMode?: number }[], zip64 = false): Buffer {
+  const local: Buffer[] = []
+  const central: Buffer[] = []
+  let offset = 0
+  for (const item of entries) {
+    const name = Buffer.from(item.path, 'utf8')
+    const crc = crc32(item.bytes)
+    const localHeader = Buffer.alloc(30)
+    localHeader.writeUInt32LE(0x04034b50, 0)
+    localHeader.writeUInt16LE(20, 4)
+    localHeader.writeUInt16LE(0, 6)
+    localHeader.writeUInt16LE(0, 8)
+    localHeader.writeUInt32LE(crc, 14)
+    localHeader.writeUInt32LE(item.bytes.byteLength, 18)
+    localHeader.writeUInt32LE(item.bytes.byteLength, 22)
+    localHeader.writeUInt16LE(name.byteLength, 26)
+    local.push(localHeader, name, item.bytes)
+    const centralHeader = Buffer.alloc(46)
+    centralHeader.writeUInt32LE(0x02014b50, 0)
+    centralHeader.writeUInt16LE(item.unixMode === undefined ? 20 : 0x0314, 4)
+    centralHeader.writeUInt16LE(20, 6)
+    centralHeader.writeUInt32LE(crc, 16)
+    centralHeader.writeUInt32LE(item.bytes.byteLength, 20)
+    centralHeader.writeUInt32LE(item.bytes.byteLength, 24)
+    centralHeader.writeUInt16LE(name.byteLength, 28)
+    centralHeader.writeUInt32LE((item.unixMode ?? 0) * 0x10000 >>> 0, 38)
+    centralHeader.writeUInt32LE(offset, 42)
+    central.push(centralHeader, name)
+    offset += localHeader.byteLength + name.byteLength + item.bytes.byteLength
+  }
+  const directory = Buffer.concat(central)
+  const directoryOffset = offset
+  const records = [...local, directory]
+  if (zip64) {
+    const zip64Offset = directoryOffset + directory.byteLength
+    const zip64End = Buffer.alloc(56)
+    zip64End.writeUInt32LE(0x06064b50, 0)
+    zip64End.writeBigUInt64LE(44n, 4)
+    zip64End.writeUInt16LE(45, 12)
+    zip64End.writeUInt16LE(45, 14)
+    zip64End.writeBigUInt64LE(BigInt(entries.length), 24)
+    zip64End.writeBigUInt64LE(BigInt(entries.length), 32)
+    zip64End.writeBigUInt64LE(BigInt(directory.byteLength), 40)
+    zip64End.writeBigUInt64LE(BigInt(directoryOffset), 48)
+    const locator = Buffer.alloc(20)
+    locator.writeUInt32LE(0x07064b50, 0)
+    locator.writeBigUInt64LE(BigInt(zip64Offset), 8)
+    locator.writeUInt32LE(1, 16)
+    const end = Buffer.alloc(22)
+    end.writeUInt32LE(0x06054b50, 0)
+    end.writeUInt16LE(0xffff, 8)
+    end.writeUInt16LE(0xffff, 10)
+    end.writeUInt32LE(0xffffffff, 12)
+    end.writeUInt32LE(0xffffffff, 16)
+    records.push(zip64End, locator, end)
+  } else {
+    const end = Buffer.alloc(22)
+    end.writeUInt32LE(0x06054b50, 0)
+    end.writeUInt16LE(entries.length, 8)
+    end.writeUInt16LE(entries.length, 10)
+    end.writeUInt32LE(directory.byteLength, 12)
+    end.writeUInt32LE(directoryOffset, 16)
+    records.push(end)
+  }
+  return Buffer.concat(records)
+}
+
+function multipartArchive(boundary: string, filename: string, bytes: Buffer): Buffer {
+  return Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="archive"; filename="${filename}"\r\nContent-Type: application/zip\r\n\r\n`),
+    bytes,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ])
+}
+
 describe('authenticated local API', () => {
   let opened: Awaited<ReturnType<typeof openDatabase>>
   let collector: MachineCollector
@@ -232,6 +316,43 @@ describe('authenticated local API', () => {
     const missingApi = await app.inject({ method: 'GET', url: '/api/v1/missing', headers: { host: '127.0.0.1:4174' } })
     expect(missingApi.statusCode).toBe(404)
     expect(missingApi.body).not.toContain('fixture app')
+  })
+
+  it('keeps HTTPS deployment checks exact and ignores forwarded-host spoofing', async () => {
+    await bootstrapAdmin()
+    const origin = 'https://panel.example.test'
+    const productionApp = await createApiApp({
+      db: opened.db, collector, timeZone: 'Europe/Paris', auth, avatars, servers, javaRuntimes,
+      monitoringConfig, staticWebDirectory: join(dataDirectory, 'web-dist'), webOrigin: origin,
+      apiPort: 4174, secureCookies: true, now: () => Date.parse('2026-11-23T12:00:00.000Z'),
+    })
+    try {
+      const login = await productionApp.inject({
+        method: 'POST', url: '/api/v1/auth/login',
+        headers: { host: 'panel.example.test', origin, 'content-type': 'application/json' },
+        payload: { username: 'owner', password: ADMIN_PASSWORD },
+      })
+      expect(login.statusCode).toBe(200)
+      const cookieLines = (Array.isArray(login.headers['set-cookie']) ? login.headers['set-cookie'] : [login.headers['set-cookie']]).filter((value): value is string => typeof value === 'string')
+      expect(cookieLines).toHaveLength(2)
+      expect(cookieLines.every((value) => /; Secure(?:;|$)/i.test(value))).toBe(true)
+      expect(login.headers['strict-transport-security']).toBe('max-age=31536000; includeSubDomains')
+
+      const page = await productionApp.inject({ method: 'GET', url: '/servers', headers: { host: 'panel.example.test' } })
+      expect(page.statusCode).toBe(200)
+      expect(page.body).toContain('fixture app')
+      const preflight = await productionApp.inject({ method: 'OPTIONS', url: '/api/v1/health', headers: { host: 'panel.example.test', origin, 'access-control-request-method': 'GET' } })
+      expect(preflight.headers['access-control-allow-origin']).toBe(origin)
+      expect(preflight.headers['access-control-allow-credentials']).toBe('true')
+
+      const foreign = await productionApp.inject({ method: 'GET', url: '/api/v1/health', headers: { host: 'panel.example.test', origin: 'https://foreign.example' } })
+      expect(foreign.statusCode).toBe(403)
+      const spoofed = await productionApp.inject({ method: 'GET', url: '/api/v1/health', headers: { host: 'foreign.example', origin, 'x-forwarded-host': 'panel.example.test' } })
+      expect(spoofed.statusCode).toBe(400)
+      expect(spoofed.json()).toMatchObject({ error: { code: 'BAD_HOST' } })
+    } finally {
+      await productionApp.close()
+    }
   })
 
   it('persists and applies validated monitoring settings for administrators', async () => {
@@ -1039,4 +1160,119 @@ describe('authenticated local API', () => {
     expect(activity.statusCode).toBe(200)
     expect(activity.json().events.some((item: { title?: string }) => item.title === 'Server readiness observed')).toBe(true)
   }, 20_000)
+
+  it('previews ZIP64 and flat archives, requires import trust choices, and publishes exact safe bytes', async () => {
+    const admin = await bootstrapAdmin()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
+    await javaRuntimes.scan()
+    const serverJar = Buffer.from('synthetic server JAR bytes')
+    const worldData = Buffer.from([0, 1, 2, 255, 10, 13])
+    const archive = storedZip([
+      { path: 'bundle/server-1.20.4.jar', bytes: serverJar },
+      { path: 'bundle/server.properties', bytes: Buffer.from('server-port=25570\nmotd=ZIP fixture\n') },
+      { path: 'bundle/eula.txt', bytes: Buffer.from('eula=false\n') },
+      { path: 'bundle/world/level.dat', bytes: worldData },
+    ], true)
+    const boundary = 'mms-zip64-fixture'
+    const upload = await app.inject({
+      method: 'POST', url: '/api/v1/admin/server-imports/zip',
+      headers: { ...adminHeaders, 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: multipartArchive(boundary, 'survival-world.zip', archive),
+    })
+    expect(upload.statusCode, upload.body).toBe(201)
+    const preview = upload.json().preview as Record<string, unknown>
+    expect(preview).toMatchObject({
+      uploadName: 'survival-world.zip', rootFolder: 'bundle', software: 'vanilla', version: '1.20.4',
+      requiredJavaMajor: 17, jarName: 'server-1.20.4.jar', port: 25570, eula: 'not-accepted',
+      worldFolders: ['world'], supported: true,
+    })
+    const publish = await app.inject({
+      method: 'POST', url: `/api/v1/admin/server-imports/${String(preview['token'])}/publish`, headers: adminHeaders,
+      payload: {
+        name: 'ZIP fixture world', javaPath: '/test/java-21/bin/java', minMemoryMb: 1024, maxMemoryMb: 4096,
+        acceptEula: false, trustExecutable: true, startAfterImport: false,
+      },
+    })
+    expect(publish.statusCode, publish.body).toBe(201)
+    expect(publish.json()).toMatchObject({ importState: 'published', started: false, startError: null, server: { name: 'ZIP fixture world', source: 'created', managed: true, javaMajor: 21, eula: 'not-accepted' } })
+    const serverId = publish.json().server.id as string
+    const row = await opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()
+    expect(row).toBeDefined()
+    expect(await readFile(join(row!.directory, 'server-1.20.4.jar'))).toEqual(serverJar)
+    expect(await readFile(join(row!.directory, 'world', 'level.dat'))).toEqual(worldData)
+    expect(await readFile(join(row!.directory, 'server.properties'), 'utf8')).toContain('server-port=25570')
+    expect(await readFile(join(row!.directory, 'eula.txt'), 'utf8')).toContain('eula=false')
+    const repeated = await app.inject({
+      method: 'POST', url: `/api/v1/admin/server-imports/${String(preview['token'])}/publish`, headers: adminHeaders,
+      payload: { name: 'second use', javaPath: '/test/java-21/bin/java', minMemoryMb: 1024, maxMemoryMb: 4096, acceptEula: true, trustExecutable: true, startAfterImport: false },
+    })
+    expect(repeated.statusCode).toBe(409)
+  }, 20_000)
+
+  it('rejects unsafe and colliding ZIP paths and keeps destructive server removal explicit and journaled', async () => {
+    const admin = await bootstrapAdmin()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
+    const missingCsrf = await app.inject({
+      method: 'POST', url: '/api/v1/admin/server-imports/zip',
+      headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'multipart/form-data; boundary=no-csrf' },
+      payload: multipartArchive('no-csrf', 'unsafe.zip', storedZip([{ path: '../escape.txt', bytes: Buffer.from('no') }])),
+    })
+    expect(missingCsrf.statusCode).toBe(403)
+    for (const [filename, bytes, expectedStatus] of [
+      ['traversal.zip', storedZip([{ path: '../escape.txt', bytes: Buffer.from('no') }]), 400],
+      ['collision.zip', storedZip([{ path: 'Mods/A.jar', bytes: Buffer.from('a') }, { path: 'mods/a.jar', bytes: Buffer.from('b') }]), 409],
+    ] as const) {
+      const boundary = `mms-${filename}`
+      const response = await app.inject({ method: 'POST', url: '/api/v1/admin/server-imports/zip', headers: { ...adminHeaders, 'content-type': `multipart/form-data; boundary=${boundary}` }, payload: multipartArchive(boundary, filename, bytes) })
+      expect(response.statusCode).toBe(expectedStatus)
+    }
+
+    const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
+    const at = '2026-11-23T12:00:00.000Z'
+    const managedId = randomUUID()
+    const managedDirectory = join(servers.managedRoot, 'remove-fixture')
+    await mkdir(managedDirectory, { recursive: true })
+    await writeFile(join(managedDirectory, 'world.txt'), 'isolated disposable fixture')
+    await opened.db.insert(localServers).values({
+      id: managedId, name: 'Delete fixture', directory: managedDirectory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar',
+      javaPath: '/test/java-21/bin/java', javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: null,
+      eula: 'accepted', managed: true, worldFolders: '[]', createdBy: principal.userId, createdAt: at, updatedAt: at,
+    }).run()
+    await opened.db.insert(localServerEvents).values({ serverId: managedId, actorUserId: principal.userId, action: 'history-fixture', outcome: 'success', occurredAt: at, detail: 'kept by tombstone' }).run()
+    const wrongName = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${managedId}/remove`, headers: adminHeaders, payload: { mode: 'permanent', confirmation: 'Delete fixture typo' } })
+    expect(wrongName.statusCode).toBe(400)
+    expect(await readFile(join(managedDirectory, 'world.txt'), 'utf8')).toBe('isolated disposable fixture')
+    const staleProcess = { serverId: managedId, pid: 65530, processStartMarker: 'stale', processBootId: 'stale', status: 'running' as const, startedAt: at, stoppedAt: null, lastExitCode: null, errorMessage: null, updatedAt: at }
+    await opened.db.insert(localServerRuntime).values(staleProcess).run()
+    const running = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${managedId}/remove`, headers: adminHeaders, payload: { mode: 'permanent', confirmation: 'Delete fixture' } })
+    expect(running.statusCode).toBe(409)
+    await opened.db.update(localServerRuntime).set({ status: 'stopped', processPid: null, processStartMarker: null, processBootId: null }).where(eq(localServerRuntime.serverId, managedId)).run()
+    const deletion = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${managedId}/remove`, headers: adminHeaders, payload: { mode: 'permanent', confirmation: 'Delete fixture' } })
+    expect(deletion.statusCode, deletion.body).toBe(200)
+    expect(deletion.json().operation).toMatchObject({ state: 'purged', mode: 'permanent', serverName: 'Delete fixture' })
+    await expect(readFile(managedDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await opened.db.select().from(localServers).where(eq(localServers.id, managedId)).get()).toMatchObject({ removedAt: at })
+    expect(await opened.db.select().from(localServerEvents).where(eq(localServerEvents.serverId, managedId)).all()).toHaveLength(3)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/servers', headers: { ...requestHeaders, cookie: admin.cookieHeader } })).json().servers).toEqual([])
+    const removalList = await app.inject({ method: 'GET', url: '/api/v1/admin/server-removals', headers: { ...requestHeaders, cookie: admin.cookieHeader } })
+    expect(removalList.statusCode).toBe(200)
+    expect(removalList.json().operations).toContainEqual(expect.objectContaining({ serverId: managedId, state: 'purged' }))
+
+    const importedId = randomUUID()
+    const externalDirectory = join(dataDirectory, 'imported-outside-root')
+    await mkdir(externalDirectory, { recursive: true })
+    await writeFile(join(externalDirectory, 'keep.txt'), 'external data remains')
+    await opened.db.insert(localServers).values({
+      id: importedId, name: 'Imported outside fixture', directory: externalDirectory, source: 'imported', software: 'unknown', version: null, jarName: null,
+      javaPath: null, javaMajor: null, requiredJavaMajor: null, minMemoryMb: 512, maxMemoryMb: 1024, port: null,
+      eula: 'unknown', managed: false, worldFolders: '[]', createdBy: null, createdAt: at, updatedAt: at,
+    }).run()
+    const prohibited = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${importedId}/remove`, headers: adminHeaders, payload: { mode: 'permanent', confirmation: 'Imported outside fixture' } })
+    expect(prohibited.statusCode).toBe(409)
+    const unregister = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${importedId}/remove`, headers: adminHeaders, payload: { mode: 'unregister', confirmation: 'Imported outside fixture' } })
+    expect(unregister.statusCode, unregister.body).toBe(200)
+    expect(unregister.json().operation).toMatchObject({ state: 'unregistered', mode: 'unregister' })
+    expect(await readFile(join(externalDirectory, 'keep.txt'), 'utf8')).toBe('external data remains')
+  })
+
 })
