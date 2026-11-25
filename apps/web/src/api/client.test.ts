@@ -15,7 +15,7 @@ describe('central API request handling', () => {
   let sessionExpired: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    vi.stubGlobal('document', { cookie: 'mmsmanager_csrf=csrf%2Bvalue' })
+    vi.stubGlobal('document', { cookie: 'mmsmanager_csrf=csrf%2Bvalue', documentElement: { lang: 'en' } })
     const browserEvents = new EventTarget()
     sessionExpired = vi.fn()
     browserEvents.addEventListener('mmsmanager:session-expired', sessionExpired)
@@ -75,6 +75,15 @@ describe('central API request handling', () => {
     await expect(apiRequest('/api/v1/action', passthrough, { method: 'POST', body: '{}' })).rejects.toMatchObject({
       message: 'Some values were rejected. Review them and try again.',
     })
+  })
+
+  it('translates structured API failures in Russian and hides unknown server wording', async () => {
+    const documentFixture = document as unknown as { documentElement: { lang: string } }
+    documentFixture.documentElement.lang = 'ru'
+    fetchMock.mockResolvedValueOnce(reply(500, { error: { code: 'INTERNAL_ERROR', message: 'The local data request failed.' } }))
+      .mockResolvedValueOnce(reply(500, { error: { code: 'UNRECOGNIZED_INTERNAL', message: 'private stack detail' } }))
+    await expect(apiRequest('/api/v1/servers', passthrough)).rejects.toMatchObject({ message: 'Не удалось получить локальные данные.' })
+    await expect(apiRequest('/api/v1/servers', passthrough)).rejects.toMatchObject({ message: 'Не удалось выполнить запрос. Попробуйте ещё раз.' })
   })
 
   it('does not expire the session during login or the initial auth-me probe', async () => {

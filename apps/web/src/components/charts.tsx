@@ -1,6 +1,7 @@
 import { ArrowDownRight, ArrowUpRight } from 'lucide-react'
+import type { ReactNode } from 'react'
 
-export function MetricTrack({ label, value, detail, tone = 'accent', delta }: { label: string; value: number; detail: string; tone?: 'accent' | 'blue' | 'amber'; delta?: 'up' | 'down' }) {
+export function MetricTrack({ label, value, detail, tone = 'accent', delta }: { label: ReactNode; value: number; detail: ReactNode; tone?: 'accent' | 'blue' | 'amber'; delta?: 'up' | 'down' }) {
   return (
     <div className="metric-track-row">
       <div className="metric-track-copy"><span>{label}</span><strong>{value}%</strong></div>

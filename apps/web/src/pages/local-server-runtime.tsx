@@ -4,6 +4,7 @@ import type { JvmOptions, JavaRuntime, ServerRuntimeSettings, ServerRuntimeSetti
 import { getJavaRuntimes, scanJavaRuntimes, getServerRuntimeSettings, updateServerRuntimeSettings } from '../api/servers'
 import { Badge, Button, Card, SectionHeading } from '../components/ui'
 import { javaRuntimeLabel } from '../lib/java-runtime'
+import { currentLocale, translateText } from '../i18n/catalog'
 
 const defaultOptions: JvmOptions = { collector: 'default', maxGCPauseMs: null, parallelGcThreads: null, alwaysPreTouch: false, disableExplicitGc: false }
 
@@ -99,10 +100,10 @@ export function LocalServerRuntime({ serverId, managed, isAdmin }: { serverId: s
       <Card className="local-runtime-settings-card">
         <SectionHeading title="Java runtime" description="Choose a locally checked executable for this panel-managed server." action={<Badge tone={settings?.runtimeStatus === 'running' ? 'warn' : 'neutral'}>{settings?.runtimeStatus ?? 'Unavailable'}</Badge>} />
         <label className="local-runtime-field"><span>Selected Java executable</span><select aria-label="Selected Java executable" value={javaPath} onChange={(event) => setJavaPath(event.target.value)}>
-          {!runtimes.some((item) => item.path === settings?.javaPath) && settings?.javaPath && <option value={settings.javaPath}>Saved Java {settings.javaMajor ?? 'version unknown'} · recheck on save</option>}
-          {runtimes.map((runtime) => <option key={runtime.path} value={runtime.path}>{javaRuntimeLabel(runtime, runtimes)}</option>)}
+          {!runtimes.some((item) => item.path === settings?.javaPath) && settings?.javaPath && <option value={settings.javaPath}>{translateText(`Saved Java ${settings.javaMajor ?? 'version unknown'} · recheck on save`, currentLocale())}</option>}
+          {runtimes.map((runtime) => <option key={runtime.path} value={runtime.path} data-no-translate>{javaRuntimeLabel(runtime, runtimes)}</option>)}
         </select></label>
-        <div className="local-runtime-inline-facts"><div><span>Selected version</span><strong>{selectedMajor ? `Java ${selectedMajor}` : 'Not verified'}</strong></div><div><span>Minimum recorded at install</span><strong>{settings?.requiredJavaMajor ? `Java ${settings.requiredJavaMajor}+` : 'Unknown'}</strong></div></div>
+        <div className="local-runtime-inline-facts"><div><span>Selected version</span><strong>{selectedMajor ? <span data-no-translate>Java {selectedMajor}</span> : 'Not verified'}</strong></div><div><span>Minimum recorded at install</span><strong>{settings?.requiredJavaMajor ? <span data-no-translate>Java {settings.requiredJavaMajor}+</span> : 'Unknown'}</strong></div></div>
         {compatibility === 'incompatible' && <p className="local-inline-error" role="status">This runtime is below the minimum Java version recorded for this installation. Choose Java {settings?.requiredJavaMajor}+.</p>}
         {compatibility === 'unknown' && <p className="local-runtime-hint">The installation has no recorded Java minimum. Runtime compatibility cannot be verified automatically.</p>}
         {compatibility === 'compatible' && settings?.requiredJavaMajor && selectedMajor && selectedMajor > settings.requiredJavaMajor && <p className="local-runtime-hint">The recorded minimum is met. Compatibility with newer Java versions still depends on this server build.</p>}
@@ -111,8 +112,8 @@ export function LocalServerRuntime({ serverId, managed, isAdmin }: { serverId: s
       <Card className="local-runtime-settings-card">
         <SectionHeading title="Memory allocation" description="Typed bounds used by panel launches. Maximum is limited to 128 GiB." />
         <div className="local-runtime-memory-grid">
-          <label className="local-runtime-field"><span>Minimum memory</span><div className="local-runtime-number"><input aria-label="Minimum memory" type="number" min={512} max={131072} step={256} value={minMemoryMb} onChange={(event) => setMinMemoryMb(event.target.value)} /><i>MB</i></div></label>
-          <label className="local-runtime-field"><span>Maximum memory</span><div className="local-runtime-number"><input aria-label="Maximum memory" type="number" min={512} max={131072} step={256} value={maxMemoryMb} onChange={(event) => setMaxMemoryMb(event.target.value)} /><i>MB</i></div></label>
+          <label className="local-runtime-field"><span>Minimum memory</span><div className="local-runtime-number"><input aria-label="Minimum memory" type="number" min={512} max={131072} step={256} value={minMemoryMb} onChange={(event) => setMinMemoryMb(event.target.value)} /><i>{translateText('MB', currentLocale())}</i></div></label>
+          <label className="local-runtime-field"><span>Maximum memory</span><div className="local-runtime-number"><input aria-label="Maximum memory" type="number" min={512} max={131072} step={256} value={maxMemoryMb} onChange={(event) => setMaxMemoryMb(event.target.value)} /><i>{translateText('MB', currentLocale())}</i></div></label>
         </div>
         <div className="local-runtime-memory-note"><Cpu size={14} /><span>These limits apply to the Minecraft Java child process, not host telemetry.</span></div>
       </Card>
@@ -120,7 +121,7 @@ export function LocalServerRuntime({ serverId, managed, isAdmin }: { serverId: s
         <SectionHeading title="JVM tuning" description="Only supported, validated switches are available; arbitrary arguments are not accepted." />
         <div className="local-runtime-options-grid">
           <label className="local-runtime-field"><span>Garbage collector</span><select aria-label="Garbage collector" value={options.collector} onChange={(event) => setOptions((current) => ({ ...current, collector: event.target.value as JvmOptions['collector'], ...(event.target.value === 'default' ? { maxGCPauseMs: null, parallelGcThreads: null } : {}) }))}><option value="default">Java default</option><option value="g1">G1</option><option value="zgc">ZGC · Java 17+</option></select></label>
-          <label className="local-runtime-field"><span>Maximum GC pause</span><div className="local-runtime-number"><input aria-label="Maximum GC pause" type="number" min={50} max={1000} step={10} disabled={options.collector === 'default'} value={options.maxGCPauseMs ?? ''} onChange={(event) => setOptions((current) => ({ ...current, maxGCPauseMs: event.target.value === '' ? null : Number(event.target.value) }))} /><i>ms</i></div></label>
+          <label className="local-runtime-field"><span>Maximum GC pause</span><div className="local-runtime-number"><input aria-label="Maximum GC pause" type="number" min={50} max={1000} step={10} disabled={options.collector === 'default'} value={options.maxGCPauseMs ?? ''} onChange={(event) => setOptions((current) => ({ ...current, maxGCPauseMs: event.target.value === '' ? null : Number(event.target.value) }))} /><i>{translateText('ms', currentLocale())}</i></div></label>
           <label className="local-runtime-field"><span>Parallel GC threads</span><div className="local-runtime-number"><input aria-label="Parallel GC threads" type="number" min={1} max={64} disabled={options.collector === 'default'} value={options.parallelGcThreads ?? ''} onChange={(event) => setOptions((current) => ({ ...current, parallelGcThreads: event.target.value === '' ? null : Number(event.target.value) }))} /><i>threads</i></div></label>
         </div>
         <div className="local-runtime-switches">

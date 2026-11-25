@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { englishCatalog, isCatalogText, pluralCount, russianCatalog, supplementalPhrasePairs, translateText } from './catalog'
+import { englishCatalog, isCatalogText, isLocalizedText, pluralCount, russianCatalog, supplementalPhrasePairs, translateText } from './catalog'
 
 describe('English and Russian interface catalog', () => {
   it('keeps matching keys and translates accessible interface messages', () => {
@@ -16,6 +16,19 @@ describe('English and Russian interface catalog', () => {
     expect(pluralCount(3, 'ru', forms)).toBe('3 сервера')
     expect(pluralCount(12, 'ru', forms)).toBe('12 серверов')
     expect(pluralCount(2, 'en', forms)).toBe('2 servers')
+  })
+
+  it('requires Russian targets and translates parameterized accessibility copy', () => {
+    expect(isLocalizedText('Dashboard', 'ru')).toBe(false)
+    expect(isLocalizedText('Обзор', 'ru')).toBe(true)
+    expect(translateText('3 samples', 'ru')).toBe('3 образца')
+    expect(translateText('Reset password for stage-admin', 'ru')).toBe('Сбросить пароль для stage-admin')
+    expect(translateText('Saved Java 21 · recheck on save', 'ru')).toBe('Сохранённая Java 21 · повторная проверка при сохранении')
+    expect(translateText('MB', 'ru')).toBe('МБ')
+    const calendarDay = translateText('понедельник, 2 ноября 2026 г.. No data', 'ru')
+    expect(calendarDay).toBe('понедельник, 2 ноября 2026 г.. Нет данных')
+    expect(isLocalizedText(calendarDay, 'ru')).toBe(true)
+    expect(isLocalizedText('25 нояб. 2026 г.. No data', 'ru')).toBe(false)
   })
 
   it('keeps supplemental route phrases paired, while preserving literal property values', () => {

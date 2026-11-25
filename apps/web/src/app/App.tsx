@@ -72,6 +72,7 @@ function AuthenticatedWorkspace() {
       workspaceName={snapshot.workspace.displayName}
       onSignOut={() => void handleSignOut()}
       onCreate={openCreate}
+      overlay={createOpen && <CreateServerWizard key={wizardPreset?.id ?? 'new-server'} preset={wizardPreset ?? undefined} onClose={() => { setCreateOpen(false); setWizardPreset(null) }} />}
     >
       <Routes>
         <Route path="/" element={<DashboardPage onCreate={openCreate} />} />
@@ -88,6 +89,5 @@ function AuthenticatedWorkspace() {
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AppShell>
-    {createOpen && <CreateServerWizard key={wizardPreset?.id ?? 'new-server'} preset={wizardPreset ?? undefined} onClose={() => { setCreateOpen(false); setWizardPreset(null) }} />}
   </MachineMonitorProvider>
 }

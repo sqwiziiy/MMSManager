@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
+import { isLocalizedText } from '../src/i18n/catalog'
 
 const screenshotDir = resolve(process.env['MMSMANAGER_E2E_SCREENSHOT_DIR'] ?? resolve(process.cwd(), '../../reports/screenshots'))
 function screenshotPath(name: string): string { return resolve(screenshotDir, `stage-06h-${name}`) }
@@ -20,7 +21,7 @@ test.use({
 })
 async function signIn(page: Page, username = 'stage-admin', password = adminPassword): Promise<void> {
   await page.goto('/login')
-  const authHeading = page.getByRole('heading', { name: /^(Dashboard|Sign in to MMSManager)$/ })
+  const authHeading = page.getByRole('heading', { name: /^(Dashboard|Обзор|Sign in to MMSManager)$/ })
   await expect(authHeading).toBeVisible()
   if (await page.getByRole('heading', { name: 'Sign in to MMSManager' }).isVisible()) {
     await page.getByLabel('Username').fill(username)
@@ -37,7 +38,7 @@ async function signIn(page: Page, username = 'stage-admin', password = adminPass
     }
     await expect(page.locator('.profile-trigger')).toBeVisible()
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: /^(Dashboard|Обзор)$/ })).toBeVisible()
     if (username === 'stage-admin') await page.context().storageState({ path: browserSessionPath })
   }
 }
@@ -1638,7 +1639,7 @@ test('R4 language and appearance preferences switch, persist and fit mobile', as
 })
 
 test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page }) => {
-  test.setTimeout(120_000)
+  test.setTimeout(300_000)
   await signIn(page)
   await page.setViewportSize({ width: 1280, height: 960 })
   await page.goto('/settings')
@@ -1657,7 +1658,9 @@ test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page
     '/servers/logs': 'Журналы процесса', '/servers/players': 'Список игроков', '/servers/mods': 'Установленные моды',
     '/servers/files': 'Файлы сервера', '/servers/worlds': 'Управление мирами', '/servers/runtime': 'Профиль запуска',
   }
-  for (const width of [390, 1280]) {
+  const visualWorkspaceRoutes = new Set(['/', '/servers', '/machine', '/profile', '/settings'])
+  const visualServerSections = new Set(['console', 'files', 'properties', 'access'])
+  for (const width of [390, 768, 1280, 1920]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 960 })
     for (const route of workspaceRoutes) {
       await page.goto(route)
@@ -1665,7 +1668,9 @@ test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page
       await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
       if (translatedChecks[route]) await expect(page.locator('.page-content')).toContainText(translatedChecks[route]!)
       await expectNoHorizontalOverflow(page, `Russian ${route} at ${width}px`)
-      await page.screenshot({ path: screenshotPath(`r4-ru-${route === '/' ? 'dashboard' : route.slice(1).replaceAll('/', '-')}-${width}.png`), fullPage: true, animations: 'disabled' })
+      if ((width === 390 || width === 1280) && visualWorkspaceRoutes.has(route)) {
+        await page.screenshot({ path: screenshotPath(`r4-ru-${route === '/' ? 'dashboard' : route.slice(1).replaceAll('/', '-')}-${width}.png`), fullPage: true, animations: 'disabled' })
+      }
     }
     for (const section of serverSections) {
       const route = `/servers/${serverId}/${section}`
@@ -1683,11 +1688,13 @@ test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page
         await expect(page.locator('.page-content')).toContainText('Игровой процесс')
         await expect(page.locator('.page-content')).toContainText('Разрешить полёт')
         await expect(page.getByText('Настройки сетевой привязки Minecraft отделены от локального веб-интерфейса.')).toBeVisible()
-        await page.screenshot({ path: screenshotPath(`r6-ru-properties-advanced-${width}.png`), fullPage: true, animations: 'disabled' })
+        if (width === 390 || width === 1280) await page.screenshot({ path: screenshotPath(`r6-ru-properties-advanced-${width}.png`), fullPage: true, animations: 'disabled' })
       }
       await expectNoHorizontalOverflow(page, `Russian ${section} at ${width}px`)
       if (section === 'access') await expectAccessBadgeFits(page, `Russian ${section} at ${width}px`)
-      await page.screenshot({ path: screenshotPath(`r4-ru-server-${section}-${width}.png`), fullPage: true, animations: 'disabled' })
+      if ((width === 390 || width === 1280) && visualServerSections.has(section)) {
+        await page.screenshot({ path: screenshotPath(`r4-ru-server-${section}-${width}.png`), fullPage: true, animations: 'disabled' })
+      }
     }
   }
   await page.goto('/settings')
@@ -1696,6 +1703,239 @@ test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page
   await restoreForm.locator('select').nth(0).selectOption('en')
   await restoreForm.locator('.settings-footer button').last().click()
   await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+})
+
+test('I3 accent palettes reach dashboard, servers, access, properties, settings, charts and dialogs', async ({ page }) => {
+  test.setTimeout(180_000)
+  await signIn(page)
+  await page.setViewportSize({ width: 1280, height: 960 })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
+  const initialAppearance = page.locator('form.appearance-form')
+  await initialAppearance.locator('select').nth(0).selectOption('en')
+  await initialAppearance.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  const { serverId } = await mockLocalServer(page)
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
+  const point = (offsetMs: number, cpu: number) => ({
+    observedAt: new Date(nowMs - offsetMs).toISOString(), sampleCount: 1, cpuSampleCount: 1, networkSampleCount: 1,
+    bucketSeconds: 10, coveragePercent: 100, cpuPercent: cpu, memoryUsedBytes: 2_000_000_000,
+    memoryTotalBytes: 8_000_000_000, memoryPercent: 25, storageUsedBytes: 4_000_000_000,
+    storageTotalBytes: 16_000_000_000, storagePercent: 25, rxBytesPerSecond: 10, txBytesPerSecond: 5,
+  })
+  const historyPoints = [point(10_000, 20), point(5_000, 30)]
+  await page.route('**/api/v1/machine/current', (route) => route.fulfill({ json: {
+    status: 'live', timeZone: 'UTC', intervalMs: 1000, provenance: 'LOCAL_HOST', lastSuccessfulAt: now,
+    host: { id: 'local', hostname: 'fixture-host', platform: 'linux', distro: 'Fixture Linux', release: '1', architecture: 'x64', cpuModel: 'Fixture CPU', coreCount: 4, uptimeSeconds: 3600, source: 'systeminformation' },
+    sample: { id: 1, collectedAt: now, cpuPercent: 35, coreCount: 4, loadAverage: { one: 0.2, five: 0.3, fifteen: 0.4 },
+      memory: { usedBytes: 2_000_000_000, availableBytes: 6_000_000_000, totalBytes: 8_000_000_000, swapUsedBytes: null, swapTotalBytes: null, usedPercent: 25 },
+      storage: { device: null, mount: null, usedBytes: 4_000_000_000, availableBytes: 12_000_000_000, totalBytes: 16_000_000_000, usedPercent: 25 },
+      network: { interface: 'fixture0', rxBytesPerSecond: 10, txBytesPerSecond: 5, rxTransferredBytes: 100, txTransferredBytes: 50 }, sampleStatus: 'ok', unavailableFields: [], source: 'systeminformation' },
+  } }))
+  await page.route('**/api/v1/machine/history?**', (route) => route.fulfill({ json: { from: new Date(nowMs - 86_400_000).toISOString(), to: now, timeZone: 'UTC', resolution: 'raw', bucketSeconds: 10, coveragePercent: 100, points: historyPoints } }))
+  await page.route('**/api/v1/machine/storage', (route) => route.fulfill({ json: { volumes: [], history: [], historyRetentionDays: 30 } }))
+  const accessPermissions = { viewServer: true, viewLogs: true, sendConsoleCommands: false, controlLifecycle: false, startServer: true, stopServer: true, restartServer: true, viewPlayers: true, moderatePlayers: false, viewMods: true, manageMods: false, viewFiles: true, manageFiles: false, viewSettings: true, manageSettings: false, viewWorlds: true, viewBackups: true, createBackups: false }
+  await page.route(`**/api/v1/admin/servers/${serverId}/access`, (route) => route.fulfill({ json: { users: [{ userId: 'b13c1cf8-e2a1-4a4e-9de4-4536c7796091', username: 'i3-member', displayName: 'I3 Member', role: 'member', enabled: true, permissions: accessPermissions }] } }))
+
+  const tokenColor = async (token: string) => page.locator('.app-frame').evaluate((frame, name) => {
+    const probe = document.createElement('span')
+    probe.style.color = `var(${name})`
+    frame.append(probe)
+    const color = getComputedStyle(probe).color
+    probe.remove()
+    return color
+  }, token)
+  const palettes = [
+    { name: 'moss', rgb: 'rgb(186, 211, 154)' },
+    { name: 'blue', rgb: 'rgb(150, 188, 232)' },
+    { name: 'clay', rgb: 'rgb(209, 160, 139)' },
+  ] as const
+
+  for (const palette of palettes) {
+    await page.goto('/settings')
+    await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
+    const form = page.locator('form.appearance-form')
+    await form.locator('select').nth(1).selectOption('dark')
+    await form.locator('select').nth(2).selectOption(palette.name)
+    await form.getByRole('button', { name: 'Save preferences' }).click()
+    await expect(page.locator('.app-frame')).toHaveClass(new RegExp(`accent-${palette.name}`))
+    expect(await tokenColor('--accent')).toBe(palette.rgb)
+    const accentColor = await tokenColor('--accent')
+    const accentStrong = await tokenColor('--accent-strong')
+    const accentSoft = await tokenColor('--accent-soft')
+    const accentBorder = await tokenColor('--accent-border')
+
+    await page.goto('/')
+    await expect(page.locator('.live-chart-line')).toHaveCount(1)
+    await expect(page.locator('.overview-icon').first()).toBeVisible()
+    expect(await page.locator('.live-chart-line').evaluate((line) => getComputedStyle(line).stroke)).toBe(accentColor)
+    expect(await page.locator('.overview-icon').first().evaluate((icon) => getComputedStyle(icon).color)).toBe(accentStrong)
+    await page.screenshot({ path: screenshotPath(`i3-dashboard-${palette.name}-desktop.png`), fullPage: true, animations: 'disabled' })
+
+    await page.goto('/servers')
+    const serverIcon = page.locator('.local-server-icon').first()
+    await expect(serverIcon).toBeVisible()
+    expect(await serverIcon.evaluate((icon) => getComputedStyle(icon).color)).toBe(accentStrong)
+    expect(await serverIcon.evaluate((icon) => getComputedStyle(icon).backgroundColor)).toBe(accentSoft)
+    expect(await serverIcon.evaluate((icon) => getComputedStyle(icon).borderColor)).toBe(accentBorder)
+
+    await page.goto(`/servers/${serverId}/access`)
+    await page.getByRole('button', { name: 'Advanced' }).click()
+    const permissionToggle = page.locator('.access-permission-row input[type="checkbox"]').first()
+    await expect(permissionToggle).toBeVisible()
+    expect(await permissionToggle.evaluate((element) => getComputedStyle(element).accentColor)).toBe(accentColor)
+
+    await page.goto(`/servers/${serverId}/properties`)
+    const enabledProperty = page.locator('.property-toggle input:checked + span').first()
+    await expect(enabledProperty).toBeVisible()
+    expect(await enabledProperty.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(accentColor)
+    await page.screenshot({ path: screenshotPath(`i3-properties-${palette.name}-desktop.png`), fullPage: true, animations: 'disabled' })
+
+    await page.goto('/settings')
+    await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
+    const save = page.locator('form.appearance-form').getByRole('button', { name: 'Save preferences' })
+    await save.hover()
+    await expect.poll(() => save.evaluate((button) => getComputedStyle(button).backgroundColor)).toBe(await tokenColor('--accent-hover'))
+
+    await page.goto('/')
+    await page.locator('.top-create').click()
+    const dialog = page.getByRole('dialog', { name: 'Create server' })
+    await expect(dialog).toBeVisible()
+    expect(await dialog.locator('.wizard-kicker-icon').evaluate((icon) => getComputedStyle(icon).color)).toBe(accentStrong)
+    expect(await dialog.locator('.wizard-kicker-icon').evaluate((icon) => getComputedStyle(icon).backgroundColor)).toBe(accentSoft)
+    await page.screenshot({ path: screenshotPath(`i3-create-dialog-${palette.name}-desktop.png`), animations: 'disabled' })
+    await dialog.getByRole('button').first().click()
+  }
+
+  await page.goto('/settings')
+  await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
+  const lightForm = page.locator('form.appearance-form')
+  await lightForm.locator('select').nth(1).selectOption('light')
+  await lightForm.locator('select').nth(2).selectOption('clay')
+  await lightForm.getByRole('button', { name: 'Save preferences' }).click()
+  await expect(page.locator('.app-frame')).toHaveClass(/theme-light.*accent-clay/)
+  expect(await tokenColor('--accent')).toBe('rgb(153, 94, 67)')
+  await page.goto('/')
+  await expect(page.locator('.live-chart-line')).toHaveCount(1)
+  expect(await page.locator('.live-chart-line').evaluate((line) => getComputedStyle(line).stroke)).toBe('rgb(153, 94, 67)')
+  await page.screenshot({ path: screenshotPath('i3-dashboard-clay-light-desktop.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('I3 Russian workspace routes contain no untranslated interface copy', async ({ page }) => {
+  test.setTimeout(180_000)
+  await signIn(page)
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Language & appearance' }).click()
+  const settingsForm = page.locator('form.appearance-form')
+  await settingsForm.locator('select').nth(0).selectOption('ru')
+  await settingsForm.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+  await page.keyboard.press('Control+k')
+  const quickSearch = page.getByRole('dialog', { name: 'Поиск страниц' })
+  await expect(quickSearch).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Поиск страниц и серверов' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(quickSearch).toHaveCount(0)
+  const { serverId } = await mockLocalServer(page)
+  const routes = ['/', '/servers', '/machine', '/machine/history', '/activity', '/backups', '/templates', '/users', '/profile', '/settings', ...['overview', 'console', 'logs', 'players', 'mods', 'files', 'properties', 'worlds', 'runtime', 'backups', 'automation', 'access'].map((section) => `/servers/${serverId}/${section}`)]
+  const unmapped: Array<{ route: string; value: string; source: string }> = []
+  for (const route of routes) {
+    await page.goto(route)
+    await expect(page.locator('.page-content')).toBeVisible()
+    const candidates = await page.locator('.app-frame').evaluate((frame) => {
+      const result: Array<{ value: string; source: string }> = []
+      const excluded = '[data-no-translate],script,style,textarea,code,pre,.console-line,.console-output,.log-line,.log-output,.log-message,.player-name,.local-player-names,.file-name,.local-file-name,.local-world-name,.property-key,.property-value'
+      const walker = document.createTreeWalker(frame, NodeFilter.SHOW_TEXT)
+      let node = walker.nextNode()
+      while (node) {
+        const value = node.nodeValue?.replace(/\s+/g, ' ').trim() ?? ''
+        if (value && /[A-Za-z]{2}/.test(value) && !node.parentElement?.closest(excluded)) result.push({ value, source: `${node.parentElement?.tagName.toLowerCase()}.${String(node.parentElement?.className ?? '').replace(/\s+/g, '.')}` })
+        node = walker.nextNode()
+      }
+      for (const element of frame.querySelectorAll<HTMLElement>('*')) {
+        if (element.closest(excluded)) continue
+        for (const attribute of ['aria-label', 'title', 'placeholder', 'alt']) {
+          const value = element.getAttribute(attribute)?.replace(/\s+/g, ' ').trim()
+          if (value && /[A-Za-z]{2}/.test(value)) result.push({ value, source: `${element.tagName.toLowerCase()}.${String(element.className ?? '').replace(/\s+/g, '.')}:${attribute}` })
+        }
+      }
+      return result
+    })
+    for (const candidate of candidates) if (!isLocalizedText(candidate.value, 'ru')) unmapped.push({ route, ...candidate })
+  }
+  const uniqueUnmapped = [...new Map(unmapped.map((item) => [item.value, item])).values()]
+  expect(uniqueUnmapped.slice(0, 120), `Unmapped Russian interface strings (${uniqueUnmapped.length} unique): ${JSON.stringify(uniqueUnmapped.slice(0, 120), null, 2)}`).toEqual([])
+})
+
+test('I3 Member Russian routes preserve permission boundaries and translated labels', async ({ page }) => {
+  test.setTimeout(180_000)
+  await signIn(page)
+  await page.setViewportSize({ width: 1280, height: 960 })
+  const username = `i3-member-${Date.now().toString(36)}`
+  const temporaryPassword = `Temporary ${username} fixture 68!`
+  await page.goto('/users')
+  await page.getByRole('button', { name: 'Add user' }).click()
+  const createDialog = page.getByRole('dialog', { name: 'Add a user' })
+  await createDialog.getByLabel('Username').fill(username)
+  await createDialog.getByLabel('Display name').fill('I3 Member Fixture')
+  await createDialog.getByLabel('Initial password').fill(temporaryPassword)
+  await createDialog.getByLabel('Role').selectOption('member')
+  await createDialog.getByRole('button', { name: 'Create user' }).click()
+  await expect(page.locator('.account-users-table .data-table-row').filter({ hasText: `@${username}` })).toBeVisible()
+
+  const { serverId } = await mockLocalServer(page)
+  const permissions = {
+    viewServer: true, viewLogs: true, sendConsoleCommands: false, controlLifecycle: false,
+    startServer: true, stopServer: true, restartServer: true, viewPlayers: true, moderatePlayers: true,
+    viewMods: true, manageMods: true, viewFiles: true, manageFiles: true, viewSettings: true,
+    manageSettings: true, viewWorlds: true, viewBackups: true, createBackups: true,
+  }
+  await page.route(`**/api/v1/servers/${serverId}/access`, (route) => route.fulfill({ json: { administrator: false, permissions } }))
+  await signOut(page)
+  await signIn(page, username, temporaryPassword)
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Language & appearance' }).click()
+  const form = page.locator('form.appearance-form')
+  await form.locator('select').nth(0).selectOption('ru')
+  await form.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+
+  const routes = ['/', '/servers', '/machine', '/machine/history', '/activity', '/profile', '/settings', '/users', '/templates', '/backups', ...['overview', 'console', 'logs', 'players', 'mods', 'files', 'properties', 'worlds', 'backups', 'access'].map((section) => `/servers/${serverId}/${section}`)]
+  const candidates: Array<{ route: string; value: string; source: string }> = []
+  for (const route of routes) {
+    await page.goto(route)
+    await expect(page.locator('.page-content')).toBeVisible()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+    const routeCandidates = await page.locator('.app-frame').evaluate((frame) => {
+      const result: Array<{ value: string; source: string }> = []
+      const excluded = '[data-no-translate],script,style,textarea,code,pre,.console-line,.console-output,.log-line,.log-output,.log-message,.player-name,.local-player-names,.file-name,.local-file-name,.local-world-name,.property-key,.property-value'
+      const walker = document.createTreeWalker(frame, NodeFilter.SHOW_TEXT)
+      let node = walker.nextNode()
+      while (node) {
+        const value = node.nodeValue?.replace(/\s+/g, ' ').trim() ?? ''
+        if (value && /[A-Za-z]{2}/.test(value) && !node.parentElement?.closest(excluded)) result.push({ value, source: `${node.parentElement?.tagName.toLowerCase()}.${String(node.parentElement?.className ?? '').replace(/\s+/g, '.')}` })
+        node = walker.nextNode()
+      }
+      for (const element of frame.querySelectorAll<HTMLElement>('*')) {
+        if (element.closest(excluded)) continue
+        for (const attribute of ['aria-label', 'title', 'placeholder', 'alt']) {
+          const value = element.getAttribute(attribute)?.replace(/\s+/g, ' ').trim()
+          if (value && /[A-Za-z]{2}/.test(value)) result.push({ value, source: `${element.tagName.toLowerCase()}.${String(element.className ?? '').replace(/\s+/g, '.')}:${attribute}` })
+        }
+      }
+      return result
+    })
+    for (const candidate of routeCandidates) if (!isLocalizedText(candidate.value, 'ru')) candidates.push({ route, ...candidate })
+  }
+  const uniqueCandidates = [...new Map(candidates.map((item) => [item.value, item])).values()]
+  expect(uniqueCandidates.slice(0, 120), `Unmapped Russian Member UI strings (${uniqueCandidates.length} unique): ${JSON.stringify(uniqueCandidates.slice(0, 120), null, 2)}`).toEqual([])
+  await page.goto(`/servers/${serverId}/access`)
+  await expect(page.getByRole('heading', { name: 'Ваши права на сервер' })).toBeVisible()
+  await expect(page.getByRole('combobox', { name: 'Choose member account' })).toHaveCount(0)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'I3 Russian Member access at 390px')
+  await page.screenshot({ path: screenshotPath('i3-member-access-ru-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('Stage 6H user deletion requires typed confirmation and preserves audit history', async ({ page }) => {

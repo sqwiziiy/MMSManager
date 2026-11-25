@@ -37,7 +37,7 @@ export function PreviewFlag({ children = 'Demo data' }: PropsWithChildren) {
   return <span className="preview-flag"><span className="preview-flag-dot" />{children}</span>
 }
 
-export function PageHeading({ title, description, eyebrow, actions }: { title: string; description?: string; eyebrow?: string; actions?: ReactNode }) {
+export function PageHeading({ title, description, eyebrow, actions }: { title: string; description?: string; eyebrow?: ReactNode; actions?: ReactNode }) {
   return (
     <div className="page-heading">
       <div>

@@ -1074,6 +1074,96 @@ const additionalPhrases = [
   ['MMSManager still has a process handle for this server.', 'Для этого сервера ещё существует активный процесс.'],
   ['The server is not in a confirmed stopped state.', 'Не подтверждено, что сервер остановлен.'],
   ['A server removal operation needs recovery.', 'Операция удаления сервера требует восстановления.'],
+  ['Machine monitoring is current', 'Мониторинг компьютера обновляется'],
+  ['Local file systems used by the application and server data. Readings are saved for up to 30 days.', 'Локальные файловые системы приложения и данных серверов. Показания хранятся до 30 дней.'],
+  ['Rates use sampled counters from the default interface.', 'Скорость рассчитана по показаниям сетевого интерфейса по умолчанию.'],
+  ['Detected', 'Обнаружено'],
+  ['Java executable path', 'Путь к исполняемому файлу Java'],
+  ['This check does not save the path unless you select it for a server.', 'Путь не сохраняется, пока вы не выберете эту среду Java для сервера.'],
+  ['Check path', 'Проверить путь'],
+  ['Rescan standard paths', 'Повторно проверить стандартные пути'],
+  ['Scan standard paths', 'Проверить стандартные пути'],
+  ['Local machine · persisted history', 'Компьютер · сохранённая история'],
+  ['Host measurements stay separate from Minecraft process samples.', 'Показания компьютера хранятся отдельно от метрик процесса Minecraft.'],
+  ['Future', 'Будущее'],
+  ['Partial day', 'Неполный день'],
+  ['Observed samples', 'Собранные показания'],
+  ['Peak memory', 'Пиковая память'],
+  ['Storage snapshot', 'Снимок хранилища'],
+  ['Network received', 'Получено по сети'],
+  ['Unavailable transmitted', 'Отправлено по сети: нет данных'],
+  ['Coverage window', 'Интервал наблюдения'],
+  ['Each point comes from persisted minute rollups.', 'Каждая точка построена по сохранённой минутной сводке.'],
+  ['Only real collector events are shown.', 'Показаны только реальные события сборщика.'],
+  ['Memory used', 'Использовано памяти'],
+  ['Local volume', 'Локальный раздел'],
+  ['Local', 'Локально'],
+  ['Home', 'Домашний каталог'],
+  ['No excluded paths', 'Исключённых путей нет'],
+  ['Manual', 'Вручную'],
+  ['server', 'сервер'],
+  ['total', 'всего'],
+  ['expected coverage', 'ожидаемого покрытия'],
+  ['Reset password', 'Сбросить пароль'],
+  ['Delete', 'Удалить'],
+  ['measured', 'измерено'],
+  ['Local status ping · count only', 'Проверка статуса · только количество игроков'],
+  ['No current local status response', 'Нет актуального ответа локальной проверки статуса'],
+  ['Panel managed', 'Управляется MMSManager'],
+  ['loaded entries', 'загруженных записей'],
+  ['Local server process logs', 'Журналы процесса локального сервера'],
+  ['Status ping counts and, for administrators, a fresh list from an owned process.', 'Проверка статуса показывает количество игроков, а администраторам — актуальный список из управляемого процесса.'],
+  ['An owned, ready process is required for a verified player list.', 'Для подтверждённого списка игроков нужен готовый управляемый процесс.'],
+  ['Kick player', 'Исключить игрока'],
+  ['Ban player', 'Заблокировать игрока'],
+  ['Pardon ban', 'Снять блокировку'],
+  ['Grant operator', 'Назначить оператором'],
+  ['Remove operator', 'Снять права оператора'],
+  ['Add to whitelist', 'Добавить в список разрешённых'],
+  ['Remove from whitelist', 'Убрать из списка разрешённых'],
+  ['List whitelist', 'Показать список разрешённых'],
+  ['Send player command', 'Отправить команду игроку'],
+  ['Actions are submitted, not assumed successful. Check the owned console response.', 'Команды отправляются без предположения об успехе. Проверьте ответ управляемой консоли.'],
+  ['Paper plugins', 'Плагины Paper'],
+  ['Choose JAR to install', 'Выберите JAR-файл для установки'],
+  ['Upload JAR', 'Загрузить JAR-файл'],
+  ['Quarantined', 'В карантине'],
+  ['Paper plugin metadata', 'Метаданные плагина Paper'],
+  ['Rename or move config', 'Переименовать или переместить config'],
+  ['Move config to trash', 'Переместить config в корзину'],
+  ['None yet', 'Пока нет'],
+  ['No directory exists at the configured server-relative world path.', 'По заданному относительному пути папка мира отсутствует.'],
+  ['missing', 'отсутствует'],
+  ['Choose a locally checked executable for this panel-managed server.', 'Выберите локально проверенный исполняемый файл для управляемого сервера.'],
+  ['Rescan Java', 'Повторно проверить Java'],
+  ['Typed bounds used by panel launches. Maximum is limited to 128 GiB.', 'Ограничения памяти для запуска через MMSManager. Максимум — 128 ГиБ.'],
+  ['Only supported, validated switches are available; arbitrary arguments are not accepted.', 'Доступны только проверенные параметры. Произвольные аргументы не принимаются.'],
+  ['Save runtime settings', 'Сохранить параметры запуска'],
+  ['MMSManager checks ownership before updating the generated convenience script.', 'Перед обновлением созданного скрипта запуска MMSManager проверяет его принадлежность.'],
+  ['synchronized', 'Синхронизировано'],
+  ['The generated start.sh matches the saved runtime profile.', 'Созданный start.sh соответствует сохранённым параметрам запуска.'],
+  ['Stopped-server archives stored outside the live server folder.', 'Архивы остановленного сервера хранятся отдельно от его рабочей папки.'],
+  ['Create backup', 'Создать резервную копию'],
+  ['No auto-delete', 'Автоудаление отключено'],
+  ['Every listed archive has a private manifest and durable checksum ledger.', 'Для каждого архива сохранены закрытый манифест и запись контрольных сумм.'],
+  ['A durable local schedule creates a regular snapshot while this server is stopped.', 'Локальное расписание регулярно создаёт снимки, когда сервер остановлен.'],
+  ['Not scheduled', 'Не запланировано'],
+  ['missed', 'пропущено'],
+  ['Missed', 'Пропущено'],
+  ['The API was unavailable past the catch-up window. No backup was run.', 'Локальная служба оставалась недоступной после окна запуска. Резервная копия не создана.'],
+  ['Save schedule', 'Сохранить расписание'],
+  ['Actual scheduler attempts from the local service.', 'Попытки выполнения расписания в локальной службе.'],
+  ['no excluded paths', 'Исключённых путей нет'],
+  ['Budget alert', 'Предупреждение о лимите'],
+  ['Local timezone', 'Локальный часовой пояс'],
+  ['Restore server', 'Восстановить сервер'],
+  ['Server pages', 'Страницы сервера'],
+  ['MB', 'МБ'],
+  ['ms', 'мс'],
+  ['Dependencies', 'Зависимости'],
+  ['observed peak', 'пиковое значение'],
+  ['Started', 'Запущен'],
+  ['transmitted', 'передано'],
 ] as const satisfies ReadonlyArray<readonly [string, string]>
 export const supplementalPhrasePairs = additionalPhrases
 
@@ -1087,7 +1177,49 @@ export function translateText(value: string, language: 'en' | 'ru'): string {
   const normalized = value.replace(/\s+/g, ' ').trim()
   const javaRequirement = /^This server requires Java (\d+) or newer\. Choose a compatible installed runtime\.$/.exec(normalized)
   const entryLimit = /^The archive exceeds the ([\d,]+) entry limit\.$/.exec(normalized)
+  const logicalCores = /^(\d+) logical cores$/.exec(normalized)
+  const coverage = /^(\d+)% expected coverage$/.exec(normalized)
+  const through = /^through (.+)$/.exec(normalized)
+  const sampleCount = /^(\d+) samples?$/.exec(normalized)
+  const eventCount = /^(\d+) events?$/.exec(normalized)
+  const resetPassword = /^Reset password for (.+)$/.exec(normalized)
+  const deleteItem = /^Delete (.+)$/.exec(normalized)
+  const machineCalendar = /^(.+) machine history$/.exec(normalized)
+  const serverCalendar = /^(.+) server history$/.exec(normalized)
+  const localMachine = /^Local machine: (.+)$/.exec(normalized)
+  const serverPages = /^(.+) pages$/.exec(normalized)
+  const privateBackupUsage = /^(\d+(?:[,.]\d+)?)% of private backup storage used$/.exec(normalized)
+  const cpuChart = /^CPU utilization from (.+) to (.+), latest (\d+(?:\.\d+)?) percent$/.exec(normalized)
+  const calendarDay = /^(.+)\. (Data observed|Partial data|Future date|No data)(?:, (\d+) samples?)?(?:, (\d+) events?)?$/.exec(normalized)
+  const storageRetention = /^Local file systems used by the application and server data\. Readings are saved for up to (\d+) days\.$/.exec(normalized)
+  const savedJava = /^Saved Java (\d+|version unknown) · recheck on save$/.exec(normalized)
+  const russianPlural = (count: number, forms: [string, string, string]) => {
+    const category = new Intl.PluralRules('ru').select(count)
+    return `${new Intl.NumberFormat('ru').format(count)} ${category === 'one' ? forms[0] : category === 'few' ? forms[1] : forms[2]}`
+  }
+  const statusTranslations: Record<string, string> = {
+    'Data observed': 'Показания собраны',
+    'Partial data': 'Частичные показания',
+    'Future date': 'Будущая дата',
+    'No data': 'Нет данных',
+  }
   const translation = russianByEnglish.get(normalized)
+    ?? (logicalCores ? `${russianPlural(Number(logicalCores[1]), ['логическое ядро', 'логических ядра', 'логических ядер'])}` : undefined)
+    ?? (coverage ? `${coverage[1]}% ожидаемого покрытия` : undefined)
+    ?? (through ? `по ${through[1]}` : undefined)
+    ?? (sampleCount ? russianPlural(Number(sampleCount[1]), ['образец', 'образца', 'образцов']) : undefined)
+    ?? (eventCount ? russianPlural(Number(eventCount[1]), ['событие', 'события', 'событий']) : undefined)
+    ?? (resetPassword ? `Сбросить пароль для ${resetPassword[1]}` : undefined)
+    ?? (deleteItem ? `Удалить ${deleteItem[1]}` : undefined)
+    ?? (machineCalendar ? `${machineCalendar[1]} · история компьютера` : undefined)
+    ?? (serverCalendar ? `${serverCalendar[1]} · история сервера` : undefined)
+    ?? (localMachine ? `Компьютер: ${translateText(localMachine[1]!, 'ru')}` : undefined)
+    ?? (serverPages ? `Страницы сервера «${serverPages[1]}»` : undefined)
+    ?? (privateBackupUsage ? `Использовано ${privateBackupUsage[1]}% лимита резервных копий` : undefined)
+    ?? (cpuChart ? `Показатель «Загрузка процессора»: с ${cpuChart[1]} по ${cpuChart[2]}, последнее значение ${cpuChart[3]}%` : undefined)
+    ?? (calendarDay ? `${calendarDay[1]}. ${statusTranslations[calendarDay[2]!]!}${calendarDay[3] ? `, ${russianPlural(Number(calendarDay[3]), ['образец', 'образца', 'образцов'])}` : ''}${calendarDay[4] ? `, ${russianPlural(Number(calendarDay[4]), ['событие', 'события', 'событий'])}` : ''}` : undefined)
+    ?? (storageRetention ? `Локальные файловые системы приложения и данных серверов. Показания хранятся до ${russianPlural(Number(storageRetention[1]), ['день', 'дня', 'дней'])}.` : undefined)
+    ?? (savedJava ? `Сохранённая Java ${savedJava[1] === 'version unknown' ? 'неизвестной версии' : savedJava[1]} · повторная проверка при сохранении` : undefined)
     ?? (javaRequirement ? `Для этого сервера требуется Java ${javaRequirement[1]} или новее. Выберите совместимую установленную среду.` : undefined)
     ?? (entryLimit ? `В архиве больше ${entryLimit[1]} элементов.` : undefined)
   if (!translation) return value
@@ -1096,9 +1228,56 @@ export function translateText(value: string, language: 'en' | 'ru'): string {
   return `${leading}${translation}${trailing}`
 }
 
+const russianApiErrorByCode: Readonly<Record<string, string>> = {
+  UNAUTHORIZED: 'Не удалось подтвердить вход. Войдите снова.',
+  FORBIDDEN: 'У вашей учётной записи нет прав на это действие.',
+  PASSWORD_CHANGE_REQUIRED: 'Сначала задайте новый постоянный пароль.',
+  PASSWORD_UNCHANGED: 'Новый пароль должен отличаться от текущего.',
+  CURRENT_PASSWORD_INVALID: 'Не удалось подтвердить текущий пароль.',
+  RATE_LIMITED: 'Слишком много запросов. Попробуйте немного позже.',
+  API_UNAVAILABLE: 'Локальная служба недоступна. Убедитесь, что MMSManager запущен, и повторите попытку.',
+  INVALID_RESPONSE: 'Локальная служба вернула некорректный ответ. Повторите попытку.',
+  INTERNAL_ERROR: 'Локальная служба не смогла выполнить запрос. Попробуйте ещё раз.',
+}
+
+const russianUnknownApiError = 'Не удалось выполнить запрос. Попробуйте ещё раз.'
+
+export function translateApiError(message: string, code: string | null, language: 'en' | 'ru'): string {
+  if (language === 'en') return message
+  const translated = translateText(message, 'ru')
+  if (translated !== message) return translated
+  return (code && russianApiErrorByCode[code]) || russianUnknownApiError
+}
+
 export function isCatalogText(value: string): boolean {
   const normalized = value.replace(/\s+/g, ' ').trim()
   return russianByEnglish.has(normalized) || englishByRussian.has(normalized)
+}
+
+export function isLocalizedText(value: string, language: 'en' | 'ru'): boolean {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (language === 'en') return russianByEnglish.has(normalized) || englishByRussian.has(normalized)
+  if (englishByRussian.has(normalized)) return true
+  if (russianByEnglish.has(normalized)) return false
+  const dynamicRussian = [
+    /^\d+ логическ(?:ое ядро|их ядра|их ядер)$/,
+    /^\d+% ожидаемого покрытия$/,
+    /^по .+$/,
+    /^\d+ (?:образец|образца|образцов)$/,
+    /^\d+ (?:событие|события|событий)$/,
+    /^Сбросить пароль для .+$/,
+    /^Удалить .+$/,
+    /^Компьютер: .+$/,
+    /^Страницы сервера «.+»$/,
+    /^Использовано \d+(?:[,.]\d+)?% лимита резервных копий$/,
+    /^.+ · история компьютера$/,
+    /^.+ · история сервера$/,
+    /^Показатель «Загрузка процессора»: с .+ по .+, последнее значение \d+(?:[,.]\d+)?%$/,
+    /^.+\. (?:Показания собраны|Частичные показания|Будущая дата|Нет данных)(?:, \d+ (?:образец|образца|образцов))?(?:, \d+ (?:событие|события|событий))?$/,
+    /^Локальные файловые системы приложения и данных серверов\. Показания хранятся до \d+ дней\.$/,
+    /^Сохранённая Java (?:\d+|неизвестной версии) · повторная проверка при сохранении$/,
+  ]
+  return dynamicRussian.some((pattern) => pattern.test(normalized))
 }
 
 export function currentLocale(): 'en' | 'ru' {

@@ -1,4 +1,4 @@
-import { currentLocale } from "../i18n/catalog"
+import { currentLocale, translateText } from '../i18n/catalog'
 import type { MachineResourcePoint } from '@mmsmanager/shared'
 import { formatConfiguredDate } from '../lib/format'
 
@@ -72,17 +72,23 @@ export function LiveResourceChart({
     : { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
   const observedFrom = new Intl.DateTimeFormat(currentLocale(), { timeZone, ...axisOptions }).format(new Date(first!))
   const observedTo = new Intl.DateTimeFormat(currentLocale(), { timeZone, ...axisOptions }).format(new Date(last!))
-  const pointDescription = (at: string, value: number) => `${new Intl.DateTimeFormat(currentLocale(), { timeZone, dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(at))}: ${label} ${value.toFixed(1)}%`
+  const localizedLabel = translateText(label, currentLocale())
+  const pointDescription = (at: string, value: number) => `${new Intl.DateTimeFormat(currentLocale(), { timeZone, dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(at))}: ${localizedLabel} ${value.toFixed(1)}%`
+  const chartAriaLabel = translateText(`${label} from ${observedFrom} to ${observedTo}, latest ${Math.round(latest.value)} percent`, currentLocale())
+  const localizedRange = rangeLabel ? translateText(rangeLabel, currentLocale()) : translateText('Recent history', currentLocale())
+  const coverageLabel = coveragePercent !== undefined && coveragePercent < 99
+    ? currentLocale() === 'ru' ? ` · охват ${Math.round(coveragePercent)}%` : ` · ${Math.round(coveragePercent)}% coverage`
+    : ''
 
   return <div className="live-chart-wrap">
     <div className="timeline-summary">
       <strong>{Math.round(latest.value)}<span>%</span></strong>
       <span className="live-chart-source">Latest sample</span>
-      <span className="timeline-range">{rangeLabel ?? 'Recent history'}{coveragePercent !== undefined && coveragePercent < 99 ? ` · ${Math.round(coveragePercent)}% coverage` : ''}</span>
+      <span className="timeline-range">{localizedRange}{coverageLabel}</span>
     </div>
     <div className="timeline-chart live-timeline-chart">
       <div className="timeline-axis"><span>100%</span><span>50%</span><span>0%</span></div>
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={`${label} from ${observedFrom} to ${observedTo}, latest ${Math.round(latest.value)} percent`}>
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={chartAriaLabel}>
         {[inset, height / 2, height - inset].map((y) => <line key={y} x1="0" x2={width} y1={y} y2={y} className="chart-grid-line" />)}
         {paths.map((path, index) => <path key={index} d={path} className={`live-chart-line ${metric}`} />)}
         {coords.map((point, index) => <circle key={`${point.at}-${index}`} cx={point.x} cy={point.y} r={index === coords.length - 1 ? 3.5 : 2} className="live-chart-point"><title>{pointDescription(point.at, valid[index]!.value)}</title></circle>)}

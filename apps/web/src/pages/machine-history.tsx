@@ -5,17 +5,19 @@ import { Activity, CalendarDays, ChevronLeft, ChevronRight, Clock3, Cpu, HardDri
 import type { LocalServerSummary, MachineCalendar, MachineDay, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope } from '@mmsmanager/shared'
 import { Badge, Button, Card, PageHeading, SectionHeading } from '../components/ui'
 import { LiveResourceChart, CalendarMonthHeading } from '../components/live-chart'
-import { currentLocale } from '../i18n/catalog'
+import { currentLocale, pluralCount, translateText } from '../i18n/catalog'
 import { getMachineCalendar, getMachineDay, isRequestCancelled } from '../api/machine'
 import { getLocalServers, getServerHistoryCalendar, getServerHistoryDay } from '../api/servers'
 import { useMachineHistory, useMachineStatus } from '../state/use-machine-monitor'
 import { useAuth } from '../state/use-auth'
 import { formatBytes, formatConfiguredDate, formatPercent, formatTimestamp } from '../lib/format'
 
-const weekdays = Array.from({ length: 7 }, (_, index) => {
+function weekdayLabels() {
+  return Array.from({ length: 7 }, (_, index) => {
   const monday = new Date(Date.UTC(2024, 0, 1 + index, 12))
   return new Intl.DateTimeFormat(currentLocale(), { weekday: 'short', timeZone: 'UTC' }).format(monday)
-})
+  })
+}
 
 function todayInZone(timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -86,6 +88,7 @@ export function MachineHistoryPage() {
 }
 
 function LocalMachineHistoryPage({ sourceFilter }: { sourceFilter: ReactNode }) {
+  const weekdays = weekdayLabels()
   const { history } = useMachineHistory()
   const { apiStatus, error, refreshNow } = useMachineStatus()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -173,10 +176,10 @@ function LocalMachineHistoryPage({ sourceFilter }: { sourceFilter: ReactNode }) 
   }
 
   const monthStart = new Date(Date.UTC(year, monthNumber - 1, 1))
-  const statusText = day?.status === 'observed' ? 'Observed' : day?.status === 'partial' ? 'Partial day' : day?.status === 'future' ? 'Future date' : 'No data'
+  const statusText = translateText(day?.status === 'observed' ? 'Observed' : day?.status === 'partial' ? 'Partial day' : day?.status === 'future' ? 'Future date' : 'No data', currentLocale())
 
   return <div className="page-stack machine-history-page">
-    <PageHeading eyebrow="Local machine · persisted history" title="Machine history" description="Browse real readings saved by this local backend. Dates follow the configured timezone." actions={<Badge tone={apiStatus === 'online' ? 'good' : 'warn'}>{timeZone}</Badge>} />
+    <PageHeading eyebrow="Local machine · persisted history" title="Machine history" description="Browse real readings saved by this local backend. Dates follow the configured timezone." actions={<Badge tone={apiStatus === 'online' ? 'good' : 'warn'}><span data-no-translate>{timeZone}</span></Badge>} />
     {sourceFilter}
 
     {(calendarError || apiStatus === 'offline') && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Machine history is unavailable</strong><small>{calendarError ?? error ?? 'The local API is offline.'}</small></span><Button icon={RefreshCw} onClick={() => { refreshNow(); setCalendarError(null); setReloadKey((value) => value + 1) }}>Retry</Button></div>}
@@ -192,7 +195,7 @@ function LocalMachineHistoryPage({ sourceFilter }: { sourceFilter: ReactNode }) 
         </div>
         {calendarLoading && <div className="calendar-loading" role="status">Loading saved readings for this month…</div>}
         {calendarError && <div className="history-inline-error" role="alert">The local history calendar could not be loaded.</div>}
-        <div className="machine-calendar-grid" role="grid" aria-label={`${CalendarMonthHeading({ year, month: monthNumber, timeZone })} machine history`}>
+        <div className="machine-calendar-grid" role="grid" aria-label={translateText(`${CalendarMonthHeading({ year, month: monthNumber, timeZone })} machine history`, currentLocale())}>
           {weekdays.map((weekday) => <div className="calendar-weekday" role="columnheader" key={weekday}>{weekday}</div>)}
           {cells.map((dateNumber, index) => {
             if (dateNumber === null) return <div className="calendar-day-empty" role="gridcell" aria-hidden="true" key={`empty-${index}`} />
@@ -202,11 +205,11 @@ function LocalMachineHistoryPage({ sourceFilter }: { sourceFilter: ReactNode }) 
             const sampleCount = record?.sampleCount ?? 0
             const currentDay = date === today
             const selected = selectedDate === date
-            const label = `${dateLabel(date, timeZone)}. ${status === 'observed' ? 'Data observed' : status === 'partial' ? 'Partial data' : status === 'future' ? 'Future date' : 'No data'}${sampleCount ? `, ${sampleCount.toLocaleString(currentLocale())} samples` : ''}`
+            const label = translateText(`${dateLabel(date, timeZone)}. ${status === 'observed' ? 'Data observed' : status === 'partial' ? 'Partial data' : status === 'future' ? 'Future date' : 'No data'}${sampleCount ? `, ${sampleCount} samples` : ''}`, currentLocale())
             return <div className="calendar-day-cell" role="gridcell" key={date}>
               <button className={`calendar-day ${status} ${currentDay ? 'today' : ''} ${selected ? 'selected' : ''}`} aria-label={label} aria-pressed={selected} onClick={() => chooseDate(date)}>
                 <span className="calendar-day-number">{dateNumber}</span>
-                <span className="calendar-day-meta">{sampleCount > 0 ? sampleCount.toLocaleString(currentLocale()) : status === 'future' ? 'Future' : '—'}</span>
+                <span className="calendar-day-meta" data-no-translate={sampleCount > 0 ? '' : undefined}>{sampleCount > 0 ? sampleCount.toLocaleString(currentLocale()) : status === 'future' ? translateText('Future', currentLocale()) : '—'}</span>
                 <span className="calendar-day-marker" aria-hidden="true" />
               </button>
             </div>
@@ -221,16 +224,16 @@ function LocalMachineHistoryPage({ sourceFilter }: { sourceFilter: ReactNode }) 
         {dayLoading && <div className="history-day-empty" role="status"><span className="history-day-icon"><RefreshCw size={18} /></span><h2>Loading day</h2><p>Reading stored local machine history.</p></div>}
         {dayError && <div className="history-day-empty" role="alert"><span className="history-day-icon"><Wifi size={18} /></span><h2>Day is unavailable</h2><p>{dayError}</p></div>}
         {day && selectedDate && !dayLoading && !dayError && <>
-          <div className="history-day-heading"><div><div className="card-kicker"><Clock3 size={14} />{day.timeZone}</div><h2>{dateLabel(selectedDate, day.timeZone)}</h2></div><Badge tone={day.status === 'observed' ? 'good' : day.status === 'partial' ? 'warn' : 'neutral'}>{statusText}</Badge></div>
+          <div className="history-day-heading"><div><div className="card-kicker"><Clock3 size={14} /><span data-no-translate>{day.timeZone}</span></div><h2>{dateLabel(selectedDate, day.timeZone)}</h2></div><Badge tone={day.status === 'observed' ? 'good' : day.status === 'partial' ? 'warn' : 'neutral'}>{statusText}</Badge></div>
           {day.status === 'future' && <div className="history-status-note"><CalendarDays size={17} /><span><strong>Future date</strong><small>Readings will appear after the local collector reaches this day.</small></span></div>}
           {day.status === 'no-data' && <div className="history-status-note"><CalendarDays size={17} /><span><strong>No machine samples saved</strong><small>History begins when the collector starts. No earlier readings are backfilled.</small></span></div>}
           {day.summary && <>
             {day.status === 'partial' && <div className="history-status-note partial-note"><Clock3 size={17} /><span><strong>Partial collection · {Math.round(day.summary.coveragePercent)}% observed</strong><small>This day has missing time or fewer readings than the configured sampling cadence expects.</small></span></div>}
             <div className="day-summary-grid">
               <DayStat icon={Activity} label="CPU average / max" value={`${formatPercent(day.summary.cpuAveragePercent)} / ${formatPercent(day.summary.cpuMaximumPercent)}`} detail="Observed samples" />
-              <DayStat icon={MemoryStick} label="Peak memory" value={formatBytes(day.summary.memoryPeakUsedBytes)} detail={formatPercent(day.summary.memoryPeakPercent)} />
-              <DayStat icon={HardDrive} label="Storage snapshot" value={formatBytes(day.summary.storageSnapshotUsedBytes)} detail={`${formatBytes(day.summary.storagePeakUsedBytes)} observed peak`} />
-              <DayStat icon={Wifi} label="Network received" value={formatBytes(day.summary.networkReceivedBytes)} detail={`${formatBytes(day.summary.networkTransmittedBytes)} transmitted`} />
+              <DayStat icon={MemoryStick} label="Peak memory" value={<span data-no-translate>{formatBytes(day.summary.memoryPeakUsedBytes)}</span>} detail={formatPercent(day.summary.memoryPeakPercent)} />
+              <DayStat icon={HardDrive} label="Storage snapshot" value={<span data-no-translate>{formatBytes(day.summary.storageSnapshotUsedBytes)}</span>} detail={<><span data-no-translate>{formatBytes(day.summary.storagePeakUsedBytes)}</span> {translateText('observed peak', currentLocale())}</>} />
+              <DayStat icon={Wifi} label="Network received" value={<span data-no-translate>{formatBytes(day.summary.networkReceivedBytes)}</span>} detail={<><span data-no-translate>{formatBytes(day.summary.networkTransmittedBytes)}</span> {translateText('transmitted', currentLocale())}</>} />
               <DayStat icon={CalendarDays} label="Samples" value={day.summary.sampleCount.toLocaleString(currentLocale())} detail={`${Math.round(day.summary.coveragePercent)}% expected coverage`} />
               <DayStat icon={Clock3} label="Coverage window" value={formatTimestamp(day.summary.firstSampleAt, day.timeZone)} detail={`through ${formatTimestamp(day.summary.lastSampleAt, day.timeZone)}`} />
             </div>
@@ -260,13 +263,14 @@ function HistorySourceFilter({ value, servers, isAdmin, onChange }: {
     <select id="history-source" aria-label="History source" value={value} onChange={(event) => onChange(event.target.value)}>
       <option value="local">Local machine · HOST</option>
       {isAdmin && <option value="all">All managed servers · SERVER</option>}
-      {isAdmin && servers.map((server) => <option key={server.id} value={server.id}>{server.name} · SERVER</option>)}
+      {isAdmin && servers.map((server) => <option key={server.id} value={server.id} data-no-translate>{server.name}</option>)}
     </select>
     <span>{description}</span>
   </div>
 }
 
 function ServerHistoryPage({ sourceFilter, scope, serverName }: { sourceFilter: ReactNode; scope: ServerHistoryScope; serverName: string }) {
+  const weekdays = weekdayLabels()
   const [searchParams, setSearchParams] = useSearchParams()
   const [calendar, setCalendar] = useState<ServerHistoryCalendar | null>(null)
   const [calendarError, setCalendarError] = useState<string | null>(null)
@@ -329,10 +333,10 @@ function ServerHistoryPage({ sourceFilter, scope, serverName }: { sourceFilter: 
     next.set('month', today.slice(0, 7)); next.set('date', today)
     setSearchParams(next, { preventScrollReset: true })
   }
-  const statusText = day?.status === 'observed' ? 'Observed' : day?.status === 'partial' ? 'Partial day' : day?.status === 'future' ? 'Future date' : 'No data'
+  const statusText = translateText(day?.status === 'observed' ? 'Observed' : day?.status === 'partial' ? 'Partial day' : day?.status === 'future' ? 'Future date' : 'No data', currentLocale())
 
   return <div className="page-stack machine-history-page">
-    <PageHeading eyebrow={`${serverName} · persisted server history`} title="Server history" description="Real samples from panel-owned process measurements and local status pings." actions={<Badge tone="neutral">{timeZone}</Badge>} />
+    <PageHeading eyebrow={<><span data-no-translate>{serverName}</span> · persisted server history</>} title="Server history" description="Real samples from panel-owned process measurements and local status pings." actions={<Badge tone="neutral"><span data-no-translate>{timeZone}</span></Badge>} />
     {sourceFilter}
     {(calendarError || dayError) && <div className="monitor-offline-banner" role="status"><span><Wifi size={16} /><strong>Server history is unavailable</strong><small>{calendarError ?? dayError}</small></span><Button icon={RefreshCw} onClick={() => { setCalendarError(null); setDayError(null); setReloadKey((value) => value + 1) }}>Retry</Button></div>}
     {explicitDateIsInvalid && <div className="history-inline-error" role="alert">This history link contains an invalid calendar date.</div>}
@@ -346,7 +350,7 @@ function ServerHistoryPage({ sourceFilter, scope, serverName }: { sourceFilter: 
         </div>
         {calendarLoading && <div className="calendar-loading" role="status">Loading saved server readings…</div>}
         {calendarError && <div className="history-inline-error" role="alert">The server history calendar could not be loaded.</div>}
-        <div className="machine-calendar-grid" role="grid" aria-label={`${CalendarMonthHeading({ year, month: monthNumber, timeZone })} server history`}>
+        <div className="machine-calendar-grid" role="grid" aria-label={translateText(`${CalendarMonthHeading({ year, month: monthNumber, timeZone })} server history`, currentLocale())}>
           {weekdays.map((weekday) => <div className="calendar-weekday" role="columnheader" key={weekday}>{weekday}</div>)}
           {cells.map((dateNumber, index) => {
             if (dateNumber === null) return <div className="calendar-day-empty" role="gridcell" aria-hidden="true" key={`empty-${index}`} />
@@ -355,8 +359,9 @@ function ServerHistoryPage({ sourceFilter, scope, serverName }: { sourceFilter: 
             const status = record?.status ?? (date > today ? 'future' : 'no-data')
             const currentDay = date === today
             const selected = selectedDate === date
-            const label = `${dateLabel(date, timeZone)}. ${status === 'observed' ? 'Data observed' : status === 'partial' ? 'Partial data' : status === 'future' ? 'Future date' : 'No data'}${record?.sampleCount ? `, ${record.sampleCount.toLocaleString(currentLocale())} samples` : ''}${record?.eventCount ? `, ${record.eventCount.toLocaleString(currentLocale())} events` : ''}`
-            return <div className="calendar-day-cell" role="gridcell" key={date}><button className={`calendar-day ${status} ${currentDay ? 'today' : ''} ${selected ? 'selected' : ''}`} aria-label={label} aria-pressed={selected} onClick={() => chooseDate(date)}><span className="calendar-day-number">{dateNumber}</span><span className="calendar-day-meta">{record?.sampleCount ? record.sampleCount.toLocaleString(currentLocale()) : record?.eventCount ? `${record.eventCount.toLocaleString(currentLocale())} events` : status === 'future' ? 'Future' : '—'}</span><span className="calendar-day-marker" aria-hidden="true" /></button></div>
+            const label = translateText(`${dateLabel(date, timeZone)}. ${status === 'observed' ? 'Data observed' : status === 'partial' ? 'Partial data' : status === 'future' ? 'Future date' : 'No data'}${record?.sampleCount ? `, ${record.sampleCount} samples` : ''}${record?.eventCount ? `, ${record.eventCount} events` : ''}`, currentLocale())
+            const dayMeta = record?.sampleCount ? record.sampleCount.toLocaleString(currentLocale()) : record?.eventCount ? pluralCount(record.eventCount, currentLocale(), { en: ['event', 'events'], ru: ['событие', 'события', 'событий'] }) : status === 'future' ? translateText('Future', currentLocale()) : '—'
+            return <div className="calendar-day-cell" role="gridcell" key={date}><button className={`calendar-day ${status} ${currentDay ? 'today' : ''} ${selected ? 'selected' : ''}`} aria-label={label} aria-pressed={selected} onClick={() => chooseDate(date)}><span className="calendar-day-number">{dateNumber}</span><span className="calendar-day-meta" data-no-translate={record?.sampleCount ? '' : undefined}>{dayMeta}</span><span className="calendar-day-marker" aria-hidden="true" /></button></div>
           })}
         </div>
         <div className="calendar-legend"><span><i className="observed" />Observed readings</span><span><i className="partial" />Partial collection</span><span><i className="no-data" />No samples</span></div>
@@ -422,6 +427,6 @@ function coverageLabel(percentage: number): string {
   return percentage > 0 && percentage < 1 ? '<1%' : `${Math.round(percentage)}%`
 }
 
-function DayStat({ icon: Icon, label, value, detail }: { icon: typeof Cpu; label: string; value: string; detail: string }) {
+function DayStat({ icon: Icon, label, value, detail }: { icon: typeof Cpu; label: string; value: ReactNode; detail: ReactNode }) {
   return <div className="day-stat"><span className="day-stat-icon"><Icon size={15} /></span><div><span>{label}</span><strong>{value}</strong><small>{detail}</small></div></div>
 }

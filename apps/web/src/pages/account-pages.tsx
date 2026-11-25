@@ -31,10 +31,10 @@ function auditActionLabel(action: string): string {
   return label.replace(/^\p{L}/u, (letter) => letter.toLocaleUpperCase(locale))
 }
 
-function shortDate(value: string | null): string {
+function shortDate(value: string | null, locale: 'en' | 'ru' = currentLocale()): string {
   if (!value) return 'Never'
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? 'Unavailable' : new Intl.DateTimeFormat(currentLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+  return Number.isNaN(date.getTime()) ? 'Unavailable' : new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
 function initials(name: string, fallback: string): string {
@@ -42,7 +42,7 @@ function initials(name: string, fallback: string): string {
 }
 
 function AccountAvatar({ name, fallback, url, size = 'normal' }: { name: string; fallback: string; url: string | null; size?: 'normal' | 'large' }) {
-  return <span className={`avatar account-avatar ${size === 'large' ? 'account-avatar-large' : ''} ${url ? 'avatar-with-image' : ''}`}>
+  return <span className={`avatar account-avatar ${size === 'large' ? 'account-avatar-large' : ''} ${url ? 'avatar-with-image' : ''}`} data-no-translate>
     {url ? <img src={url} alt="" /> : initials(name, fallback)}
   </span>
 }
@@ -133,11 +133,11 @@ export function UsersPage() {
         <div className="data-table account-users-table"><div className="data-table-head"><span>User</span><span>Role</span><span>Last sign in</span><span>Sessions</span><span>Access</span><span>Actions</span></div>
           {visibleUsers.map((user) => <div className="data-table-row account-user-row" key={user.id}>
             <span className="user-cell"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} /><span><strong data-no-translate>{user.displayName}</strong><small data-no-translate>@{user.username}</small>{user.mustChangePassword && <Badge tone="warn">Password change required</Badge>}</span></span>
-            <label className="sr-only" htmlFor={`role-${user.id}`}>Role for {user.username}</label>
+            <label className="sr-only" htmlFor={`role-${user.id}`}>Role for <span data-no-translate>{user.username}</span></label>
             <select id={`role-${user.id}`} className="account-role-select" value={user.role} disabled={savingId === user.id} onChange={(event) => void saveRole(user, event.target.value as UserRole)}><option value="administrator">Administrator</option><option value="member">Member</option></select>
             <span className="account-last-seen">{shortDate(user.lastLoginAt)}</span><span className="account-session-count">{user.activeSessionCount}</span>
             <Badge tone={user.enabled ? 'good' : 'neutral'}>{user.enabled ? 'Enabled' : 'Disabled'}</Badge>
-            <span className="account-row-actions"><Button kind="quiet" icon={KeyRound} className="account-icon-action" aria-label={`Reset password for ${user.username}`} onClick={() => setResetTarget(user)}>Reset</Button><Button kind={user.enabled ? 'danger' : 'secondary'} icon={user.enabled ? LockKeyhole : ShieldCheck} className="account-icon-action" disabled={savingId === user.id} onClick={() => setToggleTarget(user)}>{user.enabled ? 'Disable' : 'Enable'}</Button><Button kind="quiet" icon={Trash2} className="account-icon-action" aria-label={`Delete ${user.username}`} title={user.id === auth.snapshot?.user.id ? 'You cannot delete the account you are using.' : undefined} disabled={savingId === user.id || user.id === auth.snapshot?.user.id} onClick={() => setDeleteTarget(user)}>Delete</Button></span>
+            <span className="account-row-actions"><Button kind="quiet" icon={KeyRound} className="account-icon-action" aria-label={translateText(`Reset password for ${user.username}`, currentLocale())} onClick={() => setResetTarget(user)}>Reset</Button><Button kind={user.enabled ? 'danger' : 'secondary'} icon={user.enabled ? LockKeyhole : ShieldCheck} className="account-icon-action" disabled={savingId === user.id} onClick={() => setToggleTarget(user)}>{user.enabled ? 'Disable' : 'Enable'}</Button><Button kind="quiet" icon={Trash2} className="account-icon-action" aria-label={translateText(`Delete ${user.username}`, currentLocale())} title={user.id === auth.snapshot?.user.id ? 'You cannot delete the account you are using.' : undefined} disabled={savingId === user.id || user.id === auth.snapshot?.user.id} onClick={() => setDeleteTarget(user)}>Delete</Button></span>
           </div>)}
         </div>
         <div className="account-users-mobile">{visibleUsers.map((user) => <article className="account-mobile-user" key={`${user.id}-mobile`}>
@@ -238,6 +238,7 @@ function ResetPasswordDialog({ user, onClose, onReset }: { user: AdminUser; onCl
 export function ProfilePage() {
   const auth = useAuth()
   const navigate = useNavigate()
+  const { language } = useUiPreferences()
   const snapshot = auth.snapshot!
   const user = snapshot.user
   const [displayName, setDisplayName] = useState(user.displayName)
@@ -306,8 +307,8 @@ export function ProfilePage() {
     <NoticeBar notice={notice} />
     <Card className="profile-card account-profile-card">
       <div className="profile-card-cover" />
-      <div className="profile-card-main"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} size="large" /><div className="profile-card-identity"><h2 data-no-translate>{user.displayName}</h2><p data-no-translate>@{user.username}</p><Badge tone="accent">{user.role === 'administrator' ? 'Administrator' : 'Member'}</Badge></div><span className="profile-created"><Clock3 size={14} />Joined {shortDate(user.createdAt)}</span></div>
-      <div className="profile-details-grid"><div><span>Username</span><strong>@{user.username}</strong></div><div><span>Role</span><strong>{user.role === 'administrator' ? 'Administrator' : 'Member'}</strong></div><div><span>Last sign in</span><strong>{shortDate(user.lastLoginAt)}</strong></div><div><span>Workspace</span><strong>{snapshot.workspace.displayName}</strong></div></div>
+      <div className="profile-card-main"><AccountAvatar name={user.displayName} fallback={user.username} url={user.avatarUrl} size="large" /><div className="profile-card-identity"><h2 data-no-translate>{user.displayName}</h2><p data-no-translate>@{user.username}</p><Badge tone="accent">{user.role === 'administrator' ? 'Administrator' : 'Member'}</Badge></div><span className="profile-created"><Clock3 size={14} />Joined {shortDate(user.createdAt, language)}</span></div>
+      <div className="profile-details-grid"><div><span>Username</span><strong data-no-translate>@{user.username}</strong></div><div><span>Role</span><strong>{user.role === 'administrator' ? 'Administrator' : 'Member'}</strong></div><div><span>Last sign in</span><strong>{shortDate(user.lastLoginAt, language)}</strong></div><div><span>Workspace</span><strong data-no-translate>{snapshot.workspace.displayName}</strong></div></div>
     </Card>
     <div className="account-profile-grid">
       <Card><SectionHeading title="Profile details" description="Your display name is visible in the local workspace." /><form className="account-inline-form" onSubmit={(event) => void saveName(event)}><Field label="Display name"><input required maxLength={60} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></Field><Button kind="primary" icon={profileBusy ? LoaderCircle : Save} disabled={profileBusy}>{profileBusy ? 'Saving' : 'Save profile'}</Button></form></Card>
@@ -315,7 +316,7 @@ export function ProfilePage() {
     </div>
     <div className="account-profile-grid">
       <Card><SectionHeading title="Change password" description="Changing your password revokes every active session, including this one." /><form className="account-password-form" onSubmit={(event) => void submitPassword(event)}><Field label="Current password"><input type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></Field><Field label="New password" hint="At least 14 characters."><input type="password" autoComplete="new-password" required minLength={14} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field><Field label="Confirm new password"><input type="password" autoComplete="new-password" required minLength={14} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></Field><Button kind="primary" icon={passwordBusy ? LoaderCircle : KeyRound} disabled={passwordBusy}>{passwordBusy ? 'Changing password' : 'Change password'}</Button></form></Card>
-      <Card><SectionHeading title="Active sessions" description="Sessions expire after 12 hours idle or 7 days absolute." /><div className="account-session-list">{snapshot.sessions.map((session) => <div className="account-session-row" key={session.id}><span className={session.current ? 'session-device-icon current' : 'session-device-icon'}><CircleUserRound size={16} /></span><div><strong>{session.current ? 'This browser' : `Session ${session.id}`}</strong><small>Last active {shortDate(session.lastSeenAt)}</small></div>{session.current && <Badge tone="good">Current</Badge>}</div>)}</div>{snapshot.sessions.length === 0 && <p className="audit-empty">No active sessions were returned.</p>}</Card>
+      <Card><SectionHeading title="Active sessions" description="Sessions expire after 12 hours idle or 7 days absolute." /><div className="account-session-list">{snapshot.sessions.map((session) => <div className="account-session-row" key={session.id}><span className={session.current ? 'session-device-icon current' : 'session-device-icon'}><CircleUserRound size={16} /></span><div><strong>{session.current ? 'This browser' : `Session ${session.id}`}</strong><small>Last active {shortDate(session.lastSeenAt, language)}</small></div>{session.current && <Badge tone="good">Current</Badge>}</div>)}</div>{snapshot.sessions.length === 0 && <p className="audit-empty">No active sessions were returned.</p>}</Card>
     </div>
   </div>
 }
@@ -427,7 +428,7 @@ export function SettingsPage() {
     <div className="settings-layout account-settings-layout"><nav className="settings-nav" aria-label="Settings sections">{tabList.map((name) => <button key={name} className={name === tab ? 'selected' : ''} onClick={() => setTab(name)}>{name === 'Workspace' ? <Users size={16} /> : name === 'Personal' ? <CircleUserRound size={16} /> : name === 'Language & appearance' ? <Palette size={16} /> : name === 'Monitoring' ? <Clock3 size={16} /> : <AlertCircle size={16} />}{name}</button>)}</nav>
       <Card className="settings-content account-settings-content">
         <div className="settings-content-heading"><div><h2>{tab}</h2><p>{tab === 'Workspace' ? 'Shared defaults for the single local workspace' : tab === 'Personal' ? 'Saved to your account and applied on this device' : tab === 'Language & appearance' ? 'Language and display settings for your account' : tab === 'Monitoring' ? 'Saved operational settings for the local machine' : 'Saved operational alerts for your local account'}</p></div><Badge tone="good">{tab === 'Notifications' ? 'In-app' : 'Persistent'}</Badge></div>
-        {tab === 'Workspace' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveWorkspace(event)}><Field label="Workspace name"><input required maxLength={60} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} /></Field><Field label="Default landing page"><select value={workspaceLanding} onChange={(event) => setWorkspaceLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-readonly-row"><div><strong>Machine history timezone</strong><small>Configured when the local collector starts; raw timestamps remain UTC.</small></div><span>{history?.timeZone ?? 'Unavailable'}</span></div><div className="settings-footer"><span>Workspace changes apply for all local users.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save workspace'}</Button></div></form>}
+        {tab === 'Workspace' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveWorkspace(event)}><Field label="Workspace name"><input required maxLength={60} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} /></Field><Field label="Default landing page"><select value={workspaceLanding} onChange={(event) => setWorkspaceLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-readonly-row"><div><strong>Machine history timezone</strong><small>Configured when the local collector starts; raw timestamps remain UTC.</small></div><span>{history?.timeZone ? <span data-no-translate>{history.timeZone}</span> : 'Unavailable'}</span></div><div className="settings-footer"><span>Workspace changes apply for all local users.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save workspace'}</Button></div></form>}
         {tab === 'Personal' && <form className="account-settings-form" onSubmit={(event) => void savePersonal(event)}><div className="settings-row account-settings-row"><div><strong>Compact navigation</strong><small>Remember a narrower sidebar for your account.</small></div><label className="account-switch"><input aria-label="Compact navigation" type="checkbox" checked={compactNavigation} onChange={(event) => setCompactNavigation(event.target.checked)} /><span aria-hidden="true" /></label></div><Field label="Default landing page"><select value={personalLanding} onChange={(event) => setPersonalLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-footer"><span>Saved to your profile.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save preferences'}</Button></div></form>}
         {tab === 'Language & appearance' && <form className="account-settings-form appearance-form" onSubmit={(event) => void saveAppearance(event)}>
           <div className="appearance-grid">

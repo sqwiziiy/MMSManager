@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import type { LocalServerSummary } from '@mmsmanager/shared'
 import type { ActivityItem } from '@mmsmanager/shared'
 import { MetricTrack } from '../components/charts'
-import { currentLocale, pluralCount } from '../i18n/catalog'
+import { currentLocale, pluralCount, translateText } from '../i18n/catalog'
 import { Badge, Card, PageHeading } from '../components/ui'
 import { LiveResourceChart } from '../components/live-chart'
 import { mergeResourcePoints } from '../lib/resource-points'
@@ -107,7 +107,7 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
       <Card className="machine-card">
         <div className="card-heading-row"><div><div className="card-kicker"><HardDrive size={15} /> Host</div><h2>Local machine</h2></div><Link className="text-link" to="/machine/history"><CalendarDays size={14} /> History</Link></div>
         <div className="machine-card-body"><div className="machine-name"><span className="machine-icon"><Cpu size={20} /></span><div><strong data-no-translate>{current?.host?.hostname ?? 'Waiting for host details'}</strong><span>{current?.host ? <><span data-no-translate>{current.host.distro ?? current.host.platform}</span> · <span data-no-translate>{current.host.architecture}</span></> : monitor.error ?? 'Waiting for first sample'}</span></div>{!connected && <span className="machine-connection"><i />{current?.status === 'stale' ? 'Stale' : 'Unavailable'}</span>}</div>
-          <div className="machine-specs"><div><span>Processor</span><strong data-no-translate>{current?.host?.cpuModel ?? 'Unavailable'}</strong></div><div><span>Memory total</span><strong>{formatBytes(sample?.memory.totalBytes ?? null)}</strong></div><div><span>Network</span><strong data-no-translate>{sample?.network.interface ?? 'Unavailable'}</strong></div></div>
+          <div className="machine-specs"><div><span>Processor</span><strong data-no-translate>{current?.host?.cpuModel ?? 'Unavailable'}</strong></div><div><span>Memory total</span><strong data-no-translate={sample ? '' : undefined}>{formatBytes(sample?.memory.totalBytes ?? null)}</strong></div><div><span>Network</span><strong data-no-translate>{sample?.network.interface ?? 'Unavailable'}</strong></div></div>
           <Link to="/machine" className="machine-link">View machine overview <ArrowRight size={14} /></Link>
         </div>
       </Card>
@@ -117,6 +117,9 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
 }
 
 function MachineMetricTrack({ label, value, detail, tone }: { label: string; value: number | null; detail: string; tone: 'accent' | 'blue' | 'amber' }) {
-  if (value === null) return <div className="metric-unavailable"><div className="metric-track-copy"><span>{label}</span><strong>Unavailable</strong></div><p>{detail}</p></div>
-  return <MetricTrack label={label} value={Math.round(value)} detail={detail} tone={tone} />
+  const displayedLabel = label === 'CPU' ? <span data-no-translate>{label}</span> : label === 'Memory' || label === 'Server storage' ? translateText(label, currentLocale()) : <span data-no-translate>{label}</span>
+  const displayedDetail = translateText(detail, currentLocale())
+  const detailNode = <span data-no-translate>{displayedDetail}</span>
+  if (value === null) return <div className="metric-unavailable"><div className="metric-track-copy"><span>{displayedLabel}</span><strong>Unavailable</strong></div><p>{detailNode}</p></div>
+  return <MetricTrack label={displayedLabel} value={Math.round(value)} detail={detailNode} tone={tone} />
 }

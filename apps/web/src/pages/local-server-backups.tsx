@@ -5,14 +5,23 @@ import {
 import type { ServerBackup, ServerBackupPreview } from '@mmsmanager/shared'
 import { createServerBackup, downloadServerBackup, getServerBackups, previewServerBackup, restoreServerBackup } from '../api/servers'
 import { Badge, Button, Card, SectionHeading } from '../components/ui'
+import { currentLocale, translateText } from '../i18n/catalog'
 
 type Props = { serverId: string; serverName: string; managed: boolean; canView: boolean; canCreate: boolean; isAdmin: boolean; runtimeStatus: string }
 
 function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
-  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
-  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  const locale = currentLocale()
+  const russian = locale === 'ru'
+  const units = russian ? ['Б', 'КБ', 'МБ', 'ГБ'] : ['B', 'KB', 'MB', 'GB']
+  if (value < 1024) return `${new Intl.NumberFormat(locale).format(value)} ${units[0]}`
+  const divisor = value < 1024 * 1024 ? 1024 : value < 1024 * 1024 * 1024 ? 1024 * 1024 : 1024 * 1024 * 1024
+  const unit = value < 1024 * 1024 ? units[1] : value < 1024 * 1024 * 1024 ? units[2] : units[3]
+  const digits = value >= 1024 * 1024 * 1024 ? 2 : 1
+  return `${new Intl.NumberFormat(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value / divisor)} ${unit}`
+}
+
+function formatDateTime(value: string): string {
+  return new Intl.DateTimeFormat(currentLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 }
 
 export function LocalServerBackups({ serverId, serverName, managed, canView, canCreate, isAdmin, runtimeStatus }: Props) {
@@ -107,7 +116,7 @@ export function LocalServerBackups({ serverId, serverName, managed, canView, can
       </div>
       <div className="local-backup-summary">
         <div className="local-backup-summary-icon"><HardDrive size={16} /></div>
-        <div className="local-backup-summary-copy"><span>Private storage budget</span><strong>{storage ? `${formatBytes(storage.used)} of ${formatBytes(storage.limit)}` : 'Loading storage usage…'}</strong><div className="local-backup-meter" aria-label={`${usedPercent}% of private backup storage used`}><span style={{ width: `${usedPercent}%` }} /></div></div>
+        <div className="local-backup-summary-copy"><span>Private storage budget</span><strong>{storage ? <><span data-no-translate>{formatBytes(storage.used)}</span> {translateText('of', currentLocale())} <span data-no-translate>{formatBytes(storage.limit)}</span></> : 'Loading storage usage…'}</strong><div className="local-backup-meter" aria-label={translateText(`${usedPercent}% of private backup storage used`, currentLocale())}><span style={{ width: `${usedPercent}%` }} /></div></div>
         <Badge tone={storage?.warning ? 'warn' : 'good'}>{storage?.warning ? 'Budget alert' : 'No auto-delete'}</Badge>
       </div>
       {!stopped && <div className="local-backup-inline-warning" role="status"><AlertTriangle size={15} /><span>Creation and restore require a confirmed stopped state. Current state: {runtimeStatus}.</span></div>}
@@ -124,7 +133,7 @@ export function LocalServerBackups({ serverId, serverName, managed, canView, can
           : <div className="local-backup-list">
             {items.map((backup) => <article className="local-backup-row" key={backup.id}>
               <div className="local-backup-icon"><Archive size={15} /></div>
-              <div className="local-backup-row-main"><strong>{new Date(backup.createdAt).toLocaleString()}</strong><span>{formatBytes(backup.archiveSizeBytes)} archive · {backup.fileCount.toLocaleString()} files · {formatBytes(backup.totalFileBytes)} content</span><small>SHA-256 {backup.archiveSha256.slice(0, 16)}… · {backup.excludedCount ? `${backup.excludedCount} excluded paths` : 'no excluded paths'}</small></div>
+              <div className="local-backup-row-main"><strong data-no-translate>{formatDateTime(backup.createdAt)}</strong><span><span data-no-translate>{formatBytes(backup.archiveSizeBytes)}</span> archive · <span data-no-translate>{backup.fileCount.toLocaleString(currentLocale())}</span> files · <span data-no-translate>{formatBytes(backup.totalFileBytes)}</span> content</span><small><span data-no-translate>SHA-256 {backup.archiveSha256.slice(0, 16)}…</span> · {backup.excludedCount ? `${backup.excludedCount} excluded paths` : 'no excluded paths'}</small></div>
               <Badge tone={backup.kind === 'manual' ? 'good' : 'neutral'}>{backup.kind === 'manual' ? 'Manual' : 'Pre-restore safety'}</Badge>
               <div className="local-backup-row-actions">
                 <Button icon={ArrowDownToLine} disabled={busy} onClick={() => void download(backup)}>Download</Button>

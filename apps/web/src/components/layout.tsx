@@ -13,6 +13,7 @@ import { useAuth } from '../state/use-auth'
 import type { AuthUser } from '@mmsmanager/shared'
 import { updateUserPreferences } from '../api/auth'
 import { useUiPreferences } from '../i18n/locale-context'
+import { currentLocale, translateText } from '../i18n/catalog'
 
 type NavItem = { label: string; to: string; icon: LucideIcon; exact?: boolean }
 const operations: NavItem[] = [
@@ -28,7 +29,7 @@ const administration: NavItem[] = [
   { label: 'Settings', to: '/settings', icon: Settings2 },
 ]
 
-export function AppShell({ children, onCreate, onSignOut, user, workspaceName }: { children: React.ReactNode; onCreate: () => void; onSignOut: () => void; user: AuthUser; workspaceName: string }) {
+export function AppShell({ children, overlay, onCreate, onSignOut, user, workspaceName }: { children: React.ReactNode; overlay?: React.ReactNode; onCreate: () => void; onSignOut: () => void; user: AuthUser; workspaceName: string }) {
   const { replaceSnapshot } = useAuth()
   const { preferences: uiPreferences } = useUiPreferences()
   const [collapsed, setCollapsed] = useState(user.preferences.compactNavigation)
@@ -119,12 +120,12 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
       {mobileOpen && <button aria-label="Close navigation" className="mobile-scrim" onClick={() => setMobileOpen(false)} />}
       <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
         <div className="brand-row">
-          <NavLink to="/" className="brand-mark" aria-label="MMSManager dashboard"><span className="brand-glyph"><i /><i /><i /><i /></span><span className="brand-name">MMSManager</span></NavLink>
+          <NavLink to="/" className="brand-mark" aria-label={translateText('MMSManager dashboard', currentLocale())}><span className="brand-glyph"><i /><i /><i /><i /></span><span className="brand-name" data-no-translate>MMSManager</span></NavLink>
           <IconButton icon={collapsed ? PanelLeftOpen : PanelLeftClose} label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} className="collapse-sidebar" aria-expanded={!collapsed} aria-busy={sidebarSaving} onClick={toggleSidebar} />
           <IconButton icon={X} label="Close navigation" className="close-mobile" onClick={() => setMobileOpen(false)} />
         </div>
 
-        <button className="sidebar-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search</span><kbd>Ctrl K</kbd></button>
+        <button className="sidebar-search" onClick={() => setSearchOpen(true)}><Search size={16} /><span>Search</span><kbd data-no-translate>Ctrl K</kbd></button>
 
         <div className="sidebar-scroll">
           <NavGroup title="Workspace" items={operations} serverCount={registeredServers.length} />
@@ -151,12 +152,13 @@ export function AppShell({ children, onCreate, onSignOut, user, workspaceName }:
       <main className="main-panel">
         <header className="topbar">
           <div className="topbar-left"><IconButton icon={Menu} label="Open navigation" className="menu-mobile" onClick={() => setMobileOpen(true)} /><span className="topbar-page" data-no-translate={location.pathname.startsWith('/servers/') || ![...operations, ...library, ...accountNavigation].some((item) => item.to === location.pathname) ? '' : undefined}>{pageTitle}</span><span className="breadcrumb-divider">/</span><span className="breadcrumb-current">Workspace</span></div>
-          <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd>Ctrl K</kbd></button><span className="topbar-separator" /><TopbarMachineStatus />{user.role === 'administrator' && <Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button>}</div>
+          <div className="topbar-actions"><button className="top-search" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search pages</span><kbd data-no-translate>Ctrl K</kbd></button><span className="topbar-separator" /><TopbarMachineStatus />{user.role === 'administrator' && <Button kind="primary" icon={FilePlus2} onClick={onCreate} className="top-create">Create server</Button>}</div>
         </header>
         {sidebarPreferenceError && <div className="sidebar-preference-error" role="status">Sidebar preference could not be saved.</div>}
         <div className="page-content" key={location.pathname}>{children}</div>
       </main>
       {searchOpen && <QuickSearch onClose={() => setSearchOpen(false)} includeUsers={user.role === 'administrator'} registeredServers={registeredServers} />}
+      {overlay}
     </div>
   )
 }
@@ -166,14 +168,14 @@ function SidebarMachineStatus() {
   const live = apiStatus === 'online' && machineStatus === 'live'
   const problem = apiStatus === 'offline' ? 'Connection unavailable' : apiStatus === 'checking' ? 'Updating' : machineStatus === 'stale' ? 'Out of date' : machineStatus !== 'live' ? 'No reading yet' : ''
   const tone = live ? 'live' : apiStatus === 'offline' ? 'offline' : machineStatus === 'stale' ? 'stale' : ''
-  return <div className="local-node"><span className="node-icon"><Computer size={16} /></span><div><strong>Local machine</strong>{problem && <span>{problem}</span>}</div><span className={`node-dot ${tone}`} role="status" aria-label={live ? 'Machine monitoring is current' : problem} title={live ? 'Monitoring current' : problem} /></div>
+  return <div className="local-node"><span className="node-icon"><Computer size={16} /></span><div><strong>Local machine</strong>{problem && <span>{problem}</span>}</div><span className={`node-dot ${tone}`} role="status" aria-label={translateText(live ? 'Machine monitoring is current' : problem, currentLocale())} title={translateText(live ? 'Monitoring current' : problem, currentLocale())} /></div>
 }
 
 function TopbarMachineStatus() {
   const { apiStatus, machineStatus } = useMachineStatus()
   const live = apiStatus === 'online' && machineStatus === 'live'
   const problem = apiStatus === 'offline' ? 'Connection unavailable' : apiStatus === 'checking' ? 'Updating' : machineStatus === 'stale' ? 'Out of date' : machineStatus !== 'live' ? 'No reading yet' : ''
-  return <span className={`top-demo ${live ? 'machine-live' : problem ? 'machine-problem' : ''}`} title={problem || 'Monitoring current'} aria-label={live ? 'Local machine monitoring is current' : `Local machine: ${problem}`}><span aria-hidden="true" />Local machine</span>
+  return <span className={`top-demo ${live ? 'machine-live' : problem ? 'machine-problem' : ''}`} title={translateText(problem || 'Monitoring current', currentLocale())} aria-label={translateText(live ? 'Local machine monitoring is current' : `Local machine: ${problem}`, currentLocale())}><span aria-hidden="true" />Local machine</span>
 }
 
 function NavGroup({ title, items, serverCount }: { title: string; items: NavItem[]; serverCount?: number }) {
@@ -226,7 +228,7 @@ function QuickSearch({ onClose, includeUsers, registeredServers }: { onClose: ()
 
 function ProfileAvatar({ user, small = false }: { user: AuthUser; small?: boolean }) {
   const initials = user.displayName.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('') || user.username.slice(0, 2).toUpperCase()
-  return <span className={`avatar ${user.role === 'administrator' ? 'avatar-green' : ''} ${small ? 'avatar-small' : ''} ${user.avatarUrl ? 'avatar-with-image' : ''}`}>
+  return <span className={`avatar ${user.role === 'administrator' ? 'avatar-green' : ''} ${small ? 'avatar-small' : ''} ${user.avatarUrl ? 'avatar-with-image' : ''}`} data-no-translate>
     {user.avatarUrl && <img src={user.avatarUrl} alt="" />}
     {!user.avatarUrl && initials}
   </span>

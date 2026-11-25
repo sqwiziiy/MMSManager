@@ -1,3 +1,5 @@
+import { currentLocale, translateApiError } from '../i18n/catalog'
+
 export type ApiErrorKind = 'unauthenticated' | 'forbidden' | 'conflict' | 'validation' | 'rate-limited' | 'http' | 'network' | 'invalid-response'
 
 export class ApiRequestError extends Error {
@@ -91,21 +93,23 @@ function payloadMessage(payload: unknown): { message: string | null; code: strin
 
 export function apiErrorFromPayload(status: number, payload: unknown, fallback?: string, requestId: string | null = null): ApiRequestError {
   const detail = payloadMessage(payload)
-  return new ApiRequestError(status, detail.message ?? statusFallback(status, fallback), detail.code, errorKind(status), requestId)
+  const message = detail.message ?? statusFallback(status, fallback)
+  return new ApiRequestError(status, translateApiError(message, detail.code, currentLocale()), detail.code, errorKind(status), requestId)
 }
 
 export function apiNetworkError(fallback: string): ApiRequestError {
-  return new ApiRequestError(0, fallback, 'API_UNAVAILABLE', 'network')
+  return new ApiRequestError(0, translateApiError(fallback, 'API_UNAVAILABLE', currentLocale()), 'API_UNAVAILABLE', 'network')
 }
 
 export function apiInvalidResponseError(): ApiRequestError {
-  return new ApiRequestError(502, 'The local API returned an unexpected response. Retry, and contact an administrator if it continues.', 'INVALID_RESPONSE', 'invalid-response')
+  const message = 'The local API returned an unexpected response. Retry, and contact an administrator if it continues.'
+  return new ApiRequestError(502, translateApiError(message, 'INVALID_RESPONSE', currentLocale()), 'INVALID_RESPONSE', 'invalid-response')
 }
 
 export function apiErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof ApiRequestError) return error.message
+  if (error instanceof ApiRequestError) return translateApiError(error.message, error.code, currentLocale())
   if (error instanceof Error && error.message) return error.message
-  return fallback
+  return translateApiError(fallback, null, currentLocale())
 }
 
 export async function apiRequestResponse(url: string, init: RequestInit = {}, options?: ApiRequestOptions): Promise<Response> {
@@ -116,8 +120,7 @@ export async function apiRequestResponse(url: string, init: RequestInit = {}, op
     response = await fetch(url, { ...init, method, headers, credentials: 'same-origin' })
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
-    const fallback = error instanceof Error && error.message ? `The local API could not be reached: ${error.message}` : 'The local API could not be reached. Check that MMSManager is running, then retry.'
-    throw apiNetworkError(fallback)
+    throw apiNetworkError('The local API could not be reached. Check that MMSManager is running, then retry.')
   }
   reportSessionExpiry(response.status, url, options)
   if (!response.ok) {
