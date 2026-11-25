@@ -148,6 +148,20 @@
       "when": 1795619000000,
       "tag": "0020_stage_06i05_restart_automation",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1795619600000,
+      "tag": "0021_stage_06i06_java_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1795619610000,
+      "tag": "0022_stage_06i06_java_override_identity",
+      "breakpoints": true
     }
   ]
 }

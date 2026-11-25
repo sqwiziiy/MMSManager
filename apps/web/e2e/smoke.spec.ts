@@ -96,9 +96,10 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   let restartRequired = false
   let runtimeSettings = {
     serverId, javaPath: '/tmp/mmsmanager-e2e-java-21', javaMajor: 21, requiredJavaMajor: 21,
+    javaSelectionMode: 'auto' as const, javaSelectionReason: 'automatic-exact-minimum' as const, javaCompatibilityOverrideConfirmed: false,
     minMemoryMb: 1024, maxMemoryMb: 4096,
     jvmOptions: { collector: 'default' as const, maxGCPauseMs: null, parallelGcThreads: null, alwaysPreTouch: false, disableExplicitGc: false },
-    compatibility: 'compatible' as const, runtimeStatus, restartRequired: false, startScript: 'synchronized' as const,
+    compatibility: 'meets-minimum' as const, runtimeStatus, restartRequired: false, startScript: 'synchronized' as const,
   }
   const missedJobId = 'd03c1cf8-e2a1-4a4e-9de4-4536c7796091'
   const consoleSessionIds = ['a03c1cf8-e2a1-4a4e-9de4-4536c7796091', 'b13c1cf8-e2a1-4a4e-9de4-4536c7796091']
@@ -131,11 +132,15 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   await page.route(`**/api/v1/servers/${serverId}/access`, (route) => route.fulfill({ json: { administrator: true, permissions: allAccess } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/access`, (route) => route.fulfill({ json: { users: [] } }))
   await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [{ ...server, directory: '/tmp/mmsmanager-e2e/local-fixture', javaPath: '/tmp/fake-java' }], managedRoot: '/tmp/mmsmanager-e2e/servers', importRoots: ['/tmp/mmsmanager-e2e/servers'] } }))
-  await page.route('**/api/v1/admin/java', (route) => route.fulfill({ json: { runtimes: [{ path: '/tmp/mmsmanager-e2e-java-21', version: '21.0.4', major: 21, vendor: 'Temurin', source: 'discovered' }] } }))
+  await page.route('**/api/v1/admin/java', (route) => route.fulfill({ json: { runtimes: [
+    { path: '/tmp/mmsmanager-e2e-java-21', version: '21.0.4', major: 21, vendor: 'Temurin', source: 'discovered' },
+    { path: '/tmp/mmsmanager-e2e-java-8', version: '1.8.0_402', major: 8, vendor: 'Temurin', source: 'discovered' },
+  ] } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/runtime-settings`, async (route) => {
     if (route.request().method() === 'PUT') {
-      const input = route.request().postDataJSON() as Omit<typeof runtimeSettings, 'serverId' | 'javaMajor' | 'requiredJavaMajor' | 'compatibility' | 'runtimeStatus' | 'restartRequired' | 'startScript'>
-      runtimeSettings = { ...runtimeSettings, ...input, restartRequired: runtimeStatus === 'running' }
+      const input = route.request().postDataJSON() as Partial<typeof runtimeSettings> & { confirmCompatibilityOverride?: boolean }
+      const { confirmCompatibilityOverride, ...savedInput } = input
+      runtimeSettings = { ...runtimeSettings, ...savedInput, javaSelectionReason: savedInput.javaSelectionMode === 'auto' ? 'automatic-exact-minimum' : 'manual-selection', javaCompatibilityOverrideConfirmed: Boolean(confirmCompatibilityOverride), compatibility: savedInput.javaPath?.includes('java-8') ? 'below-minimum' : 'meets-minimum', restartRequired: runtimeStatus === 'running' }
       restartRequired = runtimeSettings.restartRequired
     }
     return route.fulfill({ json: { settings: { ...runtimeSettings, runtimeStatus } } })
@@ -1000,7 +1005,17 @@ test('runtime settings, safe restart, backup schedule and restart schedule work 
   const { serverId } = await mockLocalServer(page)
   await page.goto(`/servers/${serverId}/runtime`)
   await expect(page.getByRole('heading', { name: 'Runtime profile' })).toBeVisible()
+  await expect(page.getByLabel('Java selection')).toHaveValue('auto')
+  await expect(page.getByText('Auto selected the exact declared minimum.')).toBeVisible()
+  await expect(page.getByText('Java 21', { exact: true })).toBeVisible()
+  await page.screenshot({ path: screenshotPath('i6-runtime-auto-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.getByLabel('Java selection').selectOption('manual')
   await expect(page.getByLabel('Selected Java executable')).toHaveValue('/tmp/mmsmanager-e2e-java-21')
+  await page.getByLabel('Selected Java executable').selectOption('/tmp/mmsmanager-e2e-java-8')
+  await expect(page.getByText('This runtime is below the declared Java minimum.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Save runtime settings' })).toBeDisabled()
+  await page.getByLabel('Confirm manual compatibility exception').check()
+  await page.getByLabel('Selected Java executable').selectOption('/tmp/mmsmanager-e2e-java-21')
   await page.getByLabel('Minimum memory').fill('1536')
   await page.getByLabel('Maximum memory').fill('6144')
   await page.getByLabel('Garbage collector').selectOption('g1')
@@ -1052,6 +1067,12 @@ test('runtime settings, safe restart, backup schedule and restart schedule work 
   await page.setViewportSize({ width: 390, height: 844 })
   await expectNoHorizontalOverflow(page, 'Russian scheduled restart on mobile')
   await page.screenshot({ path: screenshotPath('i5-restart-schedule-ru-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.goto(`/servers/${serverId}/runtime`)
+  await expect(page.getByRole('heading', { name: 'Профиль запуска' })).toBeVisible()
+  await expect(page.getByLabel('Выбор Java')).toHaveValue('manual')
+  await expect(page.getByText('Память Minecraft')).toBeVisible()
+  await expectNoHorizontalOverflow(page, 'Russian Java runtime on mobile')
+  await page.screenshot({ path: screenshotPath('i6-runtime-ru-mobile.png'), fullPage: true, animations: 'disabled' })
   await page.goto('/settings')
   await page.getByRole('button', { name: 'Язык и оформление' }).click()
   await page.locator('form.appearance-form select').first().selectOption('en')

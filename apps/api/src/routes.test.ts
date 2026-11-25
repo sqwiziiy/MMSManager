@@ -781,7 +781,14 @@ describe('authenticated local API', () => {
     const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
     const runtimeSettings = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/runtime-settings`, headers: adminHeaders })
     expect(runtimeSettings.statusCode).toBe(200)
-    expect(runtimeSettings.json().settings).toMatchObject({ serverId: id, compatibility: 'unknown', startScript: 'untracked', runtimeStatus: 'stopped' })
+    expect(runtimeSettings.json().settings).toMatchObject({ serverId: id, javaSelectionMode: 'manual', compatibility: 'unknown', startScript: 'untracked', runtimeStatus: 'stopped' })
+    const autoRuntimeInput = { javaSelectionMode: 'auto', javaPath: null, confirmCompatibilityOverride: false, minMemoryMb: 512, maxMemoryMb: 1024, jvmOptions: { collector: 'default', maxGCPauseMs: null, parallelGcThreads: null, alwaysPreTouch: false, disableExplicitGc: false } }
+    expect((await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/runtime-settings`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: autoRuntimeInput })).statusCode).toBe(403)
+    const savedRuntime = await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/runtime-settings`, headers: adminHeaders, payload: autoRuntimeInput })
+    expect(savedRuntime.statusCode, savedRuntime.body).toBe(200)
+    expect(savedRuntime.json().settings).toMatchObject({ javaSelectionMode: 'auto', javaPath: null, javaSelectionReason: 'automatic-requirement-unknown' })
+    const rejectedRuntimeCommand = await app.inject({ method: 'PUT', url: `/api/v1/admin/servers/${id}/runtime-settings`, headers: adminHeaders, payload: { ...autoRuntimeInput, command: 'arbitrary-shell' } })
+    expect(rejectedRuntimeCommand.statusCode).toBe(400)
     const automation = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/automation`, headers: adminHeaders })
     expect(automation.statusCode).toBe(200)
     expect(automation.json().automation).toMatchObject({ serverId: id, enabled: false, jobs: [], restartSchedule: { enabled: false, onlyWhenEmpty: true, waitPolicy: 'skip', retryIntervalMinutes: 5, waitDeadlineMinutes: 30 }, restartJobs: [] })
@@ -1154,7 +1161,7 @@ describe('authenticated local API', () => {
       "  }",
       "})",
     ].join('\n'))
-    await writeFile(fakeJavaPath, `#!/bin/sh\nexec '${process.execPath}' '${fakeServerScript}'\n`)
+    await writeFile(fakeJavaPath, `#!/bin/sh\nif [ "$1" = "-version" ]; then printf 'openjdk version "21.0.0-fixture"\\n' >&2; exit 0; fi\nexec '${process.execPath}' '${fakeServerScript}'\n`)
     await chmod(fakeJavaPath, 0o700)
     availableJavaRuntimes = [{ path: fakeJavaPath, version: '21.0.0-fixture', major: 21, vendor: 'Fixture', source: 'discovered' }]
     await javaRuntimes.scan()
@@ -1188,7 +1195,7 @@ describe('authenticated local API', () => {
     await app.close()
     processManager = new ServerProcessManager(opened.db, servers, Date.now, {
       stopTimeoutMs: 1_000, readinessTimeoutMs: 2_000, shutdownTimeoutMs: 1_000,
-    })
+    }, javaRuntimes)
     app = await createApiApp({
       db: opened.db, collector, timeZone: 'Europe/Paris', auth, avatars, servers, javaRuntimes,
       processes: processManager, installFetch: fixtureFetch, webOrigin: WEB_ORIGIN, apiPort: 4174,
@@ -1231,7 +1238,7 @@ describe('authenticated local API', () => {
     const serverDirectory = join(dataDirectory, 'servers', 'fixture-paper')
     expect(await readFile(join(serverDirectory, 'server.jar'))).toEqual(artifact)
     expect(await readFile(join(serverDirectory, 'eula.txt'), 'utf8')).toContain('eula=true')
-    expect(opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()).toMatchObject({ source: 'created', managed: true, eula: 'accepted' })
+    expect(opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()).toMatchObject({ source: 'created', managed: true, eula: 'accepted', javaSelectionMode: 'auto' })
     expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console/sessions`, headers: requestHeaders })).statusCode).toBe(401)
 
     const ownerToken = /mmsmanager_session=([^;]+)/.exec(cookieHeader)?.[1]
@@ -1382,7 +1389,7 @@ describe('authenticated local API', () => {
     expect(publish.json()).toMatchObject({ importState: 'published', started: false, startError: null, server: { name: 'ZIP fixture world', source: 'created', managed: true, javaMajor: 21, eula: 'not-accepted' } })
     const serverId = publish.json().server.id as string
     const row = await opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()
-    expect(row).toBeDefined()
+    expect(row).toMatchObject({ javaSelectionMode: 'auto', javaMajor: 21, requiredJavaMajor: 17 })
     expect(await readFile(join(row!.directory, 'server-1.20.4.jar'))).toEqual(serverJar)
     expect(await readFile(join(row!.directory, 'world', 'level.dat'))).toEqual(worldData)
     expect(await readFile(join(row!.directory, 'server.properties'), 'utf8')).toContain('server-port=25570')

@@ -291,7 +291,7 @@ export async function createApiApp(options: {
   const templates = new ServerTemplateService(options.db, options.now)
   const installs = new ServerInstallService(options.db, options.servers, options.javaRuntimes, options.installFetch ? { fetch: options.installFetch } : {})
   await installs.prepare()
-  const processes = options.processes ?? new ServerProcessManager(options.db, options.servers, options.now)
+  const processes = options.processes ?? new ServerProcessManager(options.db, options.servers, options.now, {}, options.javaRuntimes)
   await processes.prepare()
   const runtimeSettings = new ServerRuntimeSettingsService(options.db, options.servers, processes, options.javaRuntimes, options.now)
   const serverAccess = new ServerAccessService(options.db, options.now)

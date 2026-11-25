@@ -485,7 +485,7 @@ export class ServerZipImportService {
     this.db.transaction((tx) => {
       tx.insert(localServers).values({
         id: serverId, name: options.name, directory, source: 'created', software: preview.software as 'vanilla' | 'fabric' | 'paper',
-        version: preview.version, jarName: preview.jarName, javaPath: options.javaPath, javaMajor: options.javaMajor,
+        version: preview.version, jarName: preview.jarName, javaPath: options.javaPath, javaMajor: options.javaMajor, javaSelectionMode: 'auto',
         requiredJavaMajor: preview.requiredJavaMajor, minMemoryMb: options.minMemoryMb, maxMemoryMb: options.maxMemoryMb,
         port: preview.port, eula: options.acceptEula ? 'accepted' : 'not-accepted', managed: true,
         worldFolders: JSON.stringify(preview.worldFolders), createdBy: actorUserId, createdAt: at, updatedAt: at, removedAt: null,

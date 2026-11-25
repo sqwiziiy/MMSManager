@@ -1135,6 +1135,33 @@ const additionalPhrases = [
   ['No directory exists at the configured server-relative world path.', 'По заданному относительному пути папка мира отсутствует.'],
   ['missing', 'отсутствует'],
   ['Choose a locally checked executable for this panel-managed server.', 'Выберите локально проверенный исполняемый файл для управляемого сервера.'],
+  ['Choose how this server selects an installed, checked Java executable.', 'Выберите способ подбора проверенной установленной среды Java для сервера.'],
+  ['Java selection', 'Выбор Java'], ['Auto', 'Автоматически'],
+  ['Effective runtime', 'Фактически выбранная среда'], ['No runtime selected', 'Среда не выбрана'],
+  ['Manual runtime selection', 'Среда выбрана вручную'],
+  ['Auto selected the exact declared minimum.', 'Автоматически выбрана версия, точно совпадающая с заявленным минимумом.'],
+  ['Auto selected the lowest installed Java meeting the declared minimum.', 'Автоматически выбрана самая ранняя установленная версия Java, соответствующая заявленному минимуму.'],
+  ['No declared Java minimum is available. Auto will not choose a runtime.', 'Минимальная версия Java не указана. Автоматический выбор не выполняется.'],
+  ['No checked installed Java meets the declared minimum. Auto will not choose a runtime.', 'Нет проверенной установленной Java, соответствующей заявленному минимуму. Автоматический выбор не выполняется.'],
+  ['Installed Java runtimes could not be checked. Auto will not choose a runtime.', 'Не удалось проверить установленные среды Java. Автоматический выбор не выполняется.'],
+  ['Checking runtime selection…', 'Проверка выбора среды…'],
+  ['The declared minimum is met. This does not confirm compatibility with this server build.', 'Заявленный минимум соблюдён. Это не подтверждает совместимость с данной сборкой сервера.'],
+  ['This runtime is below the declared Java minimum.', 'Эта среда использует Java ниже заявленного минимума.'],
+  ['The declared Java minimum is unknown. Manual selection requires explicit confirmation.', 'Минимальная версия Java неизвестна. Для ручного выбора требуется явное подтверждение.'],
+  ['Confirm manual compatibility exception', 'Подтверждаю исключение при ручном выборе Java'],
+  ['MMSManager will recheck this Java and require confirmation again if its version or the server requirement changes.', 'MMSManager повторно проверит Java и запросит подтверждение, если изменится её версия или требование сервера.'],
+  ['Confirm the manual Java compatibility exception before saving.', 'Подтвердите исключение при ручном выборе Java перед сохранением.'],
+  ['Minecraft memory', 'Память Minecraft'],
+  ['Declared minimum', 'Заявленный минимум'], ['Not verified', 'Не проверена'],
+  ['This Java version is below the declared minimum. Confirm the manual override explicitly before saving.', 'Эта версия Java ниже заявленного минимума. Перед сохранением явно подтвердите исключение.'],
+  ['The declared Java minimum is unknown. Confirm the manual runtime choice explicitly before saving.', 'Минимальная версия Java неизвестна. Перед сохранением явно подтвердите ручной выбор.'],
+  ['The Java version or compatibility basis changed since confirmation. Review the warning and confirm this manual choice again.', 'Версия Java или требование совместимости изменились после подтверждения. Проверьте предупреждение и подтвердите ручной выбор ещё раз.'],
+  ['Official Minecraft metadata does not declare a Java minimum for this installation. Automatic selection cannot choose safely.', 'Официальные метаданные Minecraft не указывают минимальную версию Java для этой установки. Автоматический выбор невозможен.'],
+  ['No checked installed Java runtime meets the declared minimum. No process was started.', 'Нет проверенной установленной среды Java, соответствующей заявленному минимуму. Сервер не запущен.'],
+  ['Installed Java runtimes could not be checked. No process was started.', 'Не удалось проверить установленные среды Java. Сервер не запущен.'],
+  ['The Java runtime registry is unavailable. No process was started.', 'Реестр сред Java недоступен. Сервер не запущен.'],
+  ['The selected Java runtime could not be verified at launch. No process was started.', 'Не удалось проверить выбранную Java перед запуском. Сервер не запущен.'],
+  ['Select and check an installed Java runtime before starting this server.', 'Перед запуском выберите и проверьте установленную среду Java.'],
   ['Rescan Java', 'Повторно проверить Java'],
   ['Typed bounds used by panel launches. Maximum is limited to 128 GiB.', 'Ограничения памяти для запуска через MMSManager. Максимум — 128 ГиБ.'],
   ['Only supported, validated switches are available; arbitrary arguments are not accepted.', 'Доступны только проверенные параметры. Произвольные аргументы не принимаются.'],
@@ -1231,6 +1258,7 @@ export function translateText(value: string, language: 'en' | 'ru'): string {
   if (language === 'en') return value
   const normalized = value.replace(/\s+/g, ' ').trim()
   const javaRequirement = /^This server requires Java (\d+) or newer\. Choose a compatible installed runtime\.$/.exec(normalized)
+  const javaOverrideMinimum = /^This Java version is below the declared minimum (\d+)\. Confirm the manual override explicitly before saving\.$/.exec(normalized)
   const entryLimit = /^The archive exceeds the ([\d,]+) entry limit\.$/.exec(normalized)
   const logicalCores = /^(\d+) logical cores$/.exec(normalized)
   const coverage = /^(\d+)% expected coverage$/.exec(normalized)
@@ -1276,6 +1304,7 @@ export function translateText(value: string, language: 'en' | 'ru'): string {
     ?? (storageRetention ? `Локальные файловые системы приложения и данных серверов. Показания хранятся до ${russianPlural(Number(storageRetention[1]), ['день', 'дня', 'дней'])}.` : undefined)
     ?? (savedJava ? `Сохранённая Java ${savedJava[1] === 'version unknown' ? 'неизвестной версии' : savedJava[1]} · повторная проверка при сохранении` : undefined)
     ?? (javaRequirement ? `Для этого сервера требуется Java ${javaRequirement[1]} или новее. Выберите совместимую установленную среду.` : undefined)
+    ?? (javaOverrideMinimum ? `Эта версия Java ниже заявленного минимума ${javaOverrideMinimum[1]}. Перед сохранением явно подтвердите исключение.` : undefined)
     ?? (entryLimit ? `В архиве больше ${entryLimit[1]} элементов.` : undefined)
   if (!translation) return value
   const leading = value.match(/^\s*/)?.[0] ?? ''
@@ -1331,6 +1360,7 @@ export function isLocalizedText(value: string, language: 'en' | 'ru'): boolean {
     /^.+\. (?:Показания собраны|Частичные показания|Будущая дата|Нет данных)(?:, \d+ (?:образец|образца|образцов))?(?:, \d+ (?:событие|события|событий))?$/,
     /^Локальные файловые системы приложения и данных серверов\. Показания хранятся до \d+ дней\.$/,
     /^Сохранённая Java (?:\d+|неизвестной версии) · повторная проверка при сохранении$/,
+    /^Эта версия Java ниже заявленного минимума \d+\. Перед сохранением явно подтвердите исключение\.$/,
   ]
   return dynamicRussian.some((pattern) => pattern.test(normalized))
 }

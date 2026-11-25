@@ -12,6 +12,7 @@ import { openDatabase } from '../db/client.js'
 import { ServerRegistry } from './registry.js'
 import { ServerProcessManager } from './processes.js'
 import { ServerModsService } from './mods.js'
+import { JavaRuntimeRegistry } from './java.js'
 
 describe('panel-owned local server processes', () => {
   let temp: string
@@ -67,11 +68,12 @@ done
     const port = await availablePort()
     const stubbornPort = await availablePort()
     await opened.db.insert(localServers).values([
-      { id: managedId, name: 'Managed Fixture', directory: managedDirectory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath, javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
-      { id: importedId, name: 'Imported Fixture', directory: importedDirectory, source: 'imported', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath, javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: null, eula: 'accepted', managed: false, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
-      { id: stubbornId, name: 'Stubborn Fixture', directory: stubbornDirectory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'ignore-stop.jar', javaPath, javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: stubbornPort, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
+      { id: managedId, name: 'Managed Fixture', directory: managedDirectory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath, javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
+      { id: importedId, name: 'Imported Fixture', directory: importedDirectory, source: 'imported', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath, javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: null, eula: 'accepted', managed: false, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
+      { id: stubbornId, name: 'Stubborn Fixture', directory: stubbornDirectory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'ignore-stop.jar', javaPath, javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: stubbornPort, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
     ]).run()
-    manager = new ServerProcessManager(opened.db, registry, Date.now, { stopTimeoutMs: 1000, readinessTimeoutMs: 1500, shutdownTimeoutMs: 1000 })
+    const javaRuntimes = new JavaRuntimeRegistry(async () => [{ path: javaPath, version: '21.0.4', major: 21, vendor: 'OpenJDK', source: 'discovered' }])
+    manager = new ServerProcessManager(opened.db, registry, Date.now, { stopTimeoutMs: 1000, readinessTimeoutMs: 1500, shutdownTimeoutMs: 1000 }, javaRuntimes)
     await manager.prepare()
   })
 

@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   const servers = new ServerRegistry(database.db, dataDirectory)
   await servers.prepare()
   const javaRuntimes = new JavaRuntimeRegistry()
-  const processes = new ServerProcessManager(database.db, servers)
+  const processes = new ServerProcessManager(database.db, servers, Date.now, {}, javaRuntimes)
   const reader = new SystemInformationReader(monitoringSettings.diskRefreshMs)
   reader.configureStoragePaths(rolePathDefaults(os.homedir(), dataDirectory, servers.managedRoot))
   const collector = new MachineCollector(database.db, reader, timeZone, monitoringSettings.fastSampleMs, Date.now, monitoringSettings.historySaveMs)

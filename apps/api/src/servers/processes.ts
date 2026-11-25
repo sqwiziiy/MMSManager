@@ -12,8 +12,10 @@ import { localServerBackupRestores, localServerConsoleEntries, localServerEvents
 import { jvmOptionsSchema } from '@mmsmanager/shared'
 import type { ServerRuntime, ServerConsoleEntry, ServerConsoleSession, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
+import type { JavaRuntime, JavaRuntimeRegistry } from './java.js'
+import { classifyJavaMinimum, manualJavaOverrideFingerprint, selectAutomaticJavaRuntime } from './java-selection.js'
 import { isLoopbackPortAvailable } from './install.js'
-import { jvmArguments } from './runtime.js'
+import { jvmArguments, updateGeneratedStartScript } from './runtime.js'
 import { finishServerSession, parseOwnedServerLogLine, recordServerResourceSample, recordStructuredServerEvent, startServerSession } from './history.js'
 
 const MAX_LOG_SEGMENT_BYTES = 16 * 1024 * 1024
@@ -163,6 +165,7 @@ export class ServerProcessManager {
     private readonly servers: ServerRegistry,
     private readonly now: () => number = Date.now,
     private readonly waits: { stopTimeoutMs?: number; readinessTimeoutMs?: number; shutdownTimeoutMs?: number } = {},
+    private readonly javaRuntimes?: JavaRuntimeRegistry,
   ) {
     this.logsDirectory = join(servers.dataDirectory, 'server-logs')
   }
@@ -478,7 +481,7 @@ export class ServerProcessManager {
   }
 
   private async startReserved(serverId: string, actorUserId: string | null): Promise<ServerRuntime> {
-    const server = this.serverRow(serverId)
+    let server = this.serverRow(serverId)
     this.requirePanelManaged(server)
     const unresolvedRestore = this.db.select({ id: localServerBackupRestores.id }).from(localServerBackupRestores)
       .where(and(eq(localServerBackupRestores.serverId, serverId), sql`${localServerBackupRestores.status} IN ('prepared', 'recovery-required')`)).get()
@@ -491,14 +494,12 @@ export class ServerProcessManager {
         ? 'This process is unmanaged after an API restart. Confirm it has stopped before starting another process.'
         : `The server is currently ${existing.status}.`)
     }
-    if (!server.javaPath || !server.jarName) throw new ServerProcessError('SERVER_CONFIGURATION_MISSING', 'Choose a verified Java runtime and server JAR before starting.')
-    if (server.requiredJavaMajor !== null && (server.javaMajor === null || server.javaMajor < server.requiredJavaMajor)) {
-      throw new ServerProcessError('JAVA_VERSION_INCOMPATIBLE', `This installation requires Java ${server.requiredJavaMajor} or newer. Update the selected runtime before starting.`)
-    }
     let jvmOptions: unknown
     try { jvmOptions = JSON.parse(server.jvmOptionsJson) } catch { throw new ServerProcessError('RUNTIME_OPTIONS_CORRUPT', 'Saved JVM options could not be read safely.') }
     const parsedJvmOptions = jvmOptionsSchema.safeParse(jvmOptions)
     if (!parsedJvmOptions.success) throw new ServerProcessError('RUNTIME_OPTIONS_CORRUPT', 'Saved JVM options are outside the supported typed format.')
+    server = await this.resolveJavaForStart(server, parsedJvmOptions.data)
+    if (!server.javaPath || !server.jarName) throw new ServerProcessError('SERVER_CONFIGURATION_MISSING', 'Choose a verified Java runtime and server JAR before starting.')
     if (parsedJvmOptions.data.collector === 'zgc' && (server.javaMajor ?? 0) < 17) {
       throw new ServerProcessError('JVM_OPTION_INCOMPATIBLE', 'ZGC requires Java 17 or newer.')
     }
@@ -586,6 +587,56 @@ export class ServerProcessManager {
     waiting.unref()
     await managed.spawnRecorded
     return this.get(serverId)
+  }
+
+  private async resolveJavaForStart(
+    server: typeof localServers.$inferSelect,
+    jvmOptions: ReturnType<typeof jvmOptionsSchema.parse>,
+  ): Promise<typeof localServers.$inferSelect> {
+    if (!this.javaRuntimes) {
+      throw new ServerProcessError('JAVA_RUNTIME_CHECK_UNAVAILABLE', 'The Java runtime registry is unavailable. No process was started.')
+    }
+
+    let runtime: JavaRuntime
+    if (server.javaSelectionMode === 'auto') {
+      if (server.requiredJavaMajor === null) throw new ServerProcessError('JAVA_AUTO_REQUIREMENT_UNKNOWN', 'Official Minecraft metadata does not declare a Java minimum for this installation. Automatic selection cannot choose safely.')
+      let discovered: JavaRuntime[]
+      try { discovered = await this.javaRuntimes.scan() } catch {
+        throw new ServerProcessError('JAVA_AUTO_SCAN_UNAVAILABLE', 'Installed Java runtimes could not be checked. No process was started.')
+      }
+      const selection = selectAutomaticJavaRuntime(server.requiredJavaMajor, discovered)
+      if (!selection.runtime) throw new ServerProcessError('JAVA_AUTO_RUNTIME_UNAVAILABLE', 'No checked installed Java runtime meets the declared minimum. No process was started.')
+      runtime = selection.runtime
+    } else {
+      if (!server.javaPath) throw new ServerProcessError('JAVA_RUNTIME_REQUIRED', 'Select and check an installed Java runtime before starting this server.')
+      try { runtime = await this.javaRuntimes.probe(server.javaPath) } catch {
+        throw new ServerProcessError('JAVA_NOT_EXECUTABLE', 'The selected Java runtime could not be verified at launch. No process was started.')
+      }
+      const compatibility = classifyJavaMinimum(server.requiredJavaMajor, runtime.major)
+      if (compatibility !== 'meets-minimum') {
+        const currentFingerprint = manualJavaOverrideFingerprint({
+          serverId: server.id, software: server.software, serverVersion: server.version,
+          declaredMinimumMajor: server.requiredJavaMajor, runtime,
+        })
+        if (server.javaCompatibilityOverrideHash !== currentFingerprint) {
+          throw new ServerProcessError('JAVA_OVERRIDE_CONFIRMATION_REQUIRED', 'The Java version or compatibility basis changed since confirmation. Review the warning and confirm this manual choice again.')
+        }
+      }
+    }
+
+    const selected = { ...server, javaPath: runtime.path, javaMajor: runtime.major }
+    if (server.javaPath === runtime.path && server.javaMajor === runtime.major) return selected
+    const script = await updateGeneratedStartScript(
+      this.servers.managedRoot, server.directory, server.startScriptSha256, runtime.path,
+      { minMemoryMb: server.minMemoryMb, maxMemoryMb: server.maxMemoryMb, jvmOptions }, server.jarName ?? 'server.jar',
+    )
+    const at = new Date(this.now()).toISOString()
+    this.db.update(localServers).set({ javaPath: runtime.path, javaMajor: runtime.major, startScriptSha256: script.sha256, updatedAt: at })
+      .where(eq(localServers.id, server.id)).run()
+    await this.event(server.id, null, 'server-java-runtime-resolved', 'success', server.javaSelectionMode === 'auto'
+      ? `Automatic launch selected Java ${runtime.major} using the declared minimum Java ${server.requiredJavaMajor}.`
+      : `The manually selected Java runtime was rechecked as Java ${runtime.major}.`)
+    return { ...selected, startScriptSha256: script.sha256 }
   }
 
   async stop(serverId: string, actorUserId: string): Promise<ServerRuntime> {

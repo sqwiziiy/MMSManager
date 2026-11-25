@@ -1708,6 +1708,16 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 .local-runtime-inline-facts > div, .local-automation-facts > div { display: grid; gap: 4px; min-width: 0; padding: 9px 10px; border: 1px solid var(--line-quiet); border-radius: 7px; background: #121611; }
 .local-runtime-inline-facts span, .local-automation-facts span { color: var(--text-muted); font-size: 8px; }
 .local-runtime-inline-facts strong, .local-automation-facts strong { overflow-wrap: anywhere; color: var(--text); font: 10px 'DM Mono', monospace; }
+.local-runtime-selection { display: grid; gap: 6px; margin-top: 11px; padding: 10px; border: 1px solid var(--line-quiet); border-radius: 8px; background: #121611; }
+.local-runtime-selection > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.local-runtime-selection span { color: var(--text-muted); font-size: 8px; }
+.local-runtime-selection strong { color: var(--text); font: 10px 'DM Mono', monospace; }
+.local-runtime-selection p { margin: 0; color: var(--text-secondary); font-size: 9px; line-height: 1.5; }
+.local-runtime-override { display: flex; align-items: flex-start; gap: 9px; margin-top: 10px; padding: 10px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line-quiet)); border-radius: 8px; background: color-mix(in srgb, var(--danger) 8%, #121611); cursor: pointer; }
+.local-runtime-override input { accent-color: var(--danger); margin: 2px 0 0; }
+.local-runtime-override span { display: grid; gap: 4px; }
+.local-runtime-override strong { color: var(--text); font-size: 9px; font-weight: 600; }
+.local-runtime-override small { color: var(--text-secondary); font-size: 8px; line-height: 1.5; }
 .local-runtime-hint { margin: 9px 0 0; color: #b0ad99; font-size: 9px; line-height: 1.5; }
 .local-runtime-controls { display: flex; align-items: center; gap: 10px; margin-top: 13px; }
 .local-runtime-controls > small { color: var(--text-muted); font-size: 8px; line-height: 1.4; }
