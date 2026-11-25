@@ -8,7 +8,7 @@ import { TemplatesPage } from '../pages/templates'
 import type { ServerTemplate } from '@mmsmanager/shared'
 import { ServerDetailPage } from '../pages/server-detail'
 import { MachineHistoryPage } from '../pages/machine-history'
-import { AuthLoadingPage, LoginPage, SetupPage } from '../pages/auth-pages'
+import { AuthLoadingPage, LoginPage, RequiredPasswordChangePage, SetupPage } from '../pages/auth-pages'
 import { AuthProvider } from '../state/auth-provider'
 import { useAuth } from '../state/use-auth'
 import { MachineMonitorProvider } from '../state/machine-monitor'
@@ -33,6 +33,10 @@ function SessionRouter() {
   }
 
   if (auth.phase === 'authenticated') {
+    if (auth.snapshot?.user.mustChangePassword) {
+      if (location.pathname === '/password-change') return <RequiredPasswordChangePage />
+      return <Navigate to="/password-change" replace state={safeState} />
+    }
     if (location.pathname === '/login' || location.pathname === '/setup') {
       const fallback = auth.snapshot?.user.preferences.defaultLanding === 'machine' ? '/machine' : '/'
       const from = location.state && typeof location.state === 'object' && 'from' in location.state ? location.state.from : null

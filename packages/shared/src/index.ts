@@ -132,6 +132,7 @@ export const authUserSchema = z.object({
   displayName: z.string(),
   role: userRoleSchema,
   enabled: z.boolean(),
+  mustChangePassword: z.boolean().default(false),
   createdAt: z.string().datetime({ offset: true }),
   lastLoginAt: z.string().datetime({ offset: true }).nullable(),
   avatarUrl: z.string().nullable(),

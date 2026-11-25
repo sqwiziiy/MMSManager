@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { eq } from 'drizzle-orm'
 import { openDatabase } from './client.js'
-import { localServerConsoleEntries, localServers, machineSamples, machines, serverAccessGrants, users } from './schema.js'
+import { localServerConsoleEntries, localServers, machineSamples, machines, serverAccessGrants, sessions, users } from './schema.js'
 
 describe('additive database migrations', () => {
   let directory: string | null = null
@@ -36,8 +36,9 @@ describe('additive database migrations', () => {
     const memberId = randomUUID()
     const serverId = randomUUID()
     const at = '2026-11-24T10:00:00.000Z'
-    await opened.db.insert(users).values({ id: userId, username: 'migration-admin', usernameKey: 'migration-admin', displayName: 'Migration Admin', role: 'administrator', passwordHash: 'fixture-only-preserved-hash', createdAt: at, updatedAt: at, passwordChangedAt: at })
-    await opened.db.insert(users).values({ id: memberId, username: 'migration-member', usernameKey: 'migration-member', displayName: 'Migration Member', role: 'member', passwordHash: 'fixture-only-member-hash', createdAt: at, updatedAt: at, passwordChangedAt: at })
+    const insertLegacyUser = opened.native.prepare('INSERT INTO users (id, username, username_key, display_name, role, password_hash, enabled, avatar_key, created_at, updated_at, last_login_at, password_changed_at) VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, NULL, ?)')
+    insertLegacyUser.run(userId, 'migration-admin', 'migration-admin', 'Migration Admin', 'administrator', 'fixture-only-preserved-hash', at, at, at)
+    insertLegacyUser.run(memberId, 'migration-member', 'migration-member', 'Migration Member', 'member', 'fixture-only-member-hash', at, at, at)
     opened.native.prepare('INSERT INTO user_preferences (user_id, compact_navigation, default_landing, updated_at) VALUES (?, 1, ?, ?)').run(userId, 'machine', at)
     await opened.db.insert(machines).values({ id: 'local', hostname: 'fixture-host', platform: 'linux', architecture: 'x64', source: 'local', firstSeenAt: at, lastSeenAt: at })
     await opened.db.insert(machineSamples).values({ machineId: 'local', collectedAt: at, minuteStart: at, localDate: '2026-11-24', timeZone: 'Europe/Paris', cpuPercent: 12.5, coreCount: 4, loadOne: 0.5, loadFive: 0.4, loadFifteen: 0.3, memoryUsedBytes: 1024, memoryAvailableBytes: 3072, memoryTotalBytes: 4096, swapUsedBytes: 0, swapTotalBytes: 0, storageDevice: '/fixture', storageMount: '/fixture', storageUsedBytes: 100, storageAvailableBytes: 900, storageTotalBytes: 1000, networkInterface: 'fixture0', networkRxBytesPerSecond: 1, networkTxBytesPerSecond: 2, networkRxTransferredBytes: 100, networkTxTransferredBytes: 200, sampleStatus: 'complete', unavailableFields: '[]', source: 'fixture' })
@@ -94,10 +95,9 @@ describe('additive database migrations', () => {
     const memberId = randomUUID()
     const serverId = randomUUID()
     const at = '2026-11-25T11:00:00.000Z'
-    await opened.db.insert(users).values([
-      { id: adminId, username: 'legacy-admin', usernameKey: 'legacy-admin', displayName: 'Legacy Admin', role: 'administrator', passwordHash: 'fixture-admin-hash', createdAt: at, updatedAt: at, passwordChangedAt: at },
-      { id: memberId, username: 'legacy-member', usernameKey: 'legacy-member', displayName: 'Legacy Member', role: 'member', passwordHash: 'fixture-member-hash', createdAt: at, updatedAt: at, passwordChangedAt: at },
-    ])
+    const insertLegacyUser = opened.native.prepare('INSERT INTO users (id, username, username_key, display_name, role, password_hash, enabled, avatar_key, created_at, updated_at, last_login_at, password_changed_at) VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, NULL, ?)')
+    insertLegacyUser.run(adminId, 'legacy-admin', 'legacy-admin', 'Legacy Admin', 'administrator', 'fixture-admin-hash', at, at, at)
+    insertLegacyUser.run(memberId, 'legacy-member', 'legacy-member', 'Legacy Member', 'member', 'fixture-member-hash', at, at, at)
     await opened.db.insert(localServers).values({ id: serverId, name: 'Legacy grant fixture', directory: '/fixture/legacy-grant', source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath: null, javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: adminId, createdAt: at, updatedAt: at })
     opened.native.prepare('INSERT INTO server_access_grants (server_id, user_id, view_server, view_logs, send_console_commands, control_lifecycle, view_players, moderate_players, view_mods, manage_mods, view_files, manage_files, view_settings, manage_settings, view_worlds, view_backups, create_backups, created_at, updated_at, updated_by) VALUES (?, ?, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, ?, ?, ?)').run(serverId, memberId, at, at, adminId)
     opened.native.close()
@@ -119,5 +119,45 @@ describe('additive database migrations', () => {
     opened = await openDatabase({ path: databasePath })
     expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
     expect(opened.db.select().from(serverAccessGrants).where(eq(serverAccessGrants.serverId, serverId)).get()).toMatchObject({ startServer: true, stopServer: true, restartServer: true })
+  })
+
+  it('preserves existing account and session rows while defaulting the new password flag to false', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'mmsmanager-password-migration-'))
+    const oldMigrations = join(directory, 'before-required-password-change')
+    await mkdir(join(oldMigrations, 'meta'), { recursive: true })
+    const source = fileURLToPath(new URL('../../drizzle/', import.meta.url))
+    const journal = JSON.parse(await readFile(join(source, 'meta', '_journal.json'), 'utf8')) as { version: string; dialect: string; entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> }
+    const oldEntries = journal.entries.filter((entry) => entry.idx <= 18)
+    for (const entry of oldEntries) await copyFile(join(source, `${entry.tag}.sql`), join(oldMigrations, `${entry.tag}.sql`))
+    await writeFile(join(oldMigrations, 'meta', '_journal.json'), JSON.stringify({ version: journal.version, dialect: journal.dialect, entries: oldEntries }, null, 2))
+
+    const databasePath = join(directory, 'state.sqlite')
+    opened = await openDatabase({ path: databasePath, migrationsFolder: oldMigrations })
+    const userId = randomUUID()
+    const tokenHash = 'a'.repeat(64)
+    const csrfHash = 'b'.repeat(64)
+    const at = '2026-11-25T12:00:00.000Z'
+    opened.native.prepare('INSERT INTO users (id, username, username_key, display_name, role, password_hash, enabled, avatar_key, created_at, updated_at, last_login_at, password_changed_at) VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?, ?)')
+      .run(userId, 'existing-admin', 'existing-admin', 'Existing Admin', 'administrator', '$argon2id$fixture-only', at, at, at, at)
+    opened.native.prepare('INSERT INTO sessions (token_hash, csrf_hash, user_id, created_at, expires_at, last_seen_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, NULL)')
+      .run(tokenHash, csrfHash, userId, at, '2026-12-02T12:00:00.000Z', at)
+    opened.native.close()
+    opened = null
+
+    opened = await openDatabase({ path: databasePath })
+    expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
+    expect(opened.native.pragma('foreign_key_check')).toEqual([])
+    expect(opened.db.select().from(users).where(eq(users.id, userId)).get()).toMatchObject({
+      id: userId, username: 'existing-admin', role: 'administrator', passwordHash: '$argon2id$fixture-only', mustChangePassword: false, passwordChangedAt: at,
+    })
+    expect(opened.native.prepare('SELECT token_hash AS tokenHash, csrf_hash AS csrfHash, user_id AS userId FROM sessions').get()).toEqual({ tokenHash, csrfHash, userId })
+    expect(opened.db.select().from(users).all()).toHaveLength(1)
+    expect(opened.db.select().from(sessions).all()).toHaveLength(1)
+    opened.native.close()
+    opened = null
+    opened = await openDatabase({ path: databasePath })
+    expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
+    expect(opened.db.select().from(users).where(eq(users.id, userId)).get()?.mustChangePassword).toBe(false)
+    expect(opened.db.select().from(sessions).all()).toHaveLength(1)
   })
 })

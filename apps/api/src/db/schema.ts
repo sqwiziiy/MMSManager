@@ -145,6 +145,7 @@ export const users = sqliteTable('users', {
   role: text('role', { enum: ['administrator', 'member'] }).notNull(),
   passwordHash: text('password_hash').notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  mustChangePassword: integer('must_change_password', { mode: 'boolean' }).notNull().default(false),
   avatarKey: text('avatar_key'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -155,6 +156,7 @@ export const users = sqliteTable('users', {
   index('users_enabled_role_idx').on(table.enabled, table.role),
   check('users_role_check', sql`${table.role} IN ('administrator', 'member')`),
   check('users_enabled_check', sql`${table.enabled} IN (0, 1)`),
+  check('users_must_change_password_check', sql`${table.mustChangePassword} IN (0, 1)`),
 ])
 
 export const sessions = sqliteTable('sessions', {

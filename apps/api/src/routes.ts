@@ -254,6 +254,10 @@ function respondAuthFailure(error: unknown, reply: FastifyReply): boolean {
     reply.code(400).send({ error: { code: 'CURRENT_PASSWORD', message: 'The current password could not be verified.' } })
     return true
   }
+  if (error.code === 'same-password') {
+    reply.code(400).send({ error: { code: 'PASSWORD_UNCHANGED', message: 'Choose a password different from the current one.' } })
+    return true
+  }
   reply.code(409).send({ error: { code: 'CONFLICT', message: 'This change conflicts with an existing account.' } })
   return true
 }
@@ -369,6 +373,12 @@ export async function createApiApp(options: {
       return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'Sign in to continue.' } })
     }
     request.principal = principal
+    if (principal.mustChangePassword) {
+      const path = request.url.split('?')[0]
+      const allowed = request.method === 'GET' && path === '/api/v1/auth/me'
+        || request.method === 'POST' && (path === '/api/v1/auth/change-password' || path === '/api/v1/auth/logout')
+      if (!allowed) return reply.code(403).send({ error: { code: 'PASSWORD_CHANGE_REQUIRED', message: 'Change your temporary password to continue.' } })
+    }
   }
   const requireMutationAuth = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     await requireAuth(request, reply)
@@ -547,7 +557,11 @@ export async function createApiApp(options: {
   app.post('/api/v1/auth/change-password', { preHandler: requireMutationAuth }, async (request, reply) => {
     const input = parse(passwordChangeSchema, request.body)
     try {
-      await options.auth.changePassword(request.principal!, input.currentPassword, input.newPassword)
+      const replacement = await options.auth.changePassword(request.principal!, input.currentPassword, input.newPassword)
+      if (replacement) {
+        addSessionCookies(reply, replacement.sessionToken, replacement.csrfToken, secureCookies || request.protocol === 'https')
+        return reply.send({ ok: true, signInAgain: false })
+      }
       clearSessionCookies(reply, secureCookies || request.protocol === 'https')
       return reply.send({ ok: true, signInAgain: true })
     } catch (error) {
@@ -638,6 +652,7 @@ export async function createApiApp(options: {
     const input = parse(userPasswordResetSchema, request.body)
     try {
       await options.auth.resetUserPassword(request.principal!, params.userId, input.password)
+      if (params.userId === request.principal!.userId) clearSessionCookies(reply, secureCookies || request.protocol === 'https')
       return reply.send({ ok: true })
     } catch (error) {
       if (respondAuthFailure(error, reply)) return reply

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { AuthMe } from '@mmsmanager/shared'
-import { ApiRequestError, completeSetup as sendSetup, getAuthMe, getPublicHealth, signIn as sendSignIn, signOut as sendSignOut } from '../api/auth'
+import { ApiRequestError, changePassword as sendPasswordChange, completeSetup as sendSetup, getAuthMe, getPublicHealth, signIn as sendSignIn, signOut as sendSignOut } from '../api/auth'
 import { AuthContext } from './auth-context'
 import type { AuthPhase } from './auth-context'
 
@@ -48,6 +48,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return current
   }, [])
 
+  const completePasswordChange = useCallback(async (input: { currentPassword: string; newPassword: string; confirmPassword: string }): Promise<AuthMe> => {
+    const result = await sendPasswordChange(input)
+    if (result.signInAgain !== false) throw new Error('The required password change did not establish a new session.')
+    const current = await getAuthMe()
+    if (current.user.mustChangePassword) throw new Error('The account still requires a password change.')
+    setSnapshot(current)
+    setError(null)
+    setPhase('authenticated')
+    return current
+  }, [])
+
   const completeSetup = useCallback(async (input: { token: string; username: string; displayName: string; password: string; confirmPassword: string }): Promise<AuthMe> => {
     await sendSetup(input)
     const current = await getAuthMe()
@@ -81,6 +92,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('mmsmanager:session-expired', onExpired)
   }, [expireSession])
 
-  const value = useMemo(() => ({ phase, snapshot, error, refresh, signIn, completeSetup, signOut, replaceSnapshot, expireSession }), [phase, snapshot, error, refresh, signIn, completeSetup, signOut, replaceSnapshot, expireSession])
+  const value = useMemo(() => ({ phase, snapshot, error, refresh, signIn, completePasswordChange, completeSetup, signOut, replaceSnapshot, expireSession }), [phase, snapshot, error, refresh, signIn, completePasswordChange, completeSetup, signOut, replaceSnapshot, expireSession])
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

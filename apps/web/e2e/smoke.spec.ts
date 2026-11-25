@@ -10,6 +10,7 @@ mkdirSync(screenshotDir, { recursive: true })
 let adminPassword = process.env['MMSMANAGER_E2E_ADMIN_PASSWORD']!
 const memberPassword = process.env['MMSMANAGER_E2E_MEMBER_PASSWORD']!
 const browserSessionPath = resolve(process.env['MMSMANAGER_DATA_DIR']!, 'browser-session.json')
+const changedPasswords = new Map<string, string>()
 
 test.use({
   storageState: async ({ browser: _browser }, use) => {
@@ -23,8 +24,17 @@ async function signIn(page: Page, username = 'stage-admin', password = adminPass
   await expect(authHeading).toBeVisible()
   if (await page.getByRole('heading', { name: 'Sign in to MMSManager' }).isVisible()) {
     await page.getByLabel('Username').fill(username)
-    await page.locator('input[name="password"]').fill(password)
+    await page.locator('input[name="password"]').fill(changedPasswords.get(username) ?? password)
     await page.getByRole('button', { name: 'Sign in' }).click()
+    await expect(page.locator('.profile-trigger').or(page.locator('#required-password-title'))).toBeVisible()
+    if (await page.locator('#required-password-title').isVisible()) {
+      const nextPassword = `MMSManager ${username} private update 2026!`
+      await page.locator('input[name="currentPassword"]').fill(changedPasswords.get(username) ?? password)
+      await page.locator('input[name="newPassword"]').fill(nextPassword)
+      await page.locator('input[name="confirmPassword"]').fill(nextPassword)
+      await page.getByRole('button', { name: 'Change password' }).click()
+      changedPasswords.set(username, nextPassword)
+    }
     await expect(page.locator('.profile-trigger')).toBeVisible()
     await page.goto('/')
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
@@ -1441,6 +1451,7 @@ test('local accounts enforce administrator-only management and member access', a
   await page.goto(`/servers/${registeredServerId}/access`)
   await expect(page.getByRole('heading', { name: 'Access policy' })).toBeVisible()
   await page.getByRole('combobox', { name: 'Choose member account' }).selectOption({ label: 'Stage Member · @stage-member' })
+  await page.getByRole('button', { name: 'Advanced' }).click()
   await page.getByRole('checkbox', { name: /View overview and status/ }).check()
   await page.getByRole('button', { name: 'Save permissions' }).click()
   await expect(page.getByText('Permissions saved and active immediately.')).toBeVisible()
@@ -1461,6 +1472,64 @@ test('local accounts enforce administrator-only management and member access', a
   await signOut(page)
   await signIn(page, 'stage-admin', adminPassword)
   await page.context().storageState({ path: browserSessionPath })
+})
+
+test('temporary passwords require an unskippable change on desktop and mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  const suffix = Date.now().toString(36)
+  const username = `required-${suffix}`
+  const temporaryPassword = `Temporary ${username} credential 87!`
+  await page.goto('/users')
+  await page.getByRole('button', { name: 'Add user' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Add a user' })
+  await dialog.getByLabel('Username').fill(username)
+  await dialog.getByLabel('Display name').fill('Required Change Fixture')
+  await dialog.getByLabel('Initial password').fill(temporaryPassword)
+  await dialog.getByLabel('Role').selectOption('member')
+  await dialog.getByRole('button', { name: 'Create user' }).click()
+  await expect(page.locator('.account-users-table .data-table-row').filter({ hasText: `@${username}` })).toBeVisible()
+
+  await signOut(page)
+  await page.getByLabel('Username').fill(username)
+  await page.locator('input[name="password"]').fill(temporaryPassword)
+  await page.getByRole('button', { name: 'Sign in' }).click()
+  await expect(page).toHaveURL(/\/password-change$/)
+  await expect(page.getByRole('heading', { name: 'Change your temporary password' })).toBeVisible()
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-06i-i2-required-password-desktop.png'), fullPage: true })
+
+  await page.locator('.language-picker select').selectOption('ru')
+  await expect(page.getByRole('heading', { name: 'Измените временный пароль' })).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'required password page at 390px')
+  await page.screenshot({ path: resolve(screenshotDir, 'stage-06i-i2-required-password-ru-mobile.png'), fullPage: true })
+  await page.locator('.language-picker select').selectOption('en')
+  await expect(page.getByRole('heading', { name: 'Change your temporary password' })).toBeVisible()
+
+  await page.goto('/machine')
+  await expect(page).toHaveURL(/\/password-change$/)
+  const form = page.locator('form.auth-form')
+  const submit = form.getByRole('button', { name: 'Change password' })
+  const fillForm = async (current: string, next: string, confirm = next) => {
+    await form.locator('input[name="currentPassword"]').fill(current)
+    await form.locator('input[name="newPassword"]').fill(next)
+    await form.locator('input[name="confirmPassword"]').fill(confirm)
+    await submit.click()
+  }
+  const proposedPassword = 'A different route credential 88!'
+  await fillForm('incorrect temporary password', proposedPassword)
+  await expect(page.getByRole('alert')).toContainText('current password could not be verified')
+  await fillForm(temporaryPassword, temporaryPassword)
+  await expect(page.getByRole('alert')).toContainText('different from the current one')
+  await fillForm(temporaryPassword, proposedPassword, 'A mismatching route credential 89!')
+  await expect(page.getByRole('alert')).toContainText('passwords do not match')
+
+  const permanentPassword = `Permanent ${username} private credential 90!`
+  await fillForm(temporaryPassword, permanentPassword)
+  await expect(page).toHaveURL(/\/machine$/)
+  await expect(page.getByRole('heading', { name: 'Machine' })).toBeVisible()
+  const authState = await page.evaluate(async () => (await fetch('/api/v1/auth/me')).json()) as { user: { mustChangePassword: boolean } }
+  expect(authState.user.mustChangePassword).toBe(false)
 })
 
 test('profile, avatar and personal preferences persist; password change revokes the session', async ({ page }) => {

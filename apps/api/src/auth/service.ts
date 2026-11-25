@@ -8,10 +8,11 @@ import { hashPassword, makeDummyPasswordHash, validatePasswordBytes, verifyPassw
 const BOOTSTRAP_TTL_MS = 30 * 60 * 1000
 const SESSION_ABSOLUTE_MS = 7 * 24 * 60 * 60 * 1000
 const SESSION_IDLE_MS = 12 * 60 * 60 * 1000
+const PASSWORD_CHANGE_SESSION_MS = 15 * 60 * 1000
 const SESSION_REFRESH_MS = 60 * 1000
 const COOKIE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{40,80}$/
 const USER_COLUMNS = `u.id, u.username, u.username_key AS usernameKey, u.display_name AS displayName, u.role,
-  u.password_hash AS passwordHash, u.enabled, u.avatar_key AS avatarKey, u.created_at AS createdAt,
+  u.password_hash AS passwordHash, u.enabled, u.must_change_password AS mustChangePassword, u.avatar_key AS avatarKey, u.created_at AS createdAt,
   u.updated_at AS updatedAt, u.last_login_at AS lastLoginAt, u.password_changed_at AS passwordChangedAt`
 
 type UserRow = {
@@ -22,6 +23,7 @@ type UserRow = {
   role: UserRole
   passwordHash: string
   enabled: number | boolean
+  mustChangePassword: number | boolean
   avatarKey: string | null
   createdAt: string
   updatedAt: string
@@ -49,6 +51,7 @@ export type SessionPrincipal = {
   displayName: string
   role: UserRole
   enabled: true
+  mustChangePassword: boolean
   avatarKey: string | null
   tokenHash: string
   csrfHash: string
@@ -61,7 +64,7 @@ export type SessionPrincipal = {
 export type SessionSecrets = { sessionToken: string; csrfToken: string }
 
 export class AuthFailure extends Error {
-  constructor(readonly code: 'bootstrap' | 'unauthorized' | 'conflict' | 'not-found' | 'locked' | 'forbidden' | 'current-password' | 'confirmation') {
+  constructor(readonly code: 'bootstrap' | 'unauthorized' | 'conflict' | 'not-found' | 'locked' | 'forbidden' | 'current-password' | 'same-password' | 'confirmation') {
     super(code)
   }
 }
@@ -99,6 +102,7 @@ function mapUser(row: UserRow) {
     displayName: row.displayName,
     role: row.role,
     enabled: isEnabled(row.enabled),
+    mustChangePassword: isEnabled(row.mustChangePassword),
     createdAt: row.createdAt,
     lastLoginAt: row.lastLoginAt,
     avatarUrl: row.avatarKey ? `/api/v1/avatars/${encodeURIComponent(row.id)}` : null,
@@ -216,7 +220,7 @@ export class AuthService {
       const fresh = this.native.prepare('SELECT enabled, password_changed_at AS passwordChangedAt FROM users WHERE id = ?').get(row.id) as { enabled: number | boolean; passwordChangedAt: string } | undefined
       if (!fresh || !isEnabled(fresh.enabled) || fresh.passwordChangedAt !== row.passwordChangedAt) throw new AuthFailure('unauthorized')
       this.native.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?').run(time, time, row.id)
-      this.createSession(row.id, sessionToken, csrfToken, time)
+      this.createSession(row.id, sessionToken, csrfToken, time, isEnabled(row.mustChangePassword) ? PASSWORD_CHANGE_SESSION_MS : SESSION_ABSOLUTE_MS)
       this.recordAudit(row.id, row.id, 'login.succeeded', 'success', time)
     }).immediate()
     return { sessionToken, csrfToken }
@@ -226,7 +230,7 @@ export class AuthService {
     if (!sessionToken || !COOKIE_TOKEN_PATTERN.test(sessionToken)) return null
     const tokenHash = digest(sessionToken)
     const row = this.native.prepare(`SELECT s.token_hash AS tokenHash, s.csrf_hash AS csrfHash, s.created_at AS sessionCreatedAt, s.expires_at AS expiresAt, s.last_seen_at AS sessionLastSeenAt, s.revoked_at AS revokedAt,
-      u.id AS userId, u.username, u.display_name AS displayName, u.role, u.enabled, u.avatar_key AS avatarKey, u.created_at AS createdAt, u.last_login_at AS lastLoginAt,
+      u.id AS userId, u.username, u.display_name AS displayName, u.role, u.enabled, u.must_change_password AS mustChangePassword, u.avatar_key AS avatarKey, u.created_at AS createdAt, u.last_login_at AS lastLoginAt,
       COALESCE(p.compact_navigation, 0) AS compactNavigation, COALESCE(p.default_landing, 'dashboard') AS defaultLanding
       FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN user_preferences p ON p.user_id = u.id WHERE s.token_hash = ?`).get(tokenHash) as (UserRow & {
         tokenHash: string; csrfHash: string; sessionCreatedAt: string; expiresAt: string; sessionLastSeenAt: string; revokedAt: string | null; userId: string
@@ -246,6 +250,7 @@ export class AuthService {
       displayName: row.displayName,
       role: row.role,
       enabled: true,
+      mustChangePassword: isEnabled(row.mustChangePassword),
       avatarKey: row.avatarKey,
       tokenHash,
       csrfHash: row.csrfHash,
@@ -288,17 +293,25 @@ export class AuthService {
     }).immediate()
   }
 
-  async changePassword(principal: SessionPrincipal, currentPassword: string, newPassword: string): Promise<void> {
+  async changePassword(principal: SessionPrincipal, currentPassword: string, newPassword: string): Promise<SessionSecrets | null> {
     if (!validatePasswordBytes(newPassword)) throw new AuthFailure('current-password')
-    const row = this.native.prepare('SELECT password_hash AS passwordHash FROM users WHERE id = ? AND enabled = 1').get(principal.userId) as { passwordHash: string } | undefined
+    const row = this.native.prepare('SELECT password_hash AS passwordHash, must_change_password AS mustChangePassword FROM users WHERE id = ? AND enabled = 1').get(principal.userId) as { passwordHash: string; mustChangePassword: number | boolean } | undefined
     if (!row || !await verifyPassword(row.passwordHash, currentPassword)) throw new AuthFailure('current-password')
+    if (await verifyPassword(row.passwordHash, newPassword)) throw new AuthFailure('same-password')
     const passwordHash = await hashPassword(newPassword)
     const time = nowIso(this.now())
+    const rotateSession = isEnabled(row.mustChangePassword)
+    const sessionToken = rotateSession ? randomBytes(32).toString('base64url') : null
+    const csrfToken = rotateSession ? randomBytes(32).toString('base64url') : null
     this.native.transaction(() => {
-      this.native.prepare('UPDATE users SET password_hash = ?, password_changed_at = ?, updated_at = ? WHERE id = ?').run(passwordHash, time, time, principal.userId)
+      const updated = this.native.prepare('UPDATE users SET password_hash = ?, must_change_password = 0, password_changed_at = ?, updated_at = ? WHERE id = ? AND password_hash = ?')
+        .run(passwordHash, time, time, principal.userId, row.passwordHash)
+      if (updated.changes !== 1) throw new AuthFailure('current-password')
       this.native.prepare('UPDATE sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE user_id = ?').run(time, principal.userId)
+      if (sessionToken && csrfToken) this.createSession(principal.userId, sessionToken, csrfToken, time)
       this.recordAudit(principal.userId, principal.userId, 'password.changed', 'success', time)
     }).immediate()
+    return sessionToken && csrfToken ? { sessionToken, csrfToken } : null
   }
 
   updateProfile(principal: SessionPrincipal, displayName: string): void {
@@ -349,7 +362,7 @@ export class AuthService {
     try {
       this.native.transaction(() => {
         if (this.native.prepare('SELECT 1 FROM users WHERE username_key = ?').get(usernameKey(input.username))) throw new AuthFailure('conflict')
-        this.native.prepare('INSERT INTO users (id, username, username_key, display_name, role, password_hash, enabled, avatar_key, created_at, updated_at, last_login_at, password_changed_at) VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, NULL, ?)')
+        this.native.prepare('INSERT INTO users (id, username, username_key, display_name, role, password_hash, enabled, must_change_password, avatar_key, created_at, updated_at, last_login_at, password_changed_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, NULL, ?, ?, NULL, ?)')
           .run(userId, input.username.trim(), usernameKey(input.username), input.displayName.trim(), input.role, passwordHash, time, time, time)
         this.native.prepare('INSERT INTO user_preferences (user_id, compact_navigation, default_landing, updated_at) VALUES (?, 0, ?, ?)').run(userId, 'dashboard', time)
         this.recordAudit(actor.userId, userId, 'user.created', 'success', time)
@@ -420,7 +433,7 @@ export class AuthService {
     this.native.transaction(() => {
       const target = this.native.prepare('SELECT id FROM users WHERE id = ?').get(targetId) as { id: string } | undefined
       if (!target) throw new AuthFailure('not-found')
-      this.native.prepare('UPDATE users SET password_hash = ?, password_changed_at = ?, updated_at = ? WHERE id = ?').run(passwordHash, time, time, targetId)
+      this.native.prepare('UPDATE users SET password_hash = ?, must_change_password = 1, password_changed_at = ?, updated_at = ? WHERE id = ?').run(passwordHash, time, time, targetId)
       this.native.prepare('UPDATE sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE user_id = ?').run(time, targetId)
       this.recordAudit(actor.userId, targetId, 'user.password.reset', 'success', time)
     }).immediate()
@@ -436,7 +449,7 @@ export class AuthService {
     this.native.transaction(() => {
       const current = this.native.prepare('SELECT id FROM users WHERE id = ?').get(target.id) as { id: string } | undefined
       if (!current) throw new AuthFailure('not-found')
-      this.native.prepare("UPDATE users SET role = 'administrator', enabled = 1, password_hash = ?, password_changed_at = ?, updated_at = ? WHERE id = ?")
+      this.native.prepare("UPDATE users SET role = 'administrator', enabled = 1, password_hash = ?, must_change_password = 1, password_changed_at = ?, updated_at = ? WHERE id = ?")
         .run(passwordHash, time, time, target.id)
       this.native.prepare('UPDATE sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE user_id = ?').run(time, target.id)
       this.recordAudit(null, target.id, 'admin.recovered', 'success', time)
@@ -490,9 +503,9 @@ export class AuthService {
     return { ...mapUser(row), activeSessionCount: row.activeSessionCount }
   }
 
-  private createSession(userId: string, sessionToken: string, csrfToken: string, createdAt: string): void {
+  private createSession(userId: string, sessionToken: string, csrfToken: string, createdAt: string, ttlMs = SESSION_ABSOLUTE_MS): void {
     this.native.prepare('INSERT INTO sessions (token_hash, csrf_hash, user_id, created_at, expires_at, last_seen_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, NULL)')
-      .run(digest(sessionToken), digest(csrfToken), userId, createdAt, nowIso(Date.parse(createdAt) + SESSION_ABSOLUTE_MS), createdAt)
+      .run(digest(sessionToken), digest(csrfToken), userId, createdAt, nowIso(Date.parse(createdAt) + Math.min(ttlMs, SESSION_ABSOLUTE_MS)), createdAt)
   }
 
   private ensureWorkspacePreferences(): void {

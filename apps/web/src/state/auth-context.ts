@@ -9,6 +9,7 @@ export type AuthContextValue = {
   error: string | null
   refresh: () => Promise<void>
   signIn: (username: string, password: string) => Promise<AuthMe>
+  completePasswordChange: (input: { currentPassword: string; newPassword: string; confirmPassword: string }) => Promise<AuthMe>
   completeSetup: (input: { token: string; username: string; displayName: string; password: string; confirmPassword: string }) => Promise<AuthMe>
   signOut: () => Promise<void>
   replaceSnapshot: (snapshot: AuthMe) => void

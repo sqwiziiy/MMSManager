@@ -98,6 +98,10 @@ export function LoginPage() {
     try {
       const snapshot = await auth.signIn(username.trim(), password)
       setPassword('')
+      if (snapshot.user.mustChangePassword) {
+        navigate('/password-change', { replace: true, state: { from: intendedPath(location.state) ?? fallbackPath(snapshot) } })
+        return
+      }
       navigate(intendedPath(location.state) ?? fallbackPath(snapshot), { replace: true })
     } catch (requestError) {
       setError(requestError instanceof ApiRequestError ? requestError.message : 'The local API could not complete sign in. Try again.')
@@ -123,6 +127,60 @@ export function LoginPage() {
         </form>
       </div>
       <p className="auth-footnote">MMSManager · Mentality Minecraft Server Manager</p>
+    </section>
+  </main>
+}
+
+export function RequiredPasswordChangePage() {
+  const auth = useAuth()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError(null)
+    if (newPassword !== confirmPassword) { setError('The passwords do not match.'); return }
+    if (newPassword === currentPassword) { setError('Choose a password different from the current one.'); return }
+    setBusy(true)
+    try {
+      const snapshot = await auth.completePasswordChange({ currentPassword, newPassword, confirmPassword })
+      setCurrentPassword(''); setNewPassword(''); setConfirmPassword('')
+      navigate(intendedPath(location.state) ?? fallbackPath(snapshot), { replace: true })
+    } catch (requestError) {
+      setError(requestError instanceof ApiRequestError ? requestError.message : 'The password could not be changed. Review the fields and try again.')
+    } finally { setBusy(false) }
+  }
+
+  const signOut = async () => {
+    try { await auth.signOut() } catch { /* The local session is cleared in the client even if the API is offline. */ }
+    navigate('/login', { replace: true })
+  }
+
+  return <main className="auth-stage">
+    <section className="auth-shell auth-shell-login" aria-labelledby="required-password-title">
+      <AuthBrand />
+      <LanguagePicker />
+      <div className="auth-card">
+        <div className="auth-icon"><KeyRound size={19} strokeWidth={1.7} /></div>
+        <p className="auth-eyebrow">Account security</p>
+        <h1 id="required-password-title">Change your temporary password</h1>
+        <p className="auth-description">An administrator issued this password. Set a private password before using the local workspace.</p>
+        <p className="auth-required-note">You cannot skip this step. Your temporary password and previous sessions are revoked when the change succeeds.</p>
+        {error && <div className="auth-error" role="alert"><CircleAlert size={15} />{error}</div>}
+        <form className="auth-form" onSubmit={(event) => void submit(event)}>
+          <Field label="Temporary/current password"><input name="currentPassword" type="password" autoComplete="current-password" required maxLength={128} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></Field>
+          <Field label="New password" hint="Use at least 14 characters and choose a different password."><input name="newPassword" type="password" autoComplete="new-password" required minLength={14} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field>
+          <Field label="Confirm new password"><input name="confirmPassword" type="password" autoComplete="new-password" required minLength={14} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></Field>
+          <Button kind="primary" icon={busy ? LoaderCircle : KeyRound} className={busy ? 'auth-submit is-busy' : 'auth-submit'} disabled={busy}>{busy ? 'Changing password' : 'Change password'}</Button>
+          <Button type="button" kind="quiet" disabled={busy} onClick={() => void signOut()}>Sign out</Button>
+        </form>
+      </div>
+      <p className="auth-footnote"><LockKeyhole size={13} /> Your password is stored as an Argon2id hash. It is never displayed or logged.</p>
     </section>
   </main>
 }

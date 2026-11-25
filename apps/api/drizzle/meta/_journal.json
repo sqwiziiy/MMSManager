@@ -134,6 +134,13 @@
       "when": 1795617442041,
       "tag": "0018_stage_06i01_granular_access",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1795618458116,
+      "tag": "0019_stage_06i02_required_password_change",
+      "breakpoints": true
     }
   ]
 }

@@ -195,15 +195,125 @@ describe('authenticated local API', () => {
     return { cookieHeader, csrfToken }
   }
 
+  async function signInCreatedAccount(username: string, password: string) {
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username, password } })
+    expect(login.statusCode, login.body).toBe(200)
+    const readCookies = (response: typeof login) => (Array.isArray(response.headers['set-cookie']) ? response.headers['set-cookie'] : [response.headers['set-cookie']]).filter((item): item is string => typeof item === 'string')
+    let cookieList = readCookies(login)
+    let cookieHeader = cookieList.map((item) => item.split(';')[0]).join('; ')
+    let csrfToken = cookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const me = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { ...requestHeaders, cookie: cookieHeader } })
+    expect(me.statusCode, me.body).toBe(200)
+    if (me.json().user.mustChangePassword) {
+      const replacement = `synthetic changed credential ${randomUUID()} 7!`
+      const changed = await app.inject({
+        method: 'POST', url: '/api/v1/auth/change-password',
+        headers: { ...requestHeaders, cookie: cookieHeader, 'x-mms-csrf': csrfToken, 'content-type': 'application/json' },
+        payload: { currentPassword: password, newPassword: replacement, confirmPassword: replacement },
+      })
+      expect(changed.statusCode, changed.body).toBe(200)
+      cookieList = readCookies(changed)
+      cookieHeader = cookieList.map((item) => item.split(';')[0]).join('; ')
+      csrfToken = cookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+      const verified = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { ...requestHeaders, cookie: cookieHeader } })
+      expect(verified.json().user.mustChangePassword).toBe(false)
+    }
+    return { cookieHeader, csrfToken, headers: { ...requestHeaders, cookie: cookieHeader, 'x-mms-csrf': csrfToken, 'content-type': 'application/json' } }
+  }
+
+  it('restricts temporary-password sessions until a changed password establishes a new session', async () => {
+    const owner = await bootstrapAdmin()
+    const ownerToken = /mmsmanager_session=([^;]+)/.exec(owner.cookieHeader)?.[1]
+    const administrator = ownerToken ? auth.authenticate(ownerToken) : null
+    expect(administrator?.role).toBe('administrator')
+
+    const memberPassword = 'temporary route member credential 82!'
+    const member = await auth.createUser(administrator!, { username: 'temporary-route-member', displayName: 'Temporary Route Member', password: memberPassword, role: 'member' })
+    const createdAdminPassword = 'temporary route admin credential 83!'
+    await auth.createUser(administrator!, { username: 'temporary-route-admin', displayName: 'Temporary Route Admin', password: createdAdminPassword, role: 'administrator' })
+
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: member.username, password: memberPassword } })
+    expect(login.statusCode, login.body).toBe(200)
+    const readCookies = (response: typeof login) => (Array.isArray(response.headers['set-cookie']) ? response.headers['set-cookie'] : [response.headers['set-cookie']]).filter((item): item is string => typeof item === 'string')
+    const loginCookies = readCookies(login)
+    let cookieHeader = loginCookies.map((item) => item.split(';')[0]).join('; ')
+    let csrfToken = loginCookies.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const restrictedHeaders = { ...requestHeaders, cookie: cookieHeader, 'x-mms-csrf': csrfToken, 'content-type': 'application/json' }
+    const me = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: restrictedHeaders })
+    expect(me.statusCode).toBe(200)
+    expect(me.json().user).toMatchObject({ username: member.username, mustChangePassword: true, role: 'member' })
+    for (const url of ['/api/v1/machine/current', '/api/v1/admin/users', '/api/v1/servers', '/api/v1/templates']) {
+      const blocked = await app.inject({ method: 'GET', url, headers: restrictedHeaders })
+      expect(blocked.statusCode, `${url}: ${blocked.body}`).toBe(403)
+      expect(blocked.json().error.code).toBe('PASSWORD_CHANGE_REQUIRED')
+    }
+    const blockedProfileEdit = await app.inject({ method: 'PATCH', url: '/api/v1/profile', headers: restrictedHeaders, payload: { displayName: 'Must remain restricted' } })
+    expect(blockedProfileEdit.statusCode).toBe(403)
+    expect(blockedProfileEdit.json().error.code).toBe('PASSWORD_CHANGE_REQUIRED')
+    expect((await app.inject({ method: 'GET', url: '/api/v1/health' })).statusCode).toBe(200)
+
+    const changedPassword = 'permanent route member credential 84!'
+    const change = (currentPassword: string, newPassword: string, confirmPassword = newPassword) => app.inject({
+      method: 'POST', url: '/api/v1/auth/change-password', headers: restrictedHeaders,
+      payload: { currentPassword, newPassword, confirmPassword },
+    })
+    const wrongCurrent = await change('incorrect synthetic current password', changedPassword)
+    expect(wrongCurrent.statusCode).toBe(400)
+    expect(wrongCurrent.json().error.code).toBe('CURRENT_PASSWORD')
+    expect((await change(memberPassword, changedPassword, 'a different synthetic confirmation 85!')).statusCode).toBe(400)
+    const unchanged = await change(memberPassword, memberPassword)
+    expect(unchanged.statusCode).toBe(400)
+    expect(unchanged.json().error.code).toBe('PASSWORD_UNCHANGED')
+    const replacement = await change(memberPassword, changedPassword)
+    expect(replacement.statusCode, replacement.body).toBe(200)
+    expect(replacement.json()).toEqual({ ok: true, signInAgain: false })
+    const previousSession = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: restrictedHeaders })
+    expect(previousSession.statusCode).toBe(401)
+    const replacementCookies = readCookies(replacement)
+    cookieHeader = replacementCookies.map((item) => item.split(';')[0]).join('; ')
+    csrfToken = replacementCookies.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const normalHeaders = { ...requestHeaders, cookie: cookieHeader, 'x-mms-csrf': csrfToken, 'content-type': 'application/json' }
+    const verified = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: normalHeaders })
+    expect(verified.statusCode).toBe(200)
+    expect(verified.json().user.mustChangePassword).toBe(false)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/machine/current', headers: normalHeaders })).statusCode).toBe(200)
+
+    const resetPassword = 'temporary route reset credential 86!'
+    const reset = await app.inject({
+      method: 'POST', url: `/api/v1/admin/users/${member.id}/password`,
+      headers: { ...requestHeaders, cookie: owner.cookieHeader, 'x-mms-csrf': owner.csrfToken, 'content-type': 'application/json' },
+      payload: { password: resetPassword },
+    })
+    expect(reset.statusCode, reset.body).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: normalHeaders })).statusCode).toBe(401)
+    const resetLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: member.username, password: resetPassword } })
+    const resetCookies = readCookies(resetLogin)
+    const resetHeader = resetCookies.map((item) => item.split(';')[0]).join('; ')
+    const resetMe = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { ...requestHeaders, cookie: resetHeader } })
+    expect(resetLogin.statusCode).toBe(200)
+    expect(resetMe.json().user.mustChangePassword).toBe(true)
+
+    const adminLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'temporary-route-admin', password: createdAdminPassword } })
+    const adminCookies = readCookies(adminLogin)
+    const adminHeader = adminCookies.map((item) => item.split(';')[0]).join('; ')
+    const loggedOut = await app.inject({
+      method: 'POST', url: '/api/v1/auth/logout',
+      headers: { ...requestHeaders, cookie: adminHeader, 'x-mms-csrf': adminCookies.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? '', 'content-type': 'application/json' },
+      payload: {},
+    })
+    expect(adminLogin.statusCode).toBe(200)
+    expect(loggedOut.statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { ...requestHeaders, cookie: adminHeader } })).statusCode).toBe(401)
+  })
+
   it('applies server grants to reads, mutations, aggregates, and active-session revocation', async () => {
     const admin = await bootstrapAdmin()
     const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
     const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
     const member = await auth.createUser(principal, { username: 'scoped-reader', displayName: 'Scoped Reader', password: 'synthetic scoped reader 8R!c2Vn4', role: 'member' })
-    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'scoped-reader', password: 'synthetic scoped reader 8R!c2Vn4' } })
-    const cookies = (Array.isArray(login.headers['set-cookie']) ? login.headers['set-cookie'] : [login.headers['set-cookie']]).filter((item): item is string => typeof item === 'string')
-    const memberCookie = cookies.map((item) => item.split(';')[0]).join('; ')
-    const csrf = cookies.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const memberSession = await signInCreatedAccount('scoped-reader', 'synthetic scoped reader 8R!c2Vn4')
+    const memberCookie = memberSession.cookieHeader
+    const csrf = memberSession.csrfToken
     const memberHeaders = { ...requestHeaders, cookie: memberCookie, 'x-mms-csrf': csrf, 'content-type': 'application/json' }
     const serverId = randomUUID()
     const hiddenId = randomUUID()
@@ -292,10 +402,10 @@ describe('authenticated local API', () => {
       username: 'summary-member', displayName: 'Summary Member', password: 'synthetic summary member pass 93!', role: 'member',
     })
     expect(member.role).toBe('member')
-    const session = await auth.login('summary-member', 'synthetic summary member pass 93!')
+    const session = await signInCreatedAccount('summary-member', 'synthetic summary member pass 93!')
     const response = await app.inject({
       method: 'GET', url: '/api/v1/dashboard/players',
-      headers: { ...requestHeaders, cookie: `mmsmanager_session=${session.sessionToken}; mmsmanager_csrf=${session.csrfToken}` },
+      headers: { ...requestHeaders, cookie: session.cookieHeader },
     })
     expect(response.statusCode).toBe(200)
     expect(response.json()).toMatchObject({ summary: { playersOnline: 0, complete: true, registeredServerCount: 0, pollIntervalMs: 15_000 } })
@@ -607,16 +717,9 @@ describe('authenticated local API', () => {
       password: 'synthetic member passphrase 3M!k4Pq9',
       role: 'member',
     })
-    const memberLogin = await app.inject({
-      method: 'POST', url: '/api/v1/auth/login',
-      headers: { ...requestHeaders, 'content-type': 'application/json' },
-      payload: { username: 'member', password: 'synthetic member passphrase 3M!k4Pq9' },
-    })
-    expect(memberLogin.statusCode).toBe(200)
-    const memberCookies = memberLogin.headers['set-cookie']
-    const memberCookieList = (Array.isArray(memberCookies) ? memberCookies : [memberCookies]).filter((item): item is string => typeof item === 'string')
-    const memberCookieHeader = memberCookieList.map((item) => item.split(';')[0]).join('; ')
-    const memberCsrf = memberCookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const memberSession = await signInCreatedAccount('member', 'synthetic member passphrase 3M!k4Pq9')
+    const memberCookieHeader = memberSession.cookieHeader
+    const memberCsrf = memberSession.csrfToken
     const denied = await app.inject({
       method: 'POST', url: '/api/v1/admin/servers/import/inspect',
       headers: { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' },
@@ -789,13 +892,10 @@ describe('authenticated local API', () => {
     expect(unauthenticated.statusCode).toBe(401)
     const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
     await auth.createUser(principal, { username: 'server-member', displayName: 'Server Member', password: 'synthetic member passphrase 6R!d2Hk8', role: 'member' })
-    const memberLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'server-member', password: 'synthetic member passphrase 6R!d2Hk8' } })
-    const memberCookies = memberLogin.headers['set-cookie']
-    const memberCookieList = (Array.isArray(memberCookies) ? memberCookies : [memberCookies]).filter((item): item is string => typeof item === 'string')
-    const memberCookieHeader = memberCookieList.map((item) => item.split(';')[0]).join('; ')
-    const memberCsrf = memberCookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const memberSession = await signInCreatedAccount('server-member', 'synthetic member passphrase 6R!d2Hk8')
+    const memberCookieHeader = memberSession.cookieHeader
+    const memberCsrf = memberSession.csrfToken
     const memberHeaders = { ...requestHeaders, cookie: memberCookieHeader, 'x-mms-csrf': memberCsrf, 'content-type': 'application/json' }
-    expect(memberLogin.statusCode).toBe(200)
     expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/files/upload-batch?path=`, headers: { ...memberHeaders, 'content-type': `multipart/form-data; boundary=${uploadBoundary}` }, payload: uploadBody })).statusCode).toBe(404)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/runtime-settings`, headers: memberHeaders })).statusCode).toBe(403)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/automation`, headers: memberHeaders })).statusCode).toBe(403)
@@ -884,9 +984,8 @@ describe('authenticated local API', () => {
 
     const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
     await auth.createUser(principal, { username: 'backup-member', displayName: 'Backup Member', password: 'synthetic member passphrase 3M!v9Ld2', role: 'member' })
-    const memberLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'backup-member', password: 'synthetic member passphrase 3M!v9Ld2' } })
-    const memberCookies = memberLogin.headers['set-cookie']
-    const memberCookieHeader = (Array.isArray(memberCookies) ? memberCookies : [memberCookies]).filter((item): item is string => typeof item === 'string').map((item) => item.split(';')[0]).join('; ')
+    const memberSession = await signInCreatedAccount('backup-member', 'synthetic member passphrase 3M!v9Ld2')
+    const memberCookieHeader = memberSession.cookieHeader
     expect((await app.inject({ method: 'GET', url: route, headers: { ...requestHeaders, cookie: memberCookieHeader } })).statusCode).toBe(404)
   })
 
@@ -928,9 +1027,8 @@ describe('authenticated local API', () => {
 
     const principal = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
     await auth.createUser(principal, { username: 'history-member', displayName: 'History Member', password: 'synthetic member passphrase 4T!s8Cq2', role: 'member' })
-    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'history-member', password: 'synthetic member passphrase 4T!s8Cq2' } })
-    const cookies = login.headers['set-cookie']
-    const cookieHeader = (Array.isArray(cookies) ? cookies : [cookies]).filter((item): item is string => typeof item === 'string').map((item) => item.split(';')[0]).join('; ')
+    const historySession = await signInCreatedAccount('history-member', 'synthetic member passphrase 4T!s8Cq2')
+    const cookieHeader = historySession.cookieHeader
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/worlds`, headers: { ...requestHeaders, cookie: cookieHeader } })).statusCode).toBe(404)
     expect((await app.inject({ method: 'GET', url: `/api/v1/admin/server-history/day?scope=${serverId}&date=2026-11-23`, headers: { ...requestHeaders, cookie: cookieHeader } })).statusCode).toBe(404)
   })
@@ -974,11 +1072,9 @@ describe('authenticated local API', () => {
       serverId, userId: auth.listUsers().users.find((user) => user.username === 'activity-reader')!.id,
       viewServer: true, viewLogs: true, viewBackups: true, createdAt: at, updatedAt: at, updatedBy: principal.userId,
     }).run()
-    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'activity-reader', password: 'synthetic member passphrase 8P!m4Rd3' } })
-    const cookies = login.headers['set-cookie']
-    const cookieList = (Array.isArray(cookies) ? cookies : [cookies]).filter((item): item is string => typeof item === 'string')
-    const memberCookieHeader = cookieList.map((item) => item.split(';')[0]).join('; ')
-    const memberCsrf = cookieList.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const activitySession = await signInCreatedAccount('activity-reader', 'synthetic member passphrase 8P!m4Rd3')
+    const memberCookieHeader = activitySession.cookieHeader
+    const memberCsrf = activitySession.csrfToken
     const memberTemplates = await app.inject({ method: 'GET', url: '/api/v1/templates', headers: { ...requestHeaders, cookie: memberCookieHeader } })
     expect(memberTemplates.statusCode).toBe(200)
     expect(memberTemplates.json().templates).toHaveLength(1)
@@ -1110,10 +1206,9 @@ describe('authenticated local API', () => {
     const ownerPrincipal = ownerToken ? auth.authenticate(ownerToken) : null
     const memberPassword = 'synthetic lifecycle member 7M!a9Vq3'
     const lifecycleMember = await auth.createUser(ownerPrincipal!, { username: 'lifecycle-member', displayName: 'Lifecycle Member', password: memberPassword, role: 'member' })
-    const memberLogin = await app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: { username: 'lifecycle-member', password: memberPassword } })
-    const memberCookies = (Array.isArray(memberLogin.headers['set-cookie']) ? memberLogin.headers['set-cookie'] : [memberLogin.headers['set-cookie']]).filter((item): item is string => typeof item === 'string')
-    const lifecycleMemberCookie = memberCookies.map((item) => item.split(';')[0]).join('; ')
-    const lifecycleMemberCsrf = memberCookies.find((item) => item.startsWith('mmsmanager_csrf='))?.split(';')[0]?.split('=')[1] ?? ''
+    const lifecycleMemberSession = await signInCreatedAccount('lifecycle-member', memberPassword)
+    const lifecycleMemberCookie = lifecycleMemberSession.cookieHeader
+    const lifecycleMemberCsrf = lifecycleMemberSession.csrfToken
     const lifecycleMemberHeaders = { ...requestHeaders, cookie: lifecycleMemberCookie, 'x-mms-csrf': lifecycleMemberCsrf, 'content-type': 'application/json' }
     const lifecyclePermissions = (grant: Partial<import('@mmsmanager/shared').ServerAccessPermissions>) => ({
       viewServer: true, viewLogs: false, sendConsoleCommands: false, controlLifecycle: false,

@@ -83,6 +83,7 @@ describe('Argon2id authentication and bootstrap', () => {
     expect(sessionRow.tokenHash).not.toContain(session.sessionToken)
     expect(sessionRow.csrfHash).toBe(createHash('sha256').update(session.csrfToken).digest('hex'))
     expect(auth.authenticate(session.sessionToken)?.role).toBe('administrator')
+    expect(auth.authenticate(session.sessionToken)?.mustChangePassword).toBe(false)
 
     await expect(auth.login('owner', 'incorrect synthetic phrase')).rejects.toMatchObject({ code: 'unauthorized' })
     const loggedIn = await auth.login('OWNER', PASSWORD)
@@ -103,6 +104,48 @@ describe('Argon2id authentication and bootstrap', () => {
     const later = await auth.login('owner', 'a new synthetic passphrase 46?strong')
     clock += 8 * 24 * 60 * 60 * 1000
     expect(auth.authenticate(later.sessionToken)).toBeNull()
+  })
+
+  it('requires both created roles and administrator resets to change temporary passwords', async () => {
+    const { principal: administrator } = await bootstrap()
+    const memberPassword = 'temporary member credential 47!strong'
+    const adminPassword = 'temporary admin credential 48!strong'
+    const member = await auth.createUser(administrator, { username: 'temporary-member', displayName: 'Temporary Member', password: memberPassword, role: 'member' })
+    const createdAdmin = await auth.createUser(administrator, { username: 'temporary-admin', displayName: 'Temporary Admin', password: adminPassword, role: 'administrator' })
+    expect(member.mustChangePassword).toBe(true)
+    expect(createdAdmin.mustChangePassword).toBe(true)
+    expect(opened.native.prepare('SELECT password_hash AS passwordHash FROM users WHERE id = ?').get(member.id)).not.toMatchObject({ passwordHash: memberPassword })
+
+    const login = await auth.login('temporary-member', memberPassword)
+    const restricted = auth.authenticate(login.sessionToken)!
+    expect(restricted.mustChangePassword).toBe(true)
+    const storedSession = opened.native.prepare('SELECT expires_at AS expiresAt FROM sessions WHERE token_hash = ?').get(restricted.tokenHash) as { expiresAt: string }
+    expect(Date.parse(storedSession.expiresAt) - clock).toBe(15 * 60 * 1000)
+    await expect(auth.changePassword(restricted, 'incorrect temporary credential', 'a replacement credential 49!strong')).rejects.toMatchObject({ code: 'current-password' })
+    await expect(auth.changePassword(restricted, memberPassword, memberPassword)).rejects.toMatchObject({ code: 'same-password' })
+    const rotated = await auth.changePassword(restricted, memberPassword, 'a replacement credential 49!strong')
+    expect(rotated).toMatchObject({ sessionToken: expect.any(String), csrfToken: expect.any(String) })
+    expect(auth.authenticate(login.sessionToken)).toBeNull()
+    const normal = auth.authenticate(rotated!.sessionToken)!
+    expect(normal.mustChangePassword).toBe(false)
+    expect(Date.parse((opened.native.prepare('SELECT expires_at AS expiresAt FROM sessions WHERE token_hash = ?').get(normal.tokenHash) as { expiresAt: string }).expiresAt) - clock).toBe(7 * 24 * 60 * 60 * 1000)
+
+    const prior = await auth.login('temporary-admin', adminPassword)
+    const priorPrincipal = auth.authenticate(prior.sessionToken)!
+    await auth.resetUserPassword(administrator, createdAdmin.id, 'temporary reset credential 50!strong')
+    expect(auth.authenticate(prior.sessionToken)).toBeNull()
+    const resetLogin = await auth.login('temporary-admin', 'temporary reset credential 50!strong')
+    expect(auth.authenticate(resetLogin.sessionToken)?.mustChangePassword).toBe(true)
+    expect(auth.authenticate(priorPrincipal.tokenHash)).toBeNull()
+
+    await auth.recoverAdministrator('owner', 'temporary recovery credential 51!strong')
+    expect(auth.authenticate(administrator.tokenHash)).toBeNull()
+    const recoveredLogin = await auth.login('owner', 'temporary recovery credential 51!strong')
+    expect(auth.authenticate(recoveredLogin.sessionToken)?.mustChangePassword).toBe(true)
+    const audit = opened.native.prepare('SELECT action, outcome FROM security_audit_events ORDER BY id').all() as Array<{ action: string; outcome: string }>
+    expect(audit.map((event) => event.action)).toEqual(expect.arrayContaining(['user.created', 'user.password.reset', 'admin.recovered']))
+    expect(JSON.stringify(audit)).not.toContain('temporary reset credential')
+    expect(JSON.stringify(audit)).not.toContain('temporary recovery credential')
   })
 
   it('persists language and appearance per account while partial navigation updates preserve them', async () => {
