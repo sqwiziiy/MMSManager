@@ -612,8 +612,30 @@ export const serverConsoleEntrySchema = z.object({
   severity: z.enum(['info', 'warn', 'error', 'debug']),
   message: z.string().max(8192),
 }).strict()
-export const serverConsoleResponseSchema = z.object({ entries: z.array(serverConsoleEntrySchema), nextAfter: z.number().int().nonnegative().nullable() }).strict()
-export const serverConsoleQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().default(0), limit: z.coerce.number().int().min(1).max(500).default(200) }).strict()
+export const serverConsoleSessionIdSchema = z.union([z.string().uuid(), z.literal('legacy')])
+export const serverConsoleSessionSchema = z.object({
+  id: serverConsoleSessionIdSchema,
+  startedAt: z.string().datetime({ offset: true }),
+  endedAt: z.string().datetime({ offset: true }).nullable(),
+  outcome: z.enum(['running', 'stopped', 'crashed', 'interrupted', 'legacy']),
+  entryCount: z.number().int().nonnegative(),
+  oldestEntryId: z.number().int().positive().nullable(),
+  latestEntryId: z.number().int().positive().nullable(),
+  live: z.boolean(),
+}).strict()
+export const serverConsoleSessionsResponseSchema = z.object({ sessions: z.array(serverConsoleSessionSchema).max(101) }).strict()
+export const serverConsoleResponseSchema = z.object({
+  sessionId: serverConsoleSessionIdSchema.nullable(),
+  entries: z.array(serverConsoleEntrySchema),
+  nextAfter: z.number().int().positive().nullable(),
+  olderThan: z.number().int().positive().nullable(),
+}).strict()
+export const serverConsoleQuerySchema = z.object({
+  sessionId: serverConsoleSessionIdSchema.optional(),
+  after: z.coerce.number().int().nonnegative().optional(),
+  before: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+}).strict().refine((query) => query.after === undefined || query.before === undefined, 'Choose either an older or newer console cursor.')
 export const serverCommandSchema = z.object({ command: z.string().min(1).max(256).refine((value) => value.trim().length > 0 && !/[\u0000-\u001f\u007f]/.test(value)) }).strict()
 export const serverPropertySettingsSchema = z.object({
   onlineMode: z.boolean(),
@@ -1018,6 +1040,8 @@ export type ServerPlayerActionResult = z.infer<typeof serverPlayerActionResultSc
 export type ServerModEntry = z.infer<typeof serverModEntrySchema>
 export type ServerModsInventory = z.infer<typeof serverModsInventorySchema>
 export type ServerConsoleEntry = z.infer<typeof serverConsoleEntrySchema>
+export type ServerConsoleSession = z.infer<typeof serverConsoleSessionSchema>
+export type ServerConsoleResponse = z.infer<typeof serverConsoleResponseSchema>
 export type ServerPropertySettings = z.infer<typeof serverPropertySettingsSchema>
 export type ServerPropertiesUpdate = z.infer<typeof serverPropertiesUpdateSchema>
 export type ServerPropertiesResponse = z.infer<typeof serverPropertiesResponseSchema>

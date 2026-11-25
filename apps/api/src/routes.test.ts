@@ -902,6 +902,7 @@ describe('authenticated local API', () => {
     expect(await readFile(join(serverDirectory, 'server.jar'))).toEqual(artifact)
     expect(await readFile(join(serverDirectory, 'eula.txt'), 'utf8')).toContain('eula=true')
     expect(opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()).toMatchObject({ source: 'created', managed: true, eula: 'accepted' })
+    expect((await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console/sessions`, headers: requestHeaders })).statusCode).toBe(401)
 
     const started = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/start`, headers: adminHeaders, payload: {} })
     expect(started.statusCode).toBe(202)
@@ -913,6 +914,12 @@ describe('authenticated local API', () => {
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
     }
     expect(runtime).toMatchObject({ status: 'running', ready: true })
+    const firstSessionsResponse = await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console/sessions`, headers: { ...requestHeaders, cookie: cookieHeader } })
+    expect(firstSessionsResponse.statusCode).toBe(200)
+    const firstSession = firstSessionsResponse.json().sessions[0] as { id: string; outcome: string; live: boolean }
+    expect(firstSession).toMatchObject({ id: expect.any(String), outcome: 'running', live: true })
+    const scopedConsole = await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console?sessionId=${firstSession.id}&after=0`, headers: { ...requestHeaders, cookie: cookieHeader } })
+    expect(scopedConsole.json()).toMatchObject({ sessionId: firstSession.id, entries: expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining('Done') })]) })
     const players = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/players`, headers: { ...requestHeaders, cookie: cookieHeader } })
     expect(players.json().players).toMatchObject({ state: 'authoritative', names: ['Alex_123', 'MiraWoods'] })
     const command = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/console`, headers: adminHeaders, payload: { command: 'say integration fixture' } })
@@ -929,6 +936,11 @@ describe('authenticated local API', () => {
     const restarted = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restart`, headers: adminHeaders, payload: {} })
     expect(restarted.statusCode).toBe(200)
     expect(restarted.json().runtime).toMatchObject({ status: 'running', ready: true })
+    const restartedSessions = (await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console/sessions`, headers: { ...requestHeaders, cookie: cookieHeader } })).json().sessions as Array<{ id: string; outcome: string; live: boolean }>
+    expect(restartedSessions, JSON.stringify(restartedSessions)).toHaveLength(2)
+    expect(restartedSessions[0]).toMatchObject({ outcome: 'running', live: true })
+    expect(restartedSessions[0]?.id).not.toBe(firstSession.id)
+    expect(restartedSessions.find((session) => session.id === firstSession.id)).toMatchObject({ outcome: 'stopped', live: false })
     const stopped = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/stop`, headers: adminHeaders, payload: {} })
     expect(stopped.statusCode).toBe(200)
     runtime = undefined
@@ -939,6 +951,9 @@ describe('authenticated local API', () => {
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
     }
     expect(runtime).toMatchObject({ status: 'stopped' })
+    const endedSessions = (await app.inject({ method: 'GET', url: `/api/v1/servers/${serverId}/console/sessions`, headers: { ...requestHeaders, cookie: cookieHeader } })).json().sessions as Array<{ outcome: string; live: boolean }>
+    expect(endedSessions.every((session) => !session.live)).toBe(true)
+    expect(endedSessions[0]).toMatchObject({ outcome: 'stopped', live: false })
     const activity = await app.inject({ method: 'GET', url: '/api/v1/activity?limit=100', headers: { ...requestHeaders, cookie: cookieHeader } })
     expect(activity.statusCode).toBe(200)
     expect(activity.json().events.some((item: { title?: string }) => item.title === 'Server readiness observed')).toBe(true)

@@ -89,6 +89,10 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
     compatibility: 'compatible' as const, runtimeStatus, restartRequired: false, startScript: 'synchronized' as const,
   }
   const missedJobId = 'd03c1cf8-e2a1-4a4e-9de4-4536c7796091'
+  const consoleSessionIds = ['a03c1cf8-e2a1-4a4e-9de4-4536c7796091', 'b13c1cf8-e2a1-4a4e-9de4-4536c7796091']
+  let currentConsoleSessionId = consoleSessionIds[0]!
+  const consoleSessionRows: Array<{ id: string; startedAt: string; endedAt: string | null; outcome: 'running' | 'stopped'; entryCount: number; oldestEntryId: number | null; latestEntryId: number | null; live: boolean }> = []
+  const consoleEntrySession = new Map<number, string>()
   let automation = {
     serverId, enabled: false, frequency: 'daily' as const, localTime: '03:00', weekday: null,
     timeZone: 'Europe/Paris', nextRunAt: null, lastRunAt: now, lastStatus: 'missed' as const,
@@ -105,6 +109,9 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
     { id: 1, occurredAt: now, source: 'system', severity: 'info', message: 'MMSManager launched this local process.' },
     { id: 2, occurredAt: now, source: 'stdout', severity: 'info', message: 'Done (1.2s)! For help, type "help"' },
   ], nextAfter: null }
+  for (let id = 3; id <= 42; id += 1) consoleResponse.entries.push({ id, occurredAt: now, source: id % 9 === 0 ? 'stderr' : 'stdout', severity: id % 9 === 0 ? 'warn' : 'info', message: `Fixture process output line ${id}` })
+  consoleResponse.entries.forEach((entry) => consoleEntrySession.set(entry.id, currentConsoleSessionId))
+  consoleSessionRows.push({ id: currentConsoleSessionId, startedAt: now, endedAt: runtimeStatus === 'running' ? null : now, outcome: runtimeStatus === 'running' ? 'running' : 'stopped', entryCount: consoleResponse.entries.length, oldestEntryId: 1, latestEntryId: 42, live: runtimeStatus === 'running' })
   await page.route('**/api/v1/servers', (route) => route.fulfill({ json: { servers: [server] } }))
   await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [{ ...server, directory: '/tmp/mmsmanager-e2e/local-fixture', javaPath: '/tmp/fake-java' }], managedRoot: '/tmp/mmsmanager-e2e/servers', importRoots: ['/tmp/mmsmanager-e2e/servers'] } }))
   await page.route('**/api/v1/admin/java', (route) => route.fulfill({ json: { runtimes: [{ path: '/tmp/mmsmanager-e2e-java-21', version: '21.0.4', major: 21, vendor: 'Temurin', source: 'discovered' }] } }))
@@ -128,6 +135,12 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
     return route.fulfill({ json: { automation } })
   })
   await page.route(`**/api/v1/admin/servers/${serverId}/restart`, (route) => {
+    const previousSession = consoleSessionRows.find((session) => session.id === currentConsoleSessionId)
+    if (previousSession) { previousSession.endedAt = now; previousSession.outcome = 'stopped'; previousSession.live = false }
+    currentConsoleSessionId = consoleSessionIds[1]!
+    consoleSessionRows.unshift({ id: currentConsoleSessionId, startedAt: now, endedAt: null, outcome: 'running', entryCount: 1, oldestEntryId: 43, latestEntryId: 43, live: true })
+    consoleResponse.entries.push({ id: 43, occurredAt: now, source: 'system', severity: 'info', message: 'A new panel-owned process session started.' })
+    consoleEntrySession.set(43, currentConsoleSessionId)
     runtimeStatus = 'running'
     runtimeSettings = { ...runtimeSettings, runtimeStatus, restartRequired: false }
     restartRequired = false
@@ -171,9 +184,30 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
     restartRequired = true
     return route.fulfill({ json: { mods: modsInventory() } })
   })
+  await page.route(`**/api/v1/servers/${serverId}/console/sessions`, (route) => {
+    const sessions = consoleSessionRows.map((session) => ({ ...session, live: session.id === currentConsoleSessionId && runtimeStatus === 'running', endedAt: session.id === currentConsoleSessionId && runtimeStatus === 'running' ? null : session.endedAt ?? now }))
+    return route.fulfill({ json: { sessions } })
+  })
   await page.route(`**/api/v1/servers/${serverId}/console?*`, (route) => {
-    const after = Number(new URL(route.request().url()).searchParams.get('after') ?? 0)
-    return route.fulfill({ json: { entries: consoleResponse.entries.filter((entry) => entry.id > after), nextAfter: null } })
+    const url = new URL(route.request().url())
+    const sessionId = url.searchParams.get('sessionId') ?? currentConsoleSessionId
+    const after = Number(url.searchParams.get('after') ?? 0)
+    const before = Number(url.searchParams.get('before') ?? 0)
+    const limit = Number(url.searchParams.get('limit') ?? 200)
+    if (after > 0 && runtimeStatus === 'running' && sessionId === currentConsoleSessionId) {
+      const id = (consoleResponse.entries.at(-1)?.id ?? 0) + 1
+      consoleResponse.entries.push({ id, occurredAt: new Date().toISOString(), source: 'stdout', severity: 'info', message: `Live fixture output ${id}` })
+      consoleEntrySession.set(id, sessionId)
+      const session = consoleSessionRows.find((item) => item.id === sessionId)
+      if (session) { session.entryCount += 1; session.latestEntryId = id }
+    }
+    const all = consoleResponse.entries.filter((entry) => consoleEntrySession.get(entry.id) === sessionId && (!before || entry.id < before) && (!after || entry.id > after))
+    const descending = before > 0 || after === 0
+    const ordered = descending ? [...all].sort((a, b) => b.id - a.id).slice(0, limit + 1) : [...all].sort((a, b) => a.id - b.id).slice(0, limit + 1)
+    const more = ordered.length > limit
+    const selected = ordered.slice(0, limit)
+    if (descending) selected.reverse()
+    return route.fulfill({ json: { sessionId, entries: selected, nextAfter: before === 0 && after > 0 && more ? selected.at(-1)?.id ?? null : null, olderThan: descending && more ? selected[0]?.id ?? null : null } })
   })
   await page.route(`**/api/v1/admin/servers/${serverId}/properties`, async (route) => {
     if (route.request().method() === 'PATCH') {
@@ -582,6 +616,48 @@ test('local server overview, console and visual properties use mocked API data',
   await expect(hardcoreToggle).toBeChecked()
   await expectNoHorizontalOverflow(page, 'advanced properties mobile')
   await page.screenshot({ path: screenshotPath('stage-06hr-properties-advanced-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('R7 console follows active output and keeps stopped history read only', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  const { serverId } = await mockLocalServer(page)
+  await page.goto(`/servers/${serverId}/console`)
+  const consoleView = page.locator('.local-console-output')
+  await expect(page.getByText('Connected to owned process')).toBeVisible()
+  await expect.poll(() => consoleView.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+  await expect.poll(() => consoleView.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(10)
+  await consoleView.evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')) })
+  await expect(page.getByRole('button', { name: 'Auto-follow off' })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Jump to latest/ })).toBeVisible({ timeout: 5000 })
+  await page.getByRole('button', { name: /Jump to latest/ }).click()
+  await expect(page.getByRole('button', { name: 'Auto-follow on' })).toBeVisible()
+  await expect.poll(() => consoleView.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(10)
+  await page.getByRole('link', { name: 'Logs' }).click()
+  await expect(page.getByLabel('Choose process session')).toBeVisible()
+  await expect(page.getByText('Done (1.2s)! For help, type "help"')).toBeVisible()
+  await expectNoHorizontalOverflow(page, 'R7 process logs desktop')
+  await page.screenshot({ path: screenshotPath('stage-06hr-live-logs-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/servers/${serverId}/console`)
+  await expect(page.getByRole('textbox', { name: 'Minecraft server command' })).toBeVisible()
+  await expectNoHorizontalOverflow(page, 'R7 console mobile')
+  await page.screenshot({ path: screenshotPath('stage-06hr-live-console-mobile.png'), fullPage: true, animations: 'disabled' })
+
+  const stoppedPage = await page.context().newPage()
+  try {
+    const stoppedFixture = await mockLocalServer(stoppedPage, 'stopped')
+    await stoppedPage.goto(`/servers/${stoppedFixture.serverId}/console`)
+    await expect(stoppedPage.getByText('Console unavailable', { exact: true })).toBeVisible()
+    await expect(stoppedPage.getByRole('link', { name: 'Console' })).toHaveCount(0)
+    await expect(stoppedPage.getByRole('link', { name: 'Logs' })).toBeVisible()
+    await stoppedPage.goto(`/servers/${stoppedFixture.serverId}/logs`)
+    await expect(stoppedPage.getByText('Done (1.2s)! For help, type "help"')).toBeVisible()
+    await stoppedPage.goto(`/servers/${stoppedFixture.serverId}/players`)
+    await expect(stoppedPage.getByText('Players unavailable', { exact: true })).toBeVisible()
+    await expect(stoppedPage.getByRole('button', { name: 'Refresh list' })).toHaveCount(0)
+    await expectNoHorizontalOverflow(stoppedPage, 'R7 stopped server players')
+  } finally { await stoppedPage.close() }
 })
 
 test('R3 sidebar preference survives rapid toggles, keyboard, navigation and reload', async ({ page }) => {
@@ -1383,6 +1459,8 @@ test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page
     '/': 'История ресурсов компьютера', '/servers': 'Зарегистрированные серверы', '/machine': 'Ресурсы компьютера',
     '/activity': 'События', '/users': 'Пользователи', '/profile': 'Профиль', '/settings': 'Настройки',
     '/servers/properties': 'Свойства сервера', '/servers/console': 'Текущая консоль', '/servers/access': 'Просмотр прав доступа',
+    '/servers/logs': 'Журналы процесса', '/servers/players': 'Список игроков', '/servers/mods': 'Установленные моды',
+    '/servers/files': 'Файлы сервера', '/servers/worlds': 'Управление мирами', '/servers/runtime': 'Профиль запуска',
   }
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 960 })
@@ -1401,6 +1479,10 @@ test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page
       await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
       const sectionCheck = translatedChecks[`/servers/${section}`]
       if (sectionCheck) await expect(page.locator('.page-content')).toContainText(sectionCheck)
+      if (section === 'console' || section === 'logs') {
+        await expect(page.getByLabel('Выберите сеанс процесса')).toBeVisible()
+        await expect(page.getByRole('button', { name: 'Автопрокрутка включена' })).toBeVisible()
+      }
       if (section === 'properties') {
         await page.getByRole('tab', { name: 'Дополнительные свойства' }).click()
         await expect(page.locator('.page-content')).toContainText('Игровой процесс')

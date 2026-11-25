@@ -1,4 +1,4 @@
-import { currentLocale } from "../i18n/catalog"
+import { currentLocale, pluralCount } from "../i18n/catalog"
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
@@ -7,9 +7,9 @@ import {
   Search, Send, Server, Settings2, Shield, Square, Terminal, Trash2, Upload, Users, Wifi,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
-import type { LocalServerSummary, ServerConsoleEntry, ServerModEntry, ServerModsInventory, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds } from '@mmsmanager/shared'
+import type { LocalServerSummary, ServerConsoleEntry, ServerConsoleSession, ServerModEntry, ServerModsInventory, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds } from '@mmsmanager/shared'
 import {
-  confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getServerConsole, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, restoreServerFileRecovery, restoreTrashedServerFile, sendPlayerAction,
+  confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getServerConsole, getServerConsoleSessions, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, restoreServerFileRecovery, restoreTrashedServerFile, sendPlayerAction,
   sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer,
   getServerMods, uploadServerMod, uploadServerFiles, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
 } from '../api/servers'
@@ -121,6 +121,8 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   const canStop = isAdmin && isManaged && ['running', 'starting'].includes(status)
   const canRestart = isAdmin && isManaged && status === 'running'
   const canConfirmStopped = isAdmin && isManaged && status === 'external/unmanaged'
+  const canReadConsole = isManaged && ['starting', 'running', 'stopping'].includes(status)
+  const canReadPlayers = isAdmin && isManaged && status === 'running' && runtime?.ready === true
   return <div className="page-stack server-detail-page local-detail-page">
     <div className="server-detail-heading">
       <div className="server-detail-identity"><span className="local-server-icon detail-server-icon"><Server size={19} /></span><div><div className="server-detail-title"><h1 data-no-translate>{displayName}</h1><Badge tone={statusTone}>{statusLabel(status)}</Badge></div><p>{server.software === 'unknown' ? 'Unknown software' : `${capitalize(server.software)}${server.version ? ` ${server.version}` : ''}`} <span>·</span> {server.port ? `Game port ${server.port}` : 'No game port detected'}</p></div></div>
@@ -134,19 +136,27 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
       </div>
     </div>
     <div className="server-detail-tabs" role="navigation" aria-label={`${displayName} pages`}>
-      {tabs.map(({ id, label, icon: Icon }) => <NavLink key={id} to={`/servers/${server.id}/${id}`} className={section === id ? 'active' : ''}>
-        <Icon size={15} />{label}{!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups', 'runtime', 'automation', 'access'].includes(id) && <span className="tab-preview-dot" />}
-      </NavLink>)}
+      {tabs.map(({ id, label, icon: Icon }) => {
+        const disabled = (id === 'console' && !canReadConsole) || (id === 'players' && !canReadPlayers)
+        const content = <><Icon size={15} />{label}</>
+        return disabled
+          ? <span key={id} className={`server-detail-tab-disabled ${section === id ? 'active' : ''}`} aria-disabled="true" title={id === 'console' ? 'Available during a panel-owned process session.' : 'Available while a panel-owned server is ready.'}>{content}</span>
+          : <NavLink key={id} to={`/servers/${server.id}/${id}`} className={section === id ? 'active' : ''}>{content}</NavLink>
+      })}
     </div>
     <div className="server-section-heading"><div><p className="eyebrow">{displayName} / {active.label}</p><h2>{sectionTitle(section)}</h2></div></div>
     {(runtimeError || actionError) && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{actionError ?? runtimeError}</span><Button icon={RefreshCw} onClick={() => void refreshRuntime()}>Retry</Button></div>}
     {runtime?.errorMessage && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{runtime.errorMessage}</span></div>}
     {runtime?.restartRequired && <div className="local-restart-banner" role="status"><RefreshCw size={16} /><span><strong>Restart required</strong><small>Server properties changed while this process was running. The new values take effect after the next start.</small></span></div>}
     {section === 'overview' && <LocalOverview server={server} runtime={runtime} statusSample={statusSample} isAdmin={isAdmin} />}
-    {section === 'players' && <LocalPlayers serverId={server.id} isAdmin={isAdmin} canAct={Boolean(isManaged && runtime?.status === 'running')} statusSample={statusSample} error={statusError} />}
+    {section === 'players' && (canReadPlayers
+      ? <LocalPlayers serverId={server.id} isAdmin={isAdmin} canAct={true} statusSample={statusSample} error={statusError} />
+      : <SectionUnavailable title={isAdmin ? 'Players unavailable' : 'Administrator access required'} text={isAdmin ? 'Player names and moderation actions are available while a panel-owned server is ready.' : 'Player names and moderation actions require an administrator.'} />)}
     {section === 'mods' && <LocalMods serverId={server.id} software={server.software} managed={isManaged} isAdmin={isAdmin} runtimeStatus={status} />}
-    {section === 'console' && <LocalConsole serverId={server.id} runtime={runtime} isAdmin={isAdmin} />}
-    {section === 'logs' && <LocalLogs serverId={server.id} />}
+    {section === 'console' && (canReadConsole
+      ? <LocalConsole serverId={server.id} runtime={runtime} isAdmin={isAdmin} />
+      : <SectionUnavailable title="Console unavailable" text="The live console requires an active panel-owned process session. Historical process output remains available in Logs." logsHref={`/servers/${server.id}/logs`} />)}
+    {section === 'logs' && <LocalLogs serverId={server.id} runtimeStatus={status} />}
     {section === 'properties' && isAdmin && <ServerPropertiesEditor serverId={server.id} managed={isManaged} runtimeStatus={runtime?.status ?? 'unavailable'} serverPort={server.port} />}
     {section === 'properties' && !isAdmin && <LockedDetail title="Administrator access required" text="Server properties are visible only to workspace administrators." />}
     {section === 'files' && isAdmin && <LocalFiles serverId={server.id} managed={isManaged} runtimeStatus={status} />}
@@ -281,74 +291,240 @@ function LocalPlayers({ serverId, isAdmin, canAct, statusSample, error }: { serv
   </Card>
 }
 
-function LocalConsole({ serverId, runtime, isAdmin }: { serverId: string; runtime: ServerRuntime | null; isAdmin: boolean }) {
+function useConsoleHistory(serverId: string, runtimeStatus: string) {
+  const [sessions, setSessions] = useState<ServerConsoleSession[]>([])
+  const [sessionId, setSessionId] = useState<string | null>(null)
   const [entries, setEntries] = useState<ServerConsoleEntry[]>([])
-  const [command, setCommand] = useState('')
+  const [olderThan, setOlderThan] = useState<number | null>(null)
+  const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [sending, setSending] = useState(false)
   const cursor = useRef(0)
-  const polling = useRef(false)
-  const poll = useCallback(async () => {
-    if (polling.current) return
-    polling.current = true
-    try {
-      const result = await getServerConsole(serverId, cursor.current)
-      if (result.entries.length) {
-        cursor.current = Math.max(cursor.current, result.entries.at(-1)!.id)
-        setEntries((current) => {
-          const known = new Set(current.map((entry) => entry.id))
-          return [...current, ...result.entries.filter((entry) => !known.has(entry.id))].slice(-500)
-        })
-      }
-      setError(null)
-    } catch (issue) { setError(issue instanceof Error ? issue.message : 'Console output is unavailable.') }
-    finally { polling.current = false }
+  const selectionVersion = useRef(0)
+  const selected = sessions.find((session) => session.id === sessionId) ?? null
+  const refreshSessions = useCallback(async (signal?: AbortSignal) => {
+    const next = await getServerConsoleSessions(serverId, signal)
+    if (signal?.aborted) return next
+    setSessions(next)
+    setSessionId((current) => next.some((session) => session.id === current)
+      ? current
+      : next.find((session) => session.live)?.id ?? next[0]?.id ?? null)
+    setError(null)
+    return next
   }, [serverId])
-  useEffect(() => {
-    void poll()
-    const timer = window.setInterval(() => void poll(), 1250)
-    return () => window.clearInterval(timer)
-  }, [poll])
 
+  useEffect(() => {
+    const controller = new AbortController()
+    void refreshSessions(controller.signal).catch((issue: unknown) => {
+      if (!controller.signal.aborted) setError(issue instanceof Error ? issue.message : 'Console sessions are unavailable.')
+    })
+    return () => controller.abort()
+  }, [refreshSessions, runtimeStatus])
+
+  const hasLiveSession = sessions.some((session) => session.live)
+  useEffect(() => {
+    if (runtimeStatus !== 'starting' || hasLiveSession) return
+    const timer = window.setInterval(() => {
+      void refreshSessions().catch((issue: unknown) => setError(issue instanceof Error ? issue.message : 'Console sessions are unavailable.'))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [runtimeStatus, hasLiveSession, refreshSessions])
+
+  useEffect(() => {
+    const version = selectionVersion.current + 1
+    selectionVersion.current = version
+    cursor.current = 0
+    setEntries([])
+    setOlderThan(null)
+    setLoadedSessionId(null)
+    setError(null)
+    if (!sessionId) return
+    let active = true
+    const controller = new AbortController()
+    void getServerConsole(serverId, { sessionId, after: 0, limit: 200, signal: controller.signal }).then((result) => {
+      if (!active || version !== selectionVersion.current) return
+      if (result.sessionId !== sessionId) throw new Error('The server returned a different console session.')
+      setEntries(result.entries)
+      cursor.current = result.entries.at(-1)?.id ?? 0
+      setOlderThan(result.olderThan)
+      setLoadedSessionId(sessionId)
+    }).catch((issue: unknown) => {
+      if (active && !controller.signal.aborted) setError(issue instanceof Error ? issue.message : 'Process output is unavailable.')
+    })
+    return () => { active = false; controller.abort() }
+  }, [serverId, sessionId])
+
+  useEffect(() => {
+    if (!sessionId || !selected?.live || loadedSessionId !== sessionId) return
+    let active = true
+    let timer = 0
+    let controller: AbortController | null = null
+    let retryDelay = 1000
+    const poll = async () => {
+      controller = new AbortController()
+      try {
+        for (let page = 0; page < 5 && active; page += 1) {
+          const result = await getServerConsole(serverId, { sessionId, after: cursor.current, limit: 200, signal: controller.signal })
+          if (!active) return
+          if (result.sessionId !== sessionId) throw new Error('The server returned a different console session.')
+          if (result.entries.length) {
+            const latest = result.entries.at(-1)!.id
+            cursor.current = Math.max(cursor.current, latest)
+            setEntries((current) => {
+              const known = new Set(current.map((entry) => entry.id))
+              return [...current, ...result.entries.filter((entry) => !known.has(entry.id))].sort((left, right) => left.id - right.id).slice(-2000)
+            })
+          }
+          if (result.nextAfter === null || !result.entries.length) break
+        }
+        if (!active) return
+        retryDelay = 1000
+        setError(null)
+        timer = window.setTimeout(() => void poll(), 1000)
+      } catch (issue) {
+        if (!active || controller.signal.aborted) return
+        setError(issue instanceof Error ? issue.message : 'Process output is unavailable.')
+        retryDelay = Math.min(retryDelay * 2, 15_000)
+        timer = window.setTimeout(() => void poll(), retryDelay)
+      }
+    }
+    timer = window.setTimeout(() => void poll(), 1000)
+    return () => { active = false; window.clearTimeout(timer); controller?.abort() }
+  }, [serverId, sessionId, selected?.live, loadedSessionId])
+
+  const loadOlder = useCallback(async () => {
+    if (!sessionId || olderThan === null) return 0
+    const version = selectionVersion.current
+    const result = await getServerConsole(serverId, { sessionId, before: olderThan, limit: 200 })
+    if (version !== selectionVersion.current) return 0
+    if (result.sessionId !== sessionId) throw new Error('The server returned a different console session.')
+    setEntries((current) => {
+      const known = new Set(current.map((entry) => entry.id))
+      return [...result.entries.filter((entry) => !known.has(entry.id)), ...current].sort((left, right) => left.id - right.id)
+    })
+    setOlderThan(result.olderThan)
+    return result.entries.length
+  }, [serverId, sessionId, olderThan])
+
+  return { sessions, sessionId, setSessionId, selected, entries, olderThan, loadedSessionId, error, setError, refreshSessions, loadOlder }
+}
+
+function useLogTail(entries: ServerConsoleEntry[], sessionId: string | null) {
+  const viewport = useRef<HTMLDivElement>(null)
+  const [autoFollow, setAutoFollow] = useState(true)
+  const [newLines, setNewLines] = useState(0)
+  const lastId = useRef(0)
+  useEffect(() => {
+    lastId.current = 0
+    setAutoFollow(true)
+    setNewLines(0)
+  }, [sessionId])
+  useEffect(() => {
+    const latest = entries.at(-1)?.id ?? 0
+    const previous = lastId.current
+    if (previous > 0 && latest > previous && !autoFollow) {
+      setNewLines((current) => current + entries.filter((entry) => entry.id > previous).length)
+    }
+    lastId.current = latest
+    if (autoFollow && viewport.current) {
+      viewport.current.scrollTop = viewport.current.scrollHeight
+      setNewLines(0)
+    }
+  }, [entries, autoFollow])
+  const onScroll = useCallback(() => {
+    const element = viewport.current
+    if (element && autoFollow && element.scrollHeight - element.scrollTop - element.clientHeight > 48) {
+      setAutoFollow(false)
+      setNewLines(0)
+    }
+  }, [autoFollow])
+  const jumpToLatest = useCallback(() => {
+    setAutoFollow(true)
+    setNewLines(0)
+    requestAnimationFrame(() => { if (viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight })
+  }, [])
+  return { viewport, autoFollow, setAutoFollow, newLines, setNewLines, onScroll, jumpToLatest }
+}
+
+function sessionOutcomeLabel(outcome: ServerConsoleSession['outcome']) {
+  return translateText(({ running: 'Running', stopped: 'Stopped', crashed: 'Crashed', interrupted: 'Interrupted', legacy: 'Older entries' })[outcome], currentLocale())
+}
+
+function ConsoleSessionPicker({ sessions, sessionId, onChange }: { sessions: ServerConsoleSession[]; sessionId: string | null; onChange: (id: string) => void }) {
+  if (!sessions.length) return null
+  return <label className="console-session-picker"><Clock3 size={14} /><span>{translateText('Session', currentLocale())}</span><select aria-label={translateText('Choose process session', currentLocale())} value={sessionId ?? ''} onChange={(event) => onChange(event.target.value)}>
+    {sessions.map((session) => <option key={session.id} value={session.id}>{session.live ? translateText('Current session · Live', currentLocale()) : `${new Date(session.startedAt).toLocaleString(currentLocale())} · ${sessionOutcomeLabel(session.outcome)}`}</option>)}
+  </select></label>
+}
+
+function LogFollowControls({ autoFollow, newLines, onToggle, onJump }: { autoFollow: boolean; newLines: number; onToggle: () => void; onJump: () => void }) {
+  return <div className="log-follow-controls">
+    <Button kind={autoFollow ? 'secondary' : 'quiet'} onClick={onToggle}>{autoFollow ? translateText('Auto-follow on', currentLocale()) : translateText('Auto-follow off', currentLocale())}</Button>
+    {!autoFollow && newLines > 0 && <Button kind="primary" icon={ArrowDownToLine} onClick={onJump}>{pluralCount(newLines, currentLocale(), { en: ['new line', 'new lines'], ru: ['новая строка', 'новые строки', 'новых строк'] })} · {translateText('Jump to latest', currentLocale())}</Button>}
+  </div>
+}
+
+function LocalConsole({ serverId, runtime, isAdmin }: { serverId: string; runtime: ServerRuntime | null; isAdmin: boolean }) {
+  const history = useConsoleHistory(serverId, runtime?.status ?? 'unavailable')
+  const tail = useLogTail(history.entries, history.sessionId)
+  const [command, setCommand] = useState('')
+  const [sending, setSending] = useState(false)
+  const readySession = Boolean(history.selected?.live && isAdmin && runtime?.status === 'running' && runtime.ready)
+  const liveSession = Boolean(history.selected?.live)
   async function submit(event: FormEvent) {
     event.preventDefault()
     const value = command.trim()
-    if (!value || !isAdmin || runtime?.status !== 'running') return
+    if (!value || !readySession || sending) return
     setSending(true)
     try {
       await sendLocalServerCommand(serverId, value)
       setCommand('')
-      await poll()
-    } catch (issue) { setError(issue instanceof Error ? issue.message : 'The command could not be sent.') }
+      history.setError(null)
+    } catch (issue) { history.setError(issue instanceof Error ? issue.message : 'The command could not be sent.') }
     finally { setSending(false) }
   }
-  return <div className="local-console-layout"><Card className="local-console-card"><div className="local-console-toolbar"><div><span className={`console-live-dot ${runtime?.status === 'running' ? '' : 'idle'}`} /><strong>{runtime?.status === 'running' ? 'Connected to owned process' : statusLabel(runtime?.status ?? 'unavailable')}</strong><span>{entries.length} retained lines loaded</span></div><Badge tone={runtime?.status === 'running' ? 'good' : 'neutral'}>{runtime?.status === 'running' ? 'Live output' : 'Idle'}</Badge></div>
-    {error && <div className="local-inline-error" role="status">{error}</div>}
-    <div className="console-output local-console-output" role="log" aria-label="Local server process output" aria-live="polite">
-      {entries.length ? entries.map((entry) => <div className="console-line" key={entry.id}><time>{new Date(entry.occurredAt).toLocaleTimeString(currentLocale())}</time><span className={`console-level level-${entry.severity}`}>{entry.source === 'stdout' ? 'OUT' : entry.source === 'stderr' ? 'ERR' : entry.source.toUpperCase()}</span><span>{entry.message}</span></div>) : <div className="local-console-empty"><Terminal size={22} /><strong>No process output yet</strong><span>Start this managed server to populate the local console and logs.</span></div>}
+  return <div className="local-console-layout"><Card className="local-console-card"><div className="local-console-toolbar"><div><span className={`console-live-dot ${liveSession ? '' : 'idle'}`} /><strong>{liveSession ? runtime?.ready ? 'Connected to owned process' : 'Owned process starting' : statusLabel(runtime?.status ?? 'unavailable')}</strong><span>{pluralCount(history.entries.length, currentLocale(), { en: ['retained line loaded', 'retained lines loaded'], ru: ['строка загружена', 'строки загружено', 'строк загружено'] })}</span></div><Badge tone={liveSession ? 'good' : 'neutral'}>{liveSession ? 'Live output' : 'Session history'}</Badge></div>
+    <div className="local-console-controls"><ConsoleSessionPicker sessions={history.sessions} sessionId={history.sessionId} onChange={history.setSessionId} /><LogFollowControls autoFollow={tail.autoFollow} newLines={tail.newLines} onToggle={() => { if (tail.autoFollow) { tail.setAutoFollow(false); tail.setNewLines(0) } else tail.jumpToLatest() }} onJump={tail.jumpToLatest} /></div>
+    {history.error && <div className="local-inline-error" role="status">{history.error}<Button icon={RefreshCw} onClick={() => void history.refreshSessions()}>Retry</Button></div>}
+    <div className="console-output local-console-output" ref={tail.viewport} onScroll={tail.onScroll} role="log" aria-label="Local server process output" aria-live="polite" aria-relevant="additions text">
+      {history.entries.length ? history.entries.map((entry) => <div className="console-line" key={entry.id}><time>{new Date(entry.occurredAt).toLocaleTimeString(currentLocale())}</time><span className={`console-level level-${entry.severity}`}>{entry.source === 'stdout' ? 'OUT' : entry.source === 'stderr' ? 'ERR' : entry.source.toUpperCase()}</span><span>{entry.message}</span></div>) : <div className="local-console-empty"><Terminal size={22} /><strong>{history.sessions.length ? 'No output in this session' : 'Waiting for an owned process session'}</strong><span>{history.sessions.length ? 'Choose another launch to inspect its retained output.' : 'Console output appears after the managed process starts.'}</span></div>}
     </div>
-    <form className="console-input-row local-command-row" onSubmit={(event) => void submit(event)}><span className="console-prompt">&gt;</span><input value={command} onChange={(event) => setCommand(event.target.value)} maxLength={256} disabled={!isAdmin || runtime?.status !== 'running'} placeholder={isAdmin ? 'Enter a Minecraft server command' : 'Administrator access required'} aria-label="Minecraft server command" /><kbd>Enter</kbd><Button kind="primary" disabled={!isAdmin || runtime?.status !== 'running' || !command.trim() || sending} icon={Send}>Send</Button></form>
+    <form className="console-input-row local-command-row" onSubmit={(event) => void submit(event)}><span className="console-prompt">&gt;</span><input value={command} onChange={(event) => setCommand(event.target.value)} maxLength={256} disabled={!readySession || sending} placeholder={readySession ? 'Enter a Minecraft server command' : 'Commands require a ready owned server'} aria-label="Minecraft server command" /><kbd>Enter</kbd><Button kind="primary" disabled={!readySession || !command.trim() || sending} icon={Send}>{sending ? 'Sending…' : 'Send'}</Button></form>
   </Card><div className="local-console-side"><Card><SectionHeading title="Output source" description="Captured from the panel-owned Java child process." /><div className="local-source-list"><div><Wifi size={15} /><span>stdout and stderr</span></div><div><FileText size={15} /><span>Stored locally with bounded rotation</span></div><div><Shield size={15} /><span>Browser input goes to Minecraft stdin, never a shell</span></div></div></Card><div className="local-detail-callout"><AlertTriangle size={15} /><span>Commands are sent only while the process is ready and owned. Output is capped for display; raw logs remain in the private application data directory.</span></div></div></div>
 }
 
-function LocalLogs({ serverId }: { serverId: string }) {
-  const [entries, setEntries] = useState<ServerConsoleEntry[]>([])
+function LocalLogs({ serverId, runtimeStatus }: { serverId: string; runtimeStatus: string }) {
+  const history = useConsoleHistory(serverId, runtimeStatus)
+  const tail = useLogTail(history.entries, history.sessionId)
   const [query, setQuery] = useState('')
   const [level, setLevel] = useState('all')
-  const [error, setError] = useState<string | null>(null)
-  useEffect(() => {
-    const controller = new AbortController()
-    void getServerConsole(serverId, 0, controller.signal).then((value) => setEntries(value.entries)).catch((issue: unknown) => {
-      if (!(issue instanceof DOMException && issue.name === 'AbortError')) setError(issue instanceof Error ? issue.message : 'Log history is unavailable.')
-    })
-    return () => controller.abort()
-  }, [serverId])
-  const filtered = useMemo(() => entries.filter((entry) => (level === 'all' || entry.severity === level) && `${entry.message} ${entry.source}`.toLowerCase().includes(query.toLowerCase())), [entries, level, query])
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [olderError, setOlderError] = useState<string | null>(null)
+  const filtered = useMemo(() => history.entries.filter((entry) => (level === 'all' || entry.severity === level) && `${entry.message} ${entry.source}`.toLowerCase().includes(query.toLowerCase())), [history.entries, level, query])
+  async function loadOlder() {
+    const viewport = tail.viewport.current
+    const oldHeight = viewport?.scrollHeight ?? 0
+    const oldTop = viewport?.scrollTop ?? 0
+    tail.setAutoFollow(false)
+    tail.setNewLines(0)
+    setLoadingOlder(true); setOlderError(null)
+    try {
+      await history.loadOlder()
+      requestAnimationFrame(() => { if (viewport) viewport.scrollTop = oldTop + viewport.scrollHeight - oldHeight })
+    } catch (issue) { setOlderError(issue instanceof Error ? issue.message : 'Earlier process output could not be loaded.') }
+    finally { setLoadingOlder(false) }
+  }
   return <Card className="logs-card local-logs-card"><div className="logs-toolbar"><div className="filter-tabs" role="tablist" aria-label="Filter process log severity">{['all', 'info', 'warn', 'error', 'debug'].map((item) => <button key={item} role="tab" aria-selected={level === item} className={level === item ? 'selected' : ''} onClick={() => setLevel(item)}>{item === 'all' ? 'All' : item.toUpperCase()}</button>)}</div><label className="inline-search"><ScrollText size={15} /><input aria-label="Search local process logs" placeholder="Search output" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div>
-    {error && <div className="local-inline-error" role="status">{error}</div>}
-    {filtered.length ? <div className="logs-list">{filtered.map((entry) => <div className="log-row" key={entry.id}><time>{new Date(entry.occurredAt).toLocaleString(currentLocale())}</time><Badge tone={entry.severity === 'error' ? 'danger' : entry.severity === 'warn' ? 'warn' : 'neutral'}>{entry.severity.toUpperCase()}</Badge><span className="log-message">{entry.message}</span><span className="log-source">{entry.source}</span></div>)}</div> : <div className="local-console-empty"><ScrollText size={21} /><strong>No matching process output</strong><span>{entries.length ? 'Clear the search or change the level filter.' : 'Logs appear after a panel-owned server process starts.'}</span></div>}
-    <div className="logs-foot"><span>{filtered.length} of {entries.length} retained entries</span><span>Private local log history</span></div>
+    <div className="local-logs-session-row"><ConsoleSessionPicker sessions={history.sessions} sessionId={history.sessionId} onChange={history.setSessionId} /><LogFollowControls autoFollow={tail.autoFollow} newLines={tail.newLines} onToggle={() => { if (tail.autoFollow) { tail.setAutoFollow(false); tail.setNewLines(0) } else tail.jumpToLatest() }} onJump={tail.jumpToLatest} /></div>
+    {history.error && <div className="local-inline-error" role="status">{history.error}<Button icon={RefreshCw} onClick={() => void history.refreshSessions()}>Retry</Button></div>}
+    {olderError && <div className="local-inline-error" role="status">{olderError}</div>}
+    {history.olderThan !== null && <div className="logs-load-older"><Button kind="quiet" icon={ArrowDownToLine} disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? 'Loading…' : 'Load earlier lines'}</Button></div>}
+    {filtered.length ? <div className="logs-list" ref={tail.viewport} onScroll={tail.onScroll} role="log" aria-label="Local server process logs" aria-live="polite">{filtered.map((entry) => <div className="log-row" key={entry.id}><time>{new Date(entry.occurredAt).toLocaleString(currentLocale())}</time><Badge tone={entry.severity === 'error' ? 'danger' : entry.severity === 'warn' ? 'warn' : 'neutral'}>{entry.severity.toUpperCase()}</Badge><span className="log-message">{entry.message}</span><span className="log-source">{entry.source}</span></div>)}</div> : <div className="local-console-empty"><ScrollText size={21} /><strong>{history.entries.length ? 'No matching process output' : 'No process output in this session'}</strong><span>{history.entries.length ? 'Clear the search or change the level filter.' : 'Older sessions remain available here after a panel-owned server stops.'}</span></div>}
+    <div className="logs-foot"><span>{filtered.length} of {history.entries.length} loaded entries</span><span>{history.selected ? `${new Date(history.selected.startedAt).toLocaleString(currentLocale())} · ${sessionOutcomeLabel(history.selected.outcome)}` : 'Private local log history'}</span></div>
   </Card>
+}
+
+function SectionUnavailable({ title, text, logsHref }: { title: string; text: string; logsHref?: string }) {
+  return <Card className="section-unavailable"><div className="local-console-empty"><Shield size={20} /><strong>{title}</strong><span>{text}</span>{logsHref && <Link to={logsHref} className="text-link"><ScrollText size={14} /> View process history</Link>}</div></Card>
 }
 
 function LocalWorlds({ serverId, managed }: { serverId: string; managed: boolean }) {

@@ -10,6 +10,7 @@ import {
   serverMetadataUpdateSchema,
   serverInventorySchema,
   serverConsoleResponseSchema,
+  serverConsoleSessionsResponseSchema,
   serverRuntimeResultSchema,
   serverRuntimeSettingsResultSchema,
   serverAutomationResultSchema,
@@ -34,7 +35,7 @@ import {
   serverHistoryCalendarResultSchema,
   serverHistoryDayResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleEntry, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate } from '@mmsmanager/shared'
 import type { DashboardPlayerSummary, InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestResponse, reportSessionExpiry } from './client'
@@ -179,9 +180,17 @@ export async function downloadServerBackup(serverId: string, backupId: string): 
   return response.blob()
 }
 
-export async function getServerConsole(serverId: string, after = 0, signal?: AbortSignal): Promise<{ entries: ServerConsoleEntry[]; nextAfter: number | null }> {
-  const query = new URLSearchParams({ after: String(after), limit: '200' })
-  return request(`/api/v1/servers/${encodeURIComponent(serverId)}/console?${query}`, serverConsoleResponseSchema, { signal })
+export async function getServerConsoleSessions(serverId: string, signal?: AbortSignal): Promise<ServerConsoleSession[]> {
+  const response = await request(`/api/v1/servers/${encodeURIComponent(serverId)}/console/sessions`, serverConsoleSessionsResponseSchema, { signal })
+  return response.sessions
+}
+
+export async function getServerConsole(serverId: string, options: { after?: number; before?: number; sessionId?: string; limit?: number; signal?: AbortSignal } = {}): Promise<ServerConsoleResponse> {
+  const query = new URLSearchParams({ limit: String(options.limit ?? 200) })
+  if (options.after !== undefined) query.set('after', String(options.after))
+  if (options.before !== undefined) query.set('before', String(options.before))
+  if (options.sessionId) query.set('sessionId', options.sessionId)
+  return request(`/api/v1/servers/${encodeURIComponent(serverId)}/console?${query}`, serverConsoleResponseSchema, { signal: options.signal })
 }
 
 export async function startLocalServer(serverId: string): Promise<ServerRuntime> {

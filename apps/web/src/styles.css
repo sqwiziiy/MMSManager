@@ -1343,8 +1343,26 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 .local-console-toolbar > div > span:last-child { color: var(--text-muted); font-size: 8px; }
 .console-live-dot.idle { background: #777f75; box-shadow: none; }
 .local-console-output { height: min(58vh, 520px); min-height: 310px; }
+.local-console-output { overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .local-console-output .console-line { grid-template-columns: 67px 48px minmax(0, 1fr); }
 .local-console-output .console-line > span:last-child { overflow-wrap: anywhere; }
+.local-console-controls, .local-logs-session-row { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--line-quiet); }
+.local-logs-session-row { flex-wrap: wrap; }
+.console-session-picker { min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 9px; }
+.console-session-picker > svg { flex: 0 0 auto; color: #aab89a; }
+.console-session-picker select { min-width: 150px; max-width: min(390px, 48vw); min-height: 30px; padding: 0 26px 0 9px; color: var(--text-secondary); border: 1px solid var(--line); border-radius: 6px; background: #171b17; font: inherit; font-size: 9px; }
+.console-session-picker select:focus { outline: 2px solid #7b8c68; outline-offset: 1px; }
+.log-follow-controls { min-width: 0; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+.log-follow-controls .button { min-height: 29px; padding-right: 9px; padding-left: 9px; font-size: 9px; }
+.local-logs-card .logs-list { overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.logs-load-older { display: flex; justify-content: center; padding: 8px; border-bottom: 1px solid var(--line-quiet); }
+.logs-load-older .button { min-height: 30px; }
+.server-detail-tab-disabled { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; min-height: 31px; padding: 0 10px; color: var(--text-muted); border: 1px solid transparent; border-radius: 6px; font-size: 9px; opacity: .55; cursor: not-allowed; }
+.server-detail-tab-disabled.active { color: var(--text-secondary); border-color: var(--line); background: var(--surface-raised); opacity: .8; }
+.section-unavailable { max-width: 760px; }
+.section-unavailable .local-console-empty { min-height: 230px; }
+.section-unavailable .text-link { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); font-size: 10px; text-decoration: none; }
+.section-unavailable .text-link:hover { color: var(--text); }
 .local-command-row input:not(:disabled) { color: var(--text); }
 .local-command-row input:disabled { opacity: .65; }
 .local-console-side { display: flex; flex-direction: column; gap: 10px; }
@@ -1712,6 +1730,8 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
   .local-logs-card .logs-list { max-height: 55vh; }
   .local-logs-card .log-row { grid-template-columns: 98px auto minmax(0, 1fr); }
   .local-logs-card .log-source { display: none; }
+  .local-console-controls, .local-logs-session-row { align-items: flex-start; flex-direction: column; }
+  .log-follow-controls { justify-content: flex-start; }
 }
 @media (max-width: 520px) {
   .local-detail-facts, .local-properties-grid { grid-template-columns: minmax(0, 1fr); }
@@ -1740,9 +1760,12 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
   .local-properties-footer > div { justify-content: flex-end; }
   .local-logs-card .log-row { grid-template-columns: 84px auto minmax(0, 1fr); gap: 6px; padding-right: 9px; padding-left: 9px; }
   .local-logs-card .log-row time, .local-logs-card .log-message { font-size: 8px; }
+  .console-session-picker { width: 100%; }
+  .console-session-picker select { flex: 1; min-width: 0; max-width: none; }
+  .log-follow-controls { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .local-server-card-link .card, .property-toggle > span, .property-toggle > span::after { transition: none; }
+  .local-server-card-link .card, .property-toggle > span, .property-toggle > span::after, .log-follow-controls .button, .server-detail-tab-disabled { transition: none; }
 }
 
 /* Local authentication and persistent account pages */

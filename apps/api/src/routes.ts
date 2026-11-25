@@ -38,6 +38,7 @@ import {
   serverCommandSchema,
   serverConsoleQuerySchema,
   serverConsoleResponseSchema,
+  serverConsoleSessionsResponseSchema,
   serverRuntimeResultSchema,
   serverRuntimeSettingsResultSchema,
   serverRuntimeSettingsUpdateSchema,
@@ -746,7 +747,11 @@ export async function createApiApp(options: {
   app.get('/api/v1/servers/:serverId/console', { preHandler: requireAuth }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const query = parse(serverConsoleQuerySchema, request.query)
-    return serverConsoleResponseSchema.parse(await processes.console(params.serverId, query.after, query.limit))
+    return serverConsoleResponseSchema.parse(await processes.console(params.serverId, query.after ?? 0, query.limit, query.sessionId ?? null, query.before))
+  })
+  app.get('/api/v1/servers/:serverId/console/sessions', { preHandler: requireAuth }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverConsoleSessionsResponseSchema.parse({ sessions: await processes.consoleSessions(params.serverId) })
   })
   app.post('/api/v1/admin/servers/:serverId/start', { preHandler: requireAdminMutation }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)

@@ -5,12 +5,12 @@ import { spawn } from 'node:child_process'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
 import { dirname, join, resolve } from 'node:path'
-import { asc, desc, eq, gt, lt, and, sql } from 'drizzle-orm'
+import { asc, count, desc, eq, gt, isNull, lt, max, min, and, sql } from 'drizzle-orm'
 import type { FileHandle } from 'node:fs/promises'
 import type { AppDatabase } from '../db/client.js'
-import { localServerBackupRestores, localServerConsoleEntries, localServerEvents, localServerRuntime, localServers } from '../db/schema.js'
+import { localServerBackupRestores, localServerConsoleEntries, localServerEvents, localServerRuntime, localServerSessions, localServers } from '../db/schema.js'
 import { jvmOptionsSchema } from '@mmsmanager/shared'
-import type { ServerRuntime, ServerConsoleEntry, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult } from '@mmsmanager/shared'
+import type { ServerRuntime, ServerConsoleEntry, ServerConsoleSession, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
 import { isLoopbackPortAvailable } from './install.js'
 import { jvmArguments } from './runtime.js'
@@ -36,6 +36,7 @@ type LogSegment = { handle: FileHandle; index: number; size: number }
 type ManagedProcess = {
   child: ChildProcessWithoutNullStreams
   launchId: string
+  sessionId: string | null
   stopRequested: boolean
   spawnFailed: boolean
   abandoned: boolean
@@ -268,14 +269,75 @@ export class ServerProcessManager {
     }
   }
 
-  async console(serverId: string, after: number, limit: number): Promise<{ entries: ServerConsoleEntry[]; nextAfter: number | null }> {
+  async consoleSessions(serverId: string): Promise<ServerConsoleSession[]> {
     this.serverRow(serverId)
-    const rows = this.db.select().from(localServerConsoleEntries)
-      .where(and(eq(localServerConsoleEntries.serverId, serverId), gt(localServerConsoleEntries.id, after)))
-      .orderBy(asc(localServerConsoleEntries.id)).limit(limit + 1).all()
+    const rows = this.db.select({
+      id: localServerSessions.id,
+      startedAt: localServerSessions.startedAt,
+      endedAt: localServerSessions.endedAt,
+      outcome: localServerSessions.outcome,
+      entryCount: count(localServerConsoleEntries.id),
+      oldestEntryId: min(localServerConsoleEntries.id),
+      latestEntryId: max(localServerConsoleEntries.id),
+    }).from(localServerSessions).leftJoin(localServerConsoleEntries, eq(localServerConsoleEntries.sessionId, localServerSessions.id))
+      .where(eq(localServerSessions.serverId, serverId)).groupBy(localServerSessions.id)
+      .orderBy(desc(localServerSessions.startedAt)).limit(100).all()
+    const sessions: ServerConsoleSession[] = rows
+      .filter((row) => Number(row.entryCount) > 0 || row.endedAt === null)
+      .map((row) => ({
+        id: row.id,
+        startedAt: row.startedAt,
+        endedAt: row.endedAt,
+        outcome: row.outcome,
+        entryCount: Number(row.entryCount),
+        oldestEntryId: row.oldestEntryId === null ? null : Number(row.oldestEntryId),
+        latestEntryId: row.latestEntryId === null ? null : Number(row.latestEntryId),
+        live: row.endedAt === null && Boolean(this.children.get(serverId) && !this.children.get(serverId)?.abandoned),
+      }))
+    const legacy = this.db.select({
+      entryCount: count(localServerConsoleEntries.id),
+      startedAt: min(localServerConsoleEntries.occurredAt),
+      endedAt: max(localServerConsoleEntries.occurredAt),
+      oldestEntryId: min(localServerConsoleEntries.id),
+      latestEntryId: max(localServerConsoleEntries.id),
+    }).from(localServerConsoleEntries).where(and(
+      eq(localServerConsoleEntries.serverId, serverId), isNull(localServerConsoleEntries.sessionId),
+    )).get()
+    if (legacy && Number(legacy.entryCount) > 0 && legacy.startedAt && legacy.endedAt) {
+      sessions.push({
+        id: 'legacy', startedAt: legacy.startedAt, endedAt: legacy.endedAt, outcome: 'legacy',
+        entryCount: Number(legacy.entryCount), oldestEntryId: legacy.oldestEntryId === null ? null : Number(legacy.oldestEntryId),
+        latestEntryId: legacy.latestEntryId === null ? null : Number(legacy.latestEntryId), live: false,
+      })
+    }
+    return sessions.sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt)).slice(0, 101)
+  }
+
+  async console(serverId: string, after: number, limit: number, sessionId: string | null = null, before?: number): Promise<{ sessionId: string | null; entries: ServerConsoleEntry[]; nextAfter: number | null; olderThan: number | null }> {
+    this.serverRow(serverId)
+    if (sessionId && sessionId !== 'legacy') {
+      const session = this.db.select({ id: localServerSessions.id }).from(localServerSessions)
+        .where(and(eq(localServerSessions.serverId, serverId), eq(localServerSessions.id, sessionId))).get()
+      if (!session) throw new ServerProcessError('CONSOLE_SESSION_NOT_FOUND', 'The selected console session was not found for this server.')
+    }
+    const filters = [eq(localServerConsoleEntries.serverId, serverId)]
+    if (sessionId === 'legacy') filters.push(isNull(localServerConsoleEntries.sessionId))
+    else if (sessionId) filters.push(eq(localServerConsoleEntries.sessionId, sessionId))
+    if (before !== undefined) filters.push(lt(localServerConsoleEntries.id, before))
+    else if (after > 0) filters.push(gt(localServerConsoleEntries.id, after))
+    const descending = before !== undefined || after === 0
+    const rows = this.db.select().from(localServerConsoleEntries).where(and(...filters))
+      .orderBy(descending ? desc(localServerConsoleEntries.id) : asc(localServerConsoleEntries.id)).limit(limit + 1).all()
     const more = rows.length > limit
-    const entries = rows.slice(0, limit).map((row) => ({ id: row.id, occurredAt: row.occurredAt, source: row.source, severity: row.severity, message: row.message }))
-    return { entries, nextAfter: more ? entries.at(-1)?.id ?? null : null }
+    const selected = rows.slice(0, limit)
+    if (descending) selected.reverse()
+    const entries = selected.map((row) => ({ id: row.id, occurredAt: row.occurredAt, source: row.source, severity: row.severity, message: row.message }))
+    return {
+      sessionId,
+      entries,
+      nextAfter: before === undefined && after > 0 && more ? entries.at(-1)?.id ?? null : null,
+      olderThan: descending && more ? entries[0]?.id ?? null : null,
+    }
   }
 
   async players(serverId: string): Promise<ServerPlayerList> {
@@ -425,11 +487,11 @@ export class ServerProcessManager {
     const launchId = randomUUID()
     this.cpuSnapshots.delete(serverId)
     const at = new Date(this.now()).toISOString()
+    finishServerSession(this.db, serverId, at, 'interrupted')
     await this.writeRuntime(serverId, {
       status: 'starting', processPid: null, processStartMarker: null, processBootId: null,
       startedAt: at, updatedAt: at, lastExitCode: null, errorMessage: null,
     })
-    await this.addEntry(serverId, 'system', 'info', 'MMSManager is launching this panel-owned server process.')
     await this.event(serverId, actorUserId, 'server-start-requested', 'success', 'A panel-owned server process start was requested.')
 
     const args = jvmArguments({ minMemoryMb: server.minMemoryMb, maxMemoryMb: server.maxMemoryMb, jvmOptions: parsedJvmOptions.data }, server.jarName)
@@ -447,7 +509,7 @@ export class ServerProcessManager {
       throw new ServerProcessError('JAVA_SPAWN_FAILED', 'Java could not be started with the selected executable.')
     }
     const managed: ManagedProcess = {
-      child, launchId, stopRequested: false, spawnFailed: false, abandoned: false, rawLogCapNotified: false,
+      child, launchId, sessionId: null, stopRequested: false, spawnFailed: false, abandoned: false, rawLogCapNotified: false,
       closePromise: Promise.resolve(), spawnRecorded: Promise.resolve(), sampleTimer: null, stdoutDecoder: new StringDecoder('utf8'), stderrDecoder: new StringDecoder('utf8'),
       stdoutPending: '', stderrPending: '', segments: { stdout: null, stderr: null },
       writeQueues: { stdout: Promise.resolve(), stderr: Promise.resolve() },
@@ -458,7 +520,10 @@ export class ServerProcessManager {
     }, 60_000)
     managed.sampleTimer.unref()
     managed.closePromise = new Promise<void>((resolveClose) => {
-      child.once('spawn', () => { managed.spawnRecorded = this.recordSpawn(serverId, child.pid ?? null) })
+      child.once('spawn', () => {
+        this.beginConsoleSession(serverId, managed)
+        managed.spawnRecorded = this.recordSpawn(serverId, child.pid ?? null)
+      })
       child.stdout.on('data', (chunk: Buffer) => this.onOutput(serverId, managed, 'stdout', chunk))
       child.stderr.on('data', (chunk: Buffer) => this.onOutput(serverId, managed, 'stderr', chunk))
       child.once('error', () => {
@@ -476,7 +541,10 @@ export class ServerProcessManager {
         void this.finish(serverId, actorUserId, managed, code).finally(resolveClose)
       })
     })
-    if (child.pid) managed.spawnRecorded = this.recordSpawn(serverId, child.pid)
+    if (child.pid) {
+      this.beginConsoleSession(serverId, managed)
+      managed.spawnRecorded = this.recordSpawn(serverId, child.pid)
+    }
     const waiting = setTimeout(() => {
       const row = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
       if (row?.status === 'starting') {
@@ -509,7 +577,7 @@ export class ServerProcessManager {
     if (managed.stopRequested) return this.get(serverId)
     managed.stopRequested = true
     await this.updateRuntime(serverId, { status: 'stopping', errorMessage: null })
-    await this.addEntry(serverId, 'system', 'info', 'MMSManager sent the graceful stop command to its owned process.')
+    await this.addEntry(serverId, 'system', 'info', 'MMSManager sent the graceful stop command to its owned process.', new Date(this.now()).toISOString(), managed.sessionId)
     await this.event(serverId, actorUserId, 'server-stop-requested', 'success', 'A graceful stop was sent to the panel-owned process.')
     managed.child.stdin.write('stop\n', (error) => {
       if (error) void this.updateRuntime(serverId, { status: 'stopping', errorMessage: 'The stop request could not be written. No process was force-killed.' })
@@ -588,7 +656,7 @@ export class ServerProcessManager {
     const server = this.serverRow(serverId)
     this.requirePanelManaged(server)
     const managed = this.children.get(serverId)
-    if (!managed || this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()?.status !== 'running') {
+    if (!managed || !managed.sessionId || managed.stopRequested || this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()?.status !== 'running') {
       throw new ServerProcessError('PROCESS_NOT_RUNNING', 'Console commands are available only while this server is ready and panel-owned.')
     }
     const at = this.now()
@@ -600,7 +668,7 @@ export class ServerProcessManager {
     await new Promise<void>((resolveWrite, rejectWrite) => {
       managed.child.stdin.write(`${command}\n`, (error) => error ? rejectWrite(error) : resolveWrite())
     }).catch(() => { throw new ServerProcessError('COMMAND_WRITE_FAILED', 'The console command could not be written to the owned process.') })
-    await this.addEntry(serverId, 'command', 'info', `Command submitted (${command.length} characters; content not stored).`)
+    await this.addEntry(serverId, 'command', 'info', `Command submitted (${command.length} characters; content not stored).`, new Date(this.now()).toISOString(), managed.sessionId)
     await this.event(serverId, actorUserId, 'server-command-submitted', 'success', JSON.stringify({ length: command.length, sha256: commandHash }))
   }
 
@@ -679,6 +747,13 @@ export class ServerProcessManager {
     await this.updateRuntime(serverId, { processPid: pid, processStartMarker: marker, processBootId: this.bootId })
   }
 
+  private beginConsoleSession(serverId: string, managed: ManagedProcess): void {
+    if (managed.sessionId) return
+    managed.sessionId = startServerSession(this.db, serverId, new Date(this.now()).toISOString(), managed.launchId)
+    void this.addEntry(serverId, 'system', 'info', 'The panel-owned process session started.', new Date(this.now()).toISOString(), managed.sessionId)
+    void this.addEntry(serverId, 'system', 'info', 'MMSManager is launching this panel-owned server process.', new Date(this.now()).toISOString(), managed.sessionId)
+  }
+
   private onOutput(serverId: string, managed: ManagedProcess, stream: OutputStream, chunk: Buffer): void {
     if (managed.abandoned) return
     const queuedWrite = this.rawLogQueue.then(() => this.appendRaw(serverId, managed, stream, chunk))
@@ -701,14 +776,13 @@ export class ServerProcessManager {
   private receivedLine(serverId: string, managed: ManagedProcess, stream: OutputStream, line: string): void {
     const message = line.length > MAX_LINE_BYTES ? `${line.slice(0, MAX_LINE_BYTES)} [display truncated; raw log preserved]` : line
     const occurredAt = new Date(this.now()).toISOString()
-    void this.addEntry(serverId, stream, severityFor(message, stream), message, occurredAt).then((consoleEntryId) => {
+    void this.addEntry(serverId, stream, severityFor(message, stream), message, occurredAt, managed.sessionId).then((consoleEntryId) => {
       if (stream !== 'stdout' || this.children.get(serverId) !== managed) return
       const parsed = parseOwnedServerLogLine(line.slice(0, MAX_LINE_BYTES))
       if (!parsed) return
       recordStructuredServerEvent(this.db, {
         serverId, consoleEntryId, occurredAt, ...parsed, rawMessage: line.slice(0, 8192), source: 'owned-log',
       }, this.now)
-      if (parsed.eventType === 'server_ready') startServerSession(this.db, serverId, occurredAt, randomUUID())
     }).catch(() => undefined)
     if (stream === 'stdout' && this.children.get(serverId) === managed) {
       const pending = this.playerQueries.get(serverId)
@@ -723,7 +797,7 @@ export class ServerProcessManager {
     }
     if (stream === 'stdout' && !managed.stopRequested && /Done \([^)]*\)! For help/.test(line)) {
       void this.updateRuntime(serverId, { status: 'running', errorMessage: null, restartRequired: false })
-        .then(() => this.addEntry(serverId, 'system', 'info', 'Minecraft readiness was confirmed from the server output.'))
+        .then(() => this.addEntry(serverId, 'system', 'info', 'Minecraft readiness was confirmed from the server output.', new Date(this.now()).toISOString(), managed.sessionId))
         .then(() => this.event(serverId, null, 'server-ready', 'success', 'The panel-owned server reported Minecraft readiness.'))
         .then(() => this.get(serverId))
     }
@@ -785,7 +859,7 @@ export class ServerProcessManager {
       lastExitCode: code, errorMessage: status === 'crashed' ? `The server process exited unexpectedly with code ${code ?? 'unknown'}.` : null,
     })
     const occurredAt = new Date(this.now()).toISOString()
-    finishServerSession(this.db, serverId, occurredAt, status === 'crashed' ? 'crashed' : 'stopped')
+    finishServerSession(this.db, serverId, occurredAt, status === 'crashed' ? 'crashed' : status === 'error' ? 'interrupted' : 'stopped')
     recordStructuredServerEvent(this.db, {
       serverId, occurredAt, category: 'server', eventType: status === 'crashed' ? 'server_crashed' : 'server_stopped',
       description: status === 'crashed' ? 'The owned server process exited unexpectedly.' : 'The owned server process stopped.',
@@ -793,7 +867,7 @@ export class ServerProcessManager {
     }, this.now)
     const detail = JSON.stringify({ exitCode: code, stopRequested: managed.stopRequested })
     await this.event(serverId, actorUserId, status === 'crashed' ? 'server-crashed' : 'server-stopped', status === 'crashed' ? 'failure' : 'success', detail)
-    await this.addEntry(serverId, 'system', status === 'crashed' ? 'error' : 'info', status === 'crashed' ? `The server process exited unexpectedly (${code ?? 'unknown'}).` : 'The server process stopped.')
+    await this.addEntry(serverId, 'system', status === 'crashed' ? 'error' : 'info', status === 'crashed' ? `The server process exited unexpectedly (${code ?? 'unknown'}).` : 'The server process stopped.', occurredAt, managed.sessionId)
   }
 
   private async failStart(serverId: string, actorUserId: string, code: string, message: string): Promise<void> {
@@ -826,9 +900,9 @@ export class ServerProcessManager {
     this.db.update(localServerRuntime).set({ ...fields, updatedAt: at }).where(eq(localServerRuntime.serverId, serverId)).run()
   }
 
-  private async addEntry(serverId: string, source: 'stdout' | 'stderr' | 'system' | 'command', severity: 'info' | 'warn' | 'error' | 'debug', message: string, occurredAt = new Date(this.now()).toISOString()): Promise<number> {
+  private async addEntry(serverId: string, source: 'stdout' | 'stderr' | 'system' | 'command', severity: 'info' | 'warn' | 'error' | 'debug', message: string, occurredAt = new Date(this.now()).toISOString(), sessionId: string | null = null): Promise<number> {
     const result = this.db.insert(localServerConsoleEntries).values({
-      serverId, occurredAt, source, severity, message: message.slice(0, MAX_LINE_BYTES),
+      serverId, sessionId, occurredAt, source, severity, message: message.slice(0, MAX_LINE_BYTES),
     }).run()
     const latest = this.db.select({ id: localServerConsoleEntries.id }).from(localServerConsoleEntries)
       .where(eq(localServerConsoleEntries.serverId, serverId)).orderBy(desc(localServerConsoleEntries.id)).limit(1).offset(MAX_CONSOLE_ENTRIES - 1).get()

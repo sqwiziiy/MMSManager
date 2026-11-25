@@ -394,12 +394,14 @@ export const localServerRuntime = sqliteTable('local_server_runtime', {
 export const localServerConsoleEntries = sqliteTable('local_server_console_entries', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   serverId: text('server_id').notNull().references(() => localServers.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').references(() => localServerSessions.id, { onDelete: 'set null' }),
   occurredAt: text('occurred_at').notNull(),
   source: text('source', { enum: ['stdout', 'stderr', 'system', 'command'] }).notNull(),
   severity: text('severity', { enum: ['info', 'warn', 'error', 'debug'] }).notNull(),
   message: text('message').notNull(),
 }, (table) => [
   index('local_server_console_entries_order_idx').on(table.serverId, table.id),
+  index('local_server_console_entries_session_order_idx').on(table.sessionId, table.id),
   check('local_server_console_entries_source_check', sql`${table.source} IN ('stdout', 'stderr', 'system', 'command')`),
   check('local_server_console_entries_severity_check', sql`${table.severity} IN ('info', 'warn', 'error', 'debug')`),
 ])

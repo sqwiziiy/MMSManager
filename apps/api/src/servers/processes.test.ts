@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { eq } from 'drizzle-orm'
-import { users, localServers, localServerRuntime, localServerEvents, localServerStructuredEvents, localServerSessions, localServerResourceSamples } from '../db/schema.js'
+import { users, localServers, localServerRuntime, localServerConsoleEntries, localServerEvents, localServerStructuredEvents, localServerSessions, localServerResourceSamples } from '../db/schema.js'
 import { openDatabase } from '../db/client.js'
 import { ServerRegistry } from './registry.js'
 import { ServerProcessManager } from './processes.js'
@@ -116,11 +116,27 @@ done
 
   it('starts only a panel-created server, waits for readiness, forwards commands and stops gracefully', async () => {
     await expect(manager.start(importedId, userId)).rejects.toMatchObject({ code: 'SERVER_NOT_PANEL_MANAGED' })
+    const legacyAt = new Date(Date.now() - 86_400_000).toISOString()
+    await opened.db.insert(localServerConsoleEntries).values({ serverId: managedId, sessionId: null, occurredAt: legacyAt, source: 'system', severity: 'info', message: 'Legacy fixture output' })
     await opened.db.insert(localServerRuntime).values({ serverId: managedId, status: 'stopped', updatedAt: new Date().toISOString(), restartRequired: true }).run()
     const starting = await manager.start(managedId, userId)
     expect(starting).toMatchObject({ status: 'starting', restartRequired: true })
     const ready = await waitForStatus('running')
     expect(ready).toMatchObject({ ready: true, playersOnline: null, memoryRssBytes: expect.any(Number) })
+    const listedSessions = await manager.consoleSessions(managedId)
+    const firstConsoleSession = listedSessions.find((session) => session.live)!
+    expect(firstConsoleSession, JSON.stringify(listedSessions)).toMatchObject({ id: expect.any(String), outcome: 'running', live: true, entryCount: expect.any(Number) })
+    expect(listedSessions).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'legacy', outcome: 'legacy', live: false })]))
+    expect((await manager.console(managedId, 0, 200, 'legacy')).entries.map((entry) => entry.message)).toEqual(['Legacy fixture output'])
+    const firstSessionEntries = opened.db.select().from(localServerConsoleEntries).where(eq(localServerConsoleEntries.serverId, managedId)).all()
+    const linkedEntries = firstSessionEntries.filter((entry) => entry.sessionId === firstConsoleSession.id)
+    expect(linkedEntries.length).toBeGreaterThan(0)
+    expect(firstSessionEntries.some((entry) => entry.sessionId === null)).toBe(true)
+    expect(await manager.console(managedId, 0, 200, firstConsoleSession.id)).toMatchObject({ sessionId: firstConsoleSession.id, entries: expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining('Starting fixture') })]) })
+    const newestPage = await manager.console(managedId, 0, 1, firstConsoleSession.id)
+    expect(newestPage.olderThan).toBeTruthy()
+    const previousPage = await manager.console(managedId, 0, 1, firstConsoleSession.id, newestPage.olderThan!)
+    expect(previousPage.entries[0]!.id).toBeLessThan(newestPage.entries[0]!.id)
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 100))
     expect((await manager.get(managedId)).cpuPercent).toEqual(expect.any(Number))
     expect(await manager.players(importedId)).toMatchObject({ state: 'unavailable', names: [] })
@@ -158,10 +174,21 @@ done
     expect(opened.db.select().from(localServerSessions).where(eq(localServerSessions.serverId, managedId)).all()).toEqual([
       expect.objectContaining({ outcome: 'stopped', endedAt: expect.any(String), uptimeSeconds: expect.any(Number) }),
     ])
+    expect(await manager.consoleSessions(managedId)).toEqual(expect.arrayContaining([expect.objectContaining({ id: firstConsoleSession.id, outcome: 'stopped', live: false })]))
+    const endedEntries = await manager.console(managedId, 0, 200, firstConsoleSession.id)
+    expect(endedEntries.entries.at(-1)?.message).toBe('The server process stopped.')
+    await manager.start(managedId, userId)
+    await waitForStatus('running')
+    const restartedSessions = await manager.consoleSessions(managedId)
+    expect(restartedSessions).toHaveLength(3)
+    expect(restartedSessions[0]).toMatchObject({ outcome: 'running', live: true })
+    expect(restartedSessions[0]?.id).not.toBe(firstConsoleSession.id)
+    await manager.stop(managedId, userId)
+    await waitForStatus('stopped')
     expect(opened.db.select().from(localServerResourceSamples).where(eq(localServerResourceSamples.serverId, managedId)).all().length).toBeGreaterThan(0)
     const files = await readdir(join(temp, 'server-logs'))
-    expect(files.some((file) => file.endsWith('-stdout-000.log'))).toBe(true)
-    const stdoutLog = files.find((file) => file.endsWith('-stdout-000.log'))!
+    const stdoutLog = `${firstConsoleSession.id}-stdout-000.log`
+    expect(files).toContain(stdoutLog)
     const raw = await readFile(join(temp, 'server-logs', stdoutLog), 'utf8')
     expect(raw).toContain('[Server thread/INFO]: Done')
     expect(raw).toContain('say fixture-console-check')
