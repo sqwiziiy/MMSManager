@@ -621,19 +621,34 @@ export const serverPropertySettingsSchema = z.object({
   gameMode: z.enum(['survival', 'creative', 'adventure', 'spectator']),
   difficulty: z.enum(['peaceful', 'easy', 'normal', 'hard']),
   maxPlayers: z.number().int().min(1).max(500),
-  viewDistance: z.number().int().min(2).max(32),
-  simulationDistance: z.number().int().min(2).max(32),
+  viewDistance: z.number().int().min(3).max(32),
+  simulationDistance: z.number().int().min(3).max(32),
   spawnProtection: z.number().int().min(0).max(128),
   pvp: z.boolean(),
   whiteList: z.boolean(),
   allowNether: z.boolean(),
 }).strict()
 export const serverPropertiesUpdateSchema = serverPropertySettingsSchema.partial().strict().refine((value) => Object.keys(value).length > 0, 'At least one property change is required.')
-export const serverPropertiesUpdateRequestSchema = serverPropertySettingsSchema.partial().extend({ confirmOnlineModeChange: z.boolean().optional() }).strict().refine((value) => Object.keys(value).some((key) => key !== 'confirmOnlineModeChange'), 'At least one property change is required.')
+export const serverPropertiesUpdateRequestSchema = serverPropertySettingsSchema.partial().extend({
+  advancedProperties: z.record(z.string().min(1).max(80), z.string().max(8192)).optional(),
+  expectedSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  confirmOnlineModeChange: z.boolean().optional(),
+  confirmLevelNameChange: z.boolean().optional(),
+  confirmWorldGenerationChange: z.boolean().optional(),
+  confirmResourcePackChange: z.boolean().optional(),
+  confirmGamePortChange: z.boolean().optional(),
+}).strict().refine((value) => Object.keys(value).some((key) => !['advancedProperties', 'expectedSha256', 'confirmOnlineModeChange', 'confirmLevelNameChange', 'confirmWorldGenerationChange', 'confirmResourcePackChange', 'confirmGamePortChange'].includes(key)) || Object.keys(value.advancedProperties ?? {}).length > 0, 'At least one property change is required.')
 export const serverPropertiesBackupSchema = z.object({ id: z.string().uuid(), createdAt: z.string().datetime({ offset: true }), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
 export const serverPropertiesResponseSchema = z.object({
   settings: serverPropertySettingsSchema,
+  advancedProperties: z.record(z.string().min(1).max(80), z.string().max(8192)),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  serverVersion: z.string().min(1).max(32),
+  serverSoftware: serverSoftwareSchema,
+  presentKeys: z.array(z.string().max(80)).max(128),
   unknownKeys: z.array(z.string()).max(256),
+  protectedProperties: z.array(z.object({ key: z.string().max(80), reason: z.string().max(240), configured: z.boolean() }).strict()).max(24),
+  unsupportedKeys: z.array(z.string().max(80)).max(64),
   backups: z.array(serverPropertiesBackupSchema).max(20),
   restartRequired: z.boolean(),
 }).strict()
@@ -647,7 +662,7 @@ export const serverPropertiesRestorePreviewSchema = z.object({
   running: z.boolean(),
   restartRequiredAfterRestore: z.boolean(),
   otherContentDiffers: z.boolean(),
-  changedSettings: z.array(z.object({ key: z.string().max(80), current: z.string().max(160), restored: z.string().max(160) }).strict()).max(32),
+  changedSettings: z.array(z.object({ key: z.string().max(80), current: z.string().max(160), restored: z.string().max(160) }).strict()).max(64),
 }).strict()
 export const serverPropertiesRestorePreviewResultSchema = z.object({ preview: serverPropertiesRestorePreviewSchema }).strict()
 export const serverPropertiesRestoreRequestSchema = z.object({ expectedCurrentSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
@@ -1027,3 +1042,5 @@ export type ServerHistoryPoint = z.infer<typeof serverHistoryPointSchema>
 export type ServerHistoryEvent = z.infer<typeof serverHistoryEventSchema>
 export type ServerHistorySession = z.infer<typeof serverHistorySessionSchema>
 export type ServerHistoryDay = z.infer<typeof serverHistoryDaySchema>
+export { compareMinecraftVersions, serverPropertyAvailable, serverPropertiesCatalog } from './server-properties-catalog.js'
+export type { ServerPropertyCatalogEntry, ServerPropertyCatalogKey, ServerPropertyCategory, ServerPropertyKind, ServerPropertySoftware } from './server-properties-catalog.js'

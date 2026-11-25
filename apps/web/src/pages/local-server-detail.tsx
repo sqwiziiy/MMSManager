@@ -7,10 +7,10 @@ import {
   Search, Send, Server, Settings2, Shield, Square, Terminal, Trash2, Upload, Users, Wifi,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
-import type { LocalServerSummary, ServerConsoleEntry, ServerModEntry, ServerModsInventory, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertySettings, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds } from '@mmsmanager/shared'
+import type { LocalServerSummary, ServerConsoleEntry, ServerModEntry, ServerModsInventory, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds } from '@mmsmanager/shared'
 import {
-  confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getServerConsole, getServerProperties, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, previewServerPropertiesRestore, restoreServerFileRecovery, restoreServerProperties, restoreTrashedServerFile, sendPlayerAction,
-  sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer, updateServerProperties,
+  confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getServerConsole, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, restoreServerFileRecovery, restoreTrashedServerFile, sendPlayerAction,
+  sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer,
   getServerMods, uploadServerMod, uploadServerFiles, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
 } from '../api/servers'
 import type { ServerFileUploadRequest } from '../api/servers'
@@ -20,6 +20,7 @@ import { Badge, Button, Card, ComingSoon, SectionHeading } from '../components/u
 import { LocalServerBackups } from './local-server-backups'
 import { LocalServerRuntime } from './local-server-runtime'
 import { LocalServerAutomation } from './local-server-automation'
+import { ServerPropertiesEditor } from './server-properties-editor'
 
 const tabs = [
   { id: 'overview', label: 'Overview', icon: Activity },
@@ -34,20 +35,6 @@ const tabs = [
   { id: 'backups', label: 'Backups', icon: HardDrive },
   { id: 'automation', label: 'Automation', icon: Clock3 },
   { id: 'access', label: 'Access', icon: Shield },
-]
-
-const propertyFields: { key: keyof ServerPropertySettings; label: string; kind: 'text' | 'number' | 'select' | 'switch'; options?: string[]; min?: number; max?: number; suffix?: string }[] = [
-  { key: 'onlineMode', label: 'Online mode', kind: 'switch' },
-  { key: 'motd', label: 'Message of the day', kind: 'text' },
-  { key: 'gameMode', label: 'Default game mode', kind: 'select', options: ['survival', 'creative', 'adventure', 'spectator'] },
-  { key: 'difficulty', label: 'Difficulty', kind: 'select', options: ['peaceful', 'easy', 'normal', 'hard'] },
-  { key: 'maxPlayers', label: 'Player limit', kind: 'number', min: 1, max: 500, suffix: 'players' },
-  { key: 'viewDistance', label: 'View distance', kind: 'number', min: 2, max: 32, suffix: 'chunks' },
-  { key: 'simulationDistance', label: 'Simulation distance', kind: 'number', min: 2, max: 32, suffix: 'chunks' },
-  { key: 'spawnProtection', label: 'Spawn protection', kind: 'number', min: 0, max: 128, suffix: 'blocks' },
-  { key: 'pvp', label: 'Player versus player', kind: 'switch' },
-  { key: 'whiteList', label: 'Whitelist', kind: 'switch' },
-  { key: 'allowNether', label: 'Nether dimension', kind: 'switch' },
 ]
 
 export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
@@ -160,7 +147,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     {section === 'mods' && <LocalMods serverId={server.id} software={server.software} managed={isManaged} isAdmin={isAdmin} runtimeStatus={status} />}
     {section === 'console' && <LocalConsole serverId={server.id} runtime={runtime} isAdmin={isAdmin} />}
     {section === 'logs' && <LocalLogs serverId={server.id} />}
-    {section === 'properties' && isAdmin && <LocalProperties serverId={server.id} managed={isManaged} runtimeStatus={runtime?.status ?? 'unavailable'} />}
+    {section === 'properties' && isAdmin && <ServerPropertiesEditor serverId={server.id} managed={isManaged} runtimeStatus={runtime?.status ?? 'unavailable'} serverPort={server.port} />}
     {section === 'properties' && !isAdmin && <LockedDetail title="Administrator access required" text="Server properties are visible only to workspace administrators." />}
     {section === 'files' && isAdmin && <LocalFiles serverId={server.id} managed={isManaged} runtimeStatus={status} />}
     {section === 'files' && !isAdmin && <LockedDetail title="Administrator access required" text="Server files may contain credentials or private world data. Access is limited to workspace administrators." />}
@@ -362,85 +349,6 @@ function LocalLogs({ serverId }: { serverId: string }) {
     {filtered.length ? <div className="logs-list">{filtered.map((entry) => <div className="log-row" key={entry.id}><time>{new Date(entry.occurredAt).toLocaleString(currentLocale())}</time><Badge tone={entry.severity === 'error' ? 'danger' : entry.severity === 'warn' ? 'warn' : 'neutral'}>{entry.severity.toUpperCase()}</Badge><span className="log-message">{entry.message}</span><span className="log-source">{entry.source}</span></div>)}</div> : <div className="local-console-empty"><ScrollText size={21} /><strong>No matching process output</strong><span>{entries.length ? 'Clear the search or change the level filter.' : 'Logs appear after a panel-owned server process starts.'}</span></div>}
     <div className="logs-foot"><span>{filtered.length} of {entries.length} retained entries</span><span>Private local log history</span></div>
   </Card>
-}
-
-function LocalProperties({ serverId, managed, runtimeStatus }: { serverId: string; managed: boolean; runtimeStatus: string }) {
-  const [properties, setProperties] = useState<ServerPropertiesResponse | null>(null)
-  const [draft, setDraft] = useState<ServerPropertySettings | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
-  const [confirmOnlineMode, setConfirmOnlineMode] = useState(false)
-  const [restorePreview, setRestorePreview] = useState<ServerPropertiesRestorePreview | null>(null)
-  const [restoreBusy, setRestoreBusy] = useState(false)
-  const [restoreError, setRestoreError] = useState<string | null>(null)
-  const [restoreNotice, setRestoreNotice] = useState<string | null>(null)
-  const reload = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const result = await getServerProperties(serverId, signal)
-      setProperties(result)
-      setDraft(result.settings)
-      setError(null)
-    } catch (issue) {
-      if (!(issue instanceof DOMException && issue.name === 'AbortError')) setError(issue instanceof Error ? issue.message : 'Properties could not be loaded.')
-    } finally { setLoading(false) }
-  }, [serverId])
-  useEffect(() => { const controller = new AbortController(); void reload(controller.signal); return () => controller.abort() }, [reload])
-  const dirty = useMemo(() => Boolean(properties && draft && JSON.stringify(properties.settings) !== JSON.stringify(draft)), [draft, properties])
-  const onlineModeChanged = Boolean(properties && draft && properties.settings.onlineMode !== draft.onlineMode)
-  const onlineModeStopped = runtimeStatus === 'stopped'
-  function setValue(key: keyof ServerPropertySettings, value: string | number | boolean) {
-    setDraft((current) => current ? { ...current, [key]: value } as ServerPropertySettings : current)
-    if (key === 'onlineMode') setConfirmOnlineMode(false)
-    setSaved(false)
-  }
-  async function save(event: FormEvent) {
-    event.preventDefault()
-    if (!draft || !properties || !dirty) return
-    setSaving(true); setError(null); setSaved(false)
-    const changes = Object.fromEntries(Object.entries(draft).filter(([key, value]) => properties.settings[key as keyof ServerPropertySettings] !== value)) as Partial<ServerPropertySettings>
-    try {
-      const result = await updateServerProperties(serverId, changes, onlineModeChanged && confirmOnlineMode)
-      setProperties(result); setDraft(result.settings); setSaved(true); setConfirmOnlineMode(false)
-    } catch (issue) { setError(issue instanceof Error ? issue.message : 'Properties could not be saved.') }
-    finally { setSaving(false) }
-  }
-  async function previewBackup(backupId: string) {
-    setRestoreError(null); setRestoreNotice(null)
-    try { setRestorePreview(await previewServerPropertiesRestore(serverId, backupId)) }
-    catch (issue) { setRestoreError(issue instanceof Error ? issue.message : 'The recovery preview could not be loaded.') }
-  }
-  async function restoreBackup() {
-    if (!restorePreview?.checksumValid) return
-    setRestoreBusy(true); setRestoreError(null)
-    try {
-      const result = await restoreServerProperties(serverId, restorePreview.backupId, restorePreview.currentSha256)
-      setProperties(result.properties); setDraft(result.properties.settings)
-      setRestoreNotice(result.recoveryBackupId ? 'Properties restored. A recovery copy of the previous file was created.' : 'The selected version already matches the current settings.')
-      setRestorePreview(null)
-    } catch (issue) { setRestoreError(issue instanceof Error ? issue.message : 'The selected properties version could not be restored.') }
-    finally { setRestoreBusy(false) }
-  }
-  if (!managed) return <LockedDetail title="Read only folder" text="Only a new server created by MMSManager can have managed properties. Imported folders are never edited." />
-  if (loading) return <div className="local-properties-loading"><span className="loading-pulse" /> Reading the managed server.properties file…</div>
-  if (!draft || !properties) return <Card className="local-properties-card"><div className="empty-list"><AlertTriangle size={20} /><strong>Properties unavailable</strong><span>{error ?? 'A safe managed properties file was not found.'}</span><Button icon={RefreshCw} onClick={() => void reload()}>Retry</Button></div></Card>
-  return <div className="local-properties-layout"><Card className="local-properties-card"><div className="local-properties-header"><div><div className="card-kicker"><Settings2 size={15} /> Safe editor</div><h3>Server properties</h3><p>Comments and unsupported keys are kept as they are.</p></div><Badge tone="good">Managed file</Badge></div>
-    {error && <div className="local-inline-error" role="status">{error}</div>}{saved && <div className="local-saved-note" role="status"><Check size={15} /> Saved with a recovery copy.</div>}{restoreError && <div className="local-inline-error" role="status">{restoreError}</div>}{restoreNotice && <div className="local-saved-note" role="status"><Check size={15} /> {restoreNotice}</div>}
-    <form onSubmit={(event) => void save(event)}><div className="local-properties-grid">{propertyFields.map((item) => <div className="field" key={item.key}><span className="field-label">{item.label}</span>
-      {item.kind === 'text' && <input aria-label={item.label} value={String(draft[item.key])} maxLength={120} onChange={(event) => setValue(item.key, event.target.value)} />}
-      {item.kind === 'number' && <div className="property-number-input"><input aria-label={item.label} type="number" value={Number(draft[item.key])} min={item.min} max={item.max} onChange={(event) => setValue(item.key, event.target.value === '' ? item.min ?? 0 : Number(event.target.value))} /><span>{item.suffix}</span></div>}
-      {item.kind === 'select' && <select aria-label={item.label} value={String(draft[item.key])} onChange={(event) => setValue(item.key, event.target.value)}>{item.options?.map((option) => <option key={option} value={option}>{capitalize(option)}</option>)}</select>}
-      {item.kind === 'switch' && <label className="property-toggle"><input type="checkbox" aria-label={item.label} checked={Boolean(draft[item.key])} disabled={item.key === 'onlineMode' && !onlineModeStopped} onChange={(event) => setValue(item.key, event.target.checked)} /><span /><strong>{draft[item.key] ? 'Enabled' : 'Disabled'}</strong></label>}
-      {item.suffix || item.key === 'motd' || item.key === 'onlineMode' ? <span className="field-hint">{item.suffix ? `${item.min}–${item.max} ${item.suffix}` : item.key === 'motd' ? 'Up to 120 characters' : 'Changes require a stopped server.'}</span> : null}
-    </div>)}</div>
-    {onlineModeChanged && <div className="online-mode-confirmation" role="group" aria-labelledby="online-mode-change-title"><div><AlertTriangle size={16} /><div><strong id="online-mode-change-title">Online-mode change</strong><p>Current: {properties.settings.onlineMode ? 'Enabled' : 'Disabled'} · Pending: {draft.onlineMode ? 'Enabled' : 'Disabled'}. Changing this may create different player UUIDs and separate existing inventories, advancements and permissions from those identities. Disabling it weakens Minecraft account verification. No player data is migrated, and this does not change MMSManager sign-in.</p>{!onlineModeStopped && <small>The server must be confirmed stopped before this setting can change.</small>}</div></div><label><input type="checkbox" checked={confirmOnlineMode} disabled={!onlineModeStopped} onChange={(event) => setConfirmOnlineMode(event.target.checked)} /> I understand and confirm this change</label></div>}
-    <div className="local-properties-footer"><span>{dirty ? 'Unsaved changes' : 'All changes are saved'}</span><div><Button type="button" disabled={!dirty || saving} onClick={() => { setDraft(properties.settings); setConfirmOnlineMode(false) }}>Discard</Button><Button kind="primary" icon={saving ? RefreshCw : Check} disabled={!dirty || saving || (onlineModeChanged && (!onlineModeStopped || !confirmOnlineMode))} type="submit">{saving ? 'Saving…' : 'Save properties'}</Button></div></div></form>
-  </Card><div className="local-properties-side">
-    {properties.restartRequired && <div className="local-restart-banner"><RefreshCw size={16} /><span><strong>Restart required</strong><small>Changes will be applied at the next server start.</small></span></div>}
-    <Card><SectionHeading title="Other properties" /><div className="local-unknown-setting"><strong>{properties.unknownKeys.length} unedited properties</strong><span>{properties.unknownKeys.length ? properties.unknownKeys.slice(0, 12).join(' · ') : 'None'}{properties.unknownKeys.length > 12 ? ' …' : ''}</span></div></Card>
-    <Card><SectionHeading title="Recovery copies" description="Private snapshots made before each property change." /><div className="local-backup-list">{properties.backups.length ? properties.backups.map((backup) => <div key={backup.id}><span className="local-backup-icon"><Archive size={15} /></span><span><strong>{new Date(backup.createdAt).toLocaleString(currentLocale())}</strong><small>SHA-256 {backup.sha256.slice(0, 12)}…</small></span><Button icon={RotateCcw} onClick={() => void previewBackup(backup.id)}>Preview restore</Button></div>) : <span className="local-no-backups">No property changes saved yet.</span>}</div><p className="data-note">Preview compares supported settings. Secrets and unrecognized values are never shown.</p></Card>
-  </div>{restorePreview && <div className="local-file-dialog-backdrop"><section className="local-file-dialog" role="dialog" aria-modal="true" aria-labelledby="property-restore-title"><div className="local-file-dialog-heading"><span className="local-backup-icon"><RotateCcw size={16} /></span><div><h3 id="property-restore-title">Restore properties</h3><p>Recovery copy from {new Date(restorePreview.createdAt).toLocaleString(currentLocale())}</p></div></div>{!restorePreview.checksumValid ? <div className="local-inline-error">This recovery copy failed checksum validation. It cannot be restored.</div> : restorePreview.changedSettings.length ? <div className="local-property-diff"><div className="local-property-diff-head"><span>Setting</span><span>Current</span><span>Restored</span></div>{restorePreview.changedSettings.map((change) => <div key={change.key}><strong>{change.key}</strong><span>{change.current}</span><span>{change.restored}</span></div>)}</div> : <div className="local-files-empty">No supported setting values differ.</div>}{restorePreview.otherContentDiffers && <p className="data-note">Comments and unrecognized properties also differ. Their values stay hidden in this preview and will be restored exactly.</p>}{restorePreview.running && <div className="local-file-warning"><RefreshCw size={15} /> The server is running. Restored values apply after its next restart.</div>}{restorePreview.restartRequiredAfterRestore && !restorePreview.running && <div className="local-file-warning"><RefreshCw size={15} /> A restart is already required. Restoring settings will keep that state.</div>}<div className="local-file-dialog-actions"><Button disabled={restoreBusy} onClick={() => setRestorePreview(null)}>Cancel</Button><Button kind="primary" icon={restoreBusy ? RefreshCw : RotateCcw} disabled={restoreBusy || !restorePreview.checksumValid || (restorePreview.changedSettings.length === 0 && !restorePreview.otherContentDiffers)} onClick={() => void restoreBackup()}>{restoreBusy ? 'Restoring…' : 'Restore this version'}</Button></div></section></div>}</div>
 }
 
 function LocalWorlds({ serverId, managed }: { serverId: string; managed: boolean }) {

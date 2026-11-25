@@ -824,8 +824,10 @@ export async function createApiApp(options: {
   app.patch('/api/v1/admin/servers/:serverId/properties', { preHandler: requireAdminMutation }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverPropertiesUpdateRequestSchema, request.body)
-    const { confirmOnlineModeChange, ...update } = input
-    return serverPropertiesResultSchema.parse({ properties: await properties.update(params.serverId, request.principal!.userId, update, { confirmOnlineModeChange }) })
+    const { expectedSha256, advancedProperties, confirmOnlineModeChange, confirmLevelNameChange, confirmWorldGenerationChange, confirmResourcePackChange, confirmGamePortChange, ...update } = input
+    return serverPropertiesResultSchema.parse({ properties: await properties.update(params.serverId, request.principal!.userId, update, {
+      expectedSha256, advancedProperties, confirmOnlineModeChange, confirmLevelNameChange, confirmWorldGenerationChange, confirmResourcePackChange, confirmGamePortChange,
+    }) })
   })
   app.get('/api/v1/admin/servers/:serverId/properties/backups/:backupId/preview', { preHandler: requireAdmin }, async (request) => {
     const params = parse(serverPropertiesBackupIdParamSchema, request.params)

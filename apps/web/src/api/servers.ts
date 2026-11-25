@@ -215,8 +215,24 @@ export async function getServerProperties(serverId: string, signal?: AbortSignal
   return response.properties
 }
 
-export async function updateServerProperties(serverId: string, update: ServerPropertiesUpdate, confirmOnlineModeChange = false): Promise<ServerPropertiesResponse> {
-  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/properties`, serverPropertiesResultSchema, { method: 'PATCH', body: JSON.stringify({ ...update, confirmOnlineModeChange }) })
+export type ServerPropertiesConfirmations = {
+  confirmOnlineModeChange?: boolean
+  confirmLevelNameChange?: boolean
+  confirmWorldGenerationChange?: boolean
+  confirmResourcePackChange?: boolean
+  confirmGamePortChange?: boolean
+}
+
+export async function updateServerProperties(
+  serverId: string,
+  update: ServerPropertiesUpdate,
+  expectedSha256: string,
+  advancedProperties: Record<string, string> = {},
+  confirmations: ServerPropertiesConfirmations = {},
+): Promise<ServerPropertiesResponse> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/properties`, serverPropertiesResultSchema, {
+    method: 'PATCH', body: JSON.stringify({ ...update, advancedProperties, expectedSha256, ...confirmations }),
+  })
   return response.properties
 }
 

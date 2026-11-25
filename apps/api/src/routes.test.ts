@@ -497,16 +497,25 @@ describe('authenticated local API', () => {
     const properties = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders })
     expect(properties.statusCode).toBe(200)
     expect(properties.json().properties.settings.motd).toBe('Before')
-    expect(properties.json().properties.unknownKeys).toContain('server-ip')
+    expect(properties.json().properties).toMatchObject({ serverVersion: '1.21.4', serverSoftware: 'vanilla', sha256: expect.any(String) })
+    expect(properties.json().properties.protectedProperties).toContainEqual(expect.objectContaining({ key: 'server-ip', configured: true }))
     expect(properties.json().properties.unknownKeys).toContain('unknown-option')
 
     const missingCsrf = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: { motd: 'Blocked' } })
     expect(missingCsrf.statusCode).toBe(403)
-    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { motd: 'After', maxPlayers: 32 } })
+    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { motd: 'After', maxPlayers: 32, expectedSha256: properties.json().properties.sha256 } })
     expect(updated.statusCode).toBe(200)
     expect(updated.json().properties.settings).toMatchObject({ motd: 'After', maxPlayers: 32 })
     expect(updated.json().properties.backups).toHaveLength(1)
     expect(await readFile(join(managedDirectory, 'server.properties'), 'utf8')).toContain('server-ip=127.0.0.1')
+    const advancedUpdate = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: {
+      expectedSha256: updated.json().properties.sha256,
+      advancedProperties: { 'allow-flight': 'false', hardcore: 'false', 'rate-limit': '0' },
+    } })
+    expect(advancedUpdate.statusCode).toBe(200)
+    expect(advancedUpdate.json().properties.advancedProperties).toMatchObject({ 'allow-flight': 'false', hardcore: 'false', 'rate-limit': '0' })
+    expect(advancedUpdate.json().properties.backups).toHaveLength(2)
+    expect(await readFile(join(managedDirectory, 'server.properties'), 'utf8')).toContain('rate-limit=0')
 
     const fileInventory = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${id}/files`, headers: adminHeaders })
     expect(fileInventory.statusCode).toBe(200)
@@ -563,18 +572,20 @@ describe('authenticated local API', () => {
     const restoredProperties = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/properties/backups/${backupId}/restore`, headers: adminHeaders, payload: { expectedCurrentSha256: restorePreview.json().preview.currentSha256 } })
     expect(restoredProperties.statusCode).toBe(200)
     expect(restoredProperties.json()).toMatchObject({ properties: { settings: { motd: 'Before' } }, recoveryBackupId: expect.any(String) })
-    const onlineModeConfirmationMissing = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { onlineMode: false } })
+    let propertiesHash = restoredProperties.json().properties.sha256 as string
+    const onlineModeConfirmationMissing = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { onlineMode: false, expectedSha256: propertiesHash } })
     expect(onlineModeConfirmationMissing.statusCode).toBe(409)
     expect(onlineModeConfirmationMissing.json()).toMatchObject({ error: { code: 'ONLINE_MODE_CONFIRMATION_REQUIRED' } })
     await opened.db.update(localServerRuntime).set({ status: 'running', updatedAt: now }).where(eq(localServerRuntime.serverId, id)).run()
-    const onlineModeRunning = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { onlineMode: false, confirmOnlineModeChange: true } })
+    const onlineModeRunning = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { onlineMode: false, confirmOnlineModeChange: true, expectedSha256: propertiesHash } })
     expect(onlineModeRunning.statusCode).toBe(409)
     expect(onlineModeRunning.json()).toMatchObject({ error: { code: 'ONLINE_MODE_REQUIRES_STOPPED' } })
     await opened.db.update(localServerRuntime).set({ status: 'stopped', updatedAt: now }).where(eq(localServerRuntime.serverId, id)).run()
-    const onlineModeSaved = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { onlineMode: false, confirmOnlineModeChange: true } })
+    const onlineModeSaved = await app.inject({ method: 'PATCH', url: `/api/v1/admin/servers/${id}/properties`, headers: adminHeaders, payload: { onlineMode: false, confirmOnlineModeChange: true, expectedSha256: propertiesHash } })
     expect(onlineModeSaved.statusCode).toBe(200)
     expect(onlineModeSaved.json().properties.settings.onlineMode).toBe(false)
     expect(await readFile(join(managedDirectory, 'server.properties'), 'utf8')).toContain('online-mode=false')
+    propertiesHash = onlineModeSaved.json().properties.sha256 as string
 
     const unauthenticated = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/start`, headers: { ...requestHeaders, 'content-type': 'application/json' }, payload: {} })
     expect(unauthenticated.statusCode).toBe(401)

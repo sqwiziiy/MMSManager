@@ -79,6 +79,8 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   const now = new Date().toISOString()
   const server = { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus }
   let settings = { onlineMode: true, motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
+  let advancedProperties: Record<string, string> = { 'server-port': '25565', 'allow-flight': 'false' }
+  let propertyHash = 'c'.repeat(64)
   let restartRequired = false
   let runtimeSettings = {
     serverId, javaPath: '/tmp/mmsmanager-e2e-java-21', javaMajor: 21, requiredJavaMajor: 21,
@@ -93,7 +95,12 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
     lastError: 'The API was unavailable past the catch-up window. No backup was run.', unacknowledgedCount: 1,
     jobs: [{ id: missedJobId, kind: 'backup' as const, scheduledFor: now, status: 'missed' as const, startedAt: null, finishedAt: now, backupId: null, errorMessage: 'The API was unavailable past the catch-up window. No backup was run.', acknowledgedAt: null, createdAt: now }],
   }
-  const properties = () => ({ settings, unknownKeys: ['online-mode', 'server-ip', 'level-seed'], backups: restartRequired ? [{ id: backupId, createdAt: now, sha256: 'a'.repeat(64) }] : [], restartRequired })
+  const properties = () => ({
+    settings, advancedProperties, sha256: propertyHash, serverVersion: server.version, serverSoftware: server.software,
+    presentKeys: ['online-mode', 'motd', 'gamemode', 'difficulty', 'max-players', 'view-distance', 'simulation-distance', 'spawn-protection', 'pvp', 'white-list', 'allow-nether', ...Object.keys(advancedProperties), 'server-ip'],
+    unknownKeys: ['custom.fixture-key'], protectedProperties: [{ key: 'server-ip', reason: 'The panel keeps server binding settings separate from the local web interface.', configured: true }],
+    unsupportedKeys: [], backups: restartRequired ? [{ id: backupId, createdAt: now, sha256: 'a'.repeat(64) }] : [], restartRequired,
+  })
   const consoleResponse = { entries: [
     { id: 1, occurredAt: now, source: 'system', severity: 'info', message: 'MMSManager launched this local process.' },
     { id: 2, occurredAt: now, source: 'stdout', severity: 'info', message: 'Done (1.2s)! For help, type "help"' },
@@ -170,9 +177,10 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   })
   await page.route(`**/api/v1/admin/servers/${serverId}/properties`, async (route) => {
     if (route.request().method() === 'PATCH') {
-      const input = route.request().postDataJSON() as Partial<typeof settings> & { confirmOnlineModeChange?: boolean }
-      const changes = Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'confirmOnlineModeChange')) as Partial<typeof settings>
-      settings = { ...settings, ...changes }
+      const input = route.request().postDataJSON() as Partial<typeof settings> & { advancedProperties?: Record<string, string> }
+      settings = { ...settings, ...Object.fromEntries(Object.entries(input).filter(([key]) => key in settings)) }
+      advancedProperties = { ...advancedProperties, ...(input.advancedProperties ?? {}) }
+      propertyHash = 'd'.repeat(64)
       restartRequired = true
     }
     return route.fulfill({ json: { properties: properties() } })
@@ -183,6 +191,7 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   } } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/properties/backups/${backupId}/restore`, async (route) => {
     settings = { ...settings, motd: 'A previous fixture message' }
+    propertyHash = 'e'.repeat(64)
     restartRequired = true
     return route.fulfill({ json: { properties: properties(), recoveryBackupId: 'd03c1cf8-e2a1-4a4e-9de4-4536c7796091' } })
   })
@@ -546,11 +555,21 @@ test('local server overview, console and visual properties use mocked API data',
 
   await page.getByRole('link', { name: 'Properties' }).click()
   await expect(page.getByRole('heading', { name: 'Server properties', level: 3 })).toBeVisible()
-  await expect(page.getByText('3 unedited properties')).toBeVisible()
+  await expect(page.getByText('Unrecognized keys', { exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Basic properties' })).toBeVisible()
   await page.getByLabel('Message of the day').fill('Changed in browser fixture')
+  await page.getByRole('tab', { name: 'Advanced properties' }).click()
+  await expect(page.getByText('Operator command level', { exact: true })).toBeVisible()
+  const hardcoreToggle = page.getByRole('checkbox', { name: /Hardcore/ })
+  await page.locator('label.property-toggle').filter({ has: hardcoreToggle }).click()
   await page.getByRole('button', { name: 'Save properties' }).click()
   await expect(page.getByText('Saved with a recovery copy.')).toBeVisible()
   await expect(page.getByText('Restart required').first()).toBeVisible()
+  await expect(hardcoreToggle).toBeChecked()
+  await expect(page.getByText('Saved in file').first()).toBeVisible()
+  await page.screenshot({ path: screenshotPath('stage-06hr-properties-advanced-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.getByRole('tab', { name: 'Basic properties' }).click()
+  await expect(page.getByLabel('Message of the day')).toHaveValue('Changed in browser fixture')
   await page.getByRole('button', { name: 'Preview restore' }).click()
   const propertyRestore = page.getByRole('dialog', { name: 'Restore properties' })
   await expect(propertyRestore.getByText('A previous fixture message')).toBeVisible()
@@ -558,6 +577,11 @@ test('local server overview, console and visual properties use mocked API data',
   await propertyRestore.getByRole('button', { name: 'Restore this version' }).click()
   await expect(page.getByLabel('Message of the day')).toHaveValue('A previous fixture message')
   await page.screenshot({ path: screenshotPath('stage-04d-properties-desktop.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('tab', { name: 'Advanced properties' }).click()
+  await expect(hardcoreToggle).toBeChecked()
+  await expectNoHorizontalOverflow(page, 'advanced properties mobile')
+  await page.screenshot({ path: screenshotPath('stage-06hr-properties-advanced-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('R3 sidebar preference survives rapid toggles, keyboard, navigation and reload', async ({ page }) => {
@@ -1058,17 +1082,22 @@ test('online-mode edits require stopped state and an explicit confirmation', asy
   const { serverId } = await mockLocalServer(page, 'stopped')
   let propertyUpdate: Record<string, unknown> | null = null
   let onlineModeEnabled = true
+  let propertyHash = 'a'.repeat(64)
+  const baseSettings = { onlineMode: true, motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
+  const onlineProperties = (restartRequired: boolean) => ({ properties: {
+    settings: { ...baseSettings, onlineMode: onlineModeEnabled }, advancedProperties: {}, sha256: propertyHash, serverVersion: '1.21.4', serverSoftware: 'paper',
+    presentKeys: ['online-mode', 'motd', 'gamemode', 'difficulty', 'max-players', 'view-distance', 'simulation-distance', 'spawn-protection', 'pvp', 'white-list', 'allow-nether', 'server-ip'],
+    unknownKeys: [], protectedProperties: [{ key: 'server-ip', reason: 'The local web binding is managed separately.', configured: true }], unsupportedKeys: [], backups: [], restartRequired,
+  } })
   await page.route(`**/api/v1/admin/servers/${serverId}/properties`, async (route) => {
     if (route.request().method() === 'PATCH') {
       const input = route.request().postDataJSON() as Record<string, unknown>
       propertyUpdate = input
-      const changes = Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'confirmOnlineModeChange'))
-      const current = { onlineMode: true, motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
-      const settings = { ...current, ...changes }
-      onlineModeEnabled = settings.onlineMode === false ? false : true
-      return route.fulfill({ json: { properties: { settings, unknownKeys: ['server-ip', 'level-seed'], backups: [], restartRequired: true } } })
+      onlineModeEnabled = input.onlineMode === false ? false : true
+      propertyHash = 'b'.repeat(64)
+      return route.fulfill({ json: onlineProperties(true) })
     }
-    return route.fulfill({ json: { properties: { settings: { onlineMode: onlineModeEnabled, motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }, unknownKeys: ['server-ip', 'level-seed'], backups: [], restartRequired: false } } })
+    return route.fulfill({ json: onlineProperties(false) })
   })
   await page.goto(`/servers/${serverId}/properties`)
   await expect(page.getByLabel('Online mode')).toBeChecked()
@@ -1372,6 +1401,13 @@ test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page
       await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
       const sectionCheck = translatedChecks[`/servers/${section}`]
       if (sectionCheck) await expect(page.locator('.page-content')).toContainText(sectionCheck)
+      if (section === 'properties') {
+        await page.getByRole('tab', { name: 'Дополнительные свойства' }).click()
+        await expect(page.locator('.page-content')).toContainText('Игровой процесс')
+        await expect(page.locator('.page-content')).toContainText('Разрешить полёт')
+        await expect(page.getByText('Настройки сетевой привязки Minecraft отделены от локального веб-интерфейса.')).toBeVisible()
+        await page.screenshot({ path: screenshotPath(`r6-ru-properties-advanced-${width}.png`), fullPage: true, animations: 'disabled' })
+      }
       await expectNoHorizontalOverflow(page, `Russian ${section} at ${width}px`)
       if (section === 'access') await expectAccessBadgeFits(page, `Russian ${section} at ${width}px`)
       await page.screenshot({ path: screenshotPath(`r4-ru-server-${section}-${width}.png`), fullPage: true, animations: 'disabled' })

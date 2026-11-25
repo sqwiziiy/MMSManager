@@ -7,7 +7,10 @@ import type { AppDatabase } from '../db/client.js'
 import { localServerPropertiesBackups, localServerRuntime, localServerEvents, localServers } from '../db/schema.js'
 import type { ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerPropertySettings } from '@mmsmanager/shared'
 import { serverPropertySettingsSchema } from '@mmsmanager/shared'
+import { serverPropertiesCatalog, serverPropertyAvailable } from '@mmsmanager/shared'
+import type { ServerPropertyCatalogEntry } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
+import { isLoopbackPortAvailable } from './install.js'
 
 const PROPERTY_NAMES = {
   onlineMode: 'online-mode',
@@ -29,6 +32,26 @@ const DEFAULT_SETTINGS: ServerPropertySettings = {
   pvp: true, whiteList: false, allowNether: true,
 }
 const SUPPORTED_NAMES = new Set<string>(Object.values(PROPERTY_NAMES))
+const ADVANCED_BY_KEY = new Map<string, ServerPropertyCatalogEntry>(serverPropertiesCatalog.map((entry) => [entry.key, entry]))
+const PROTECTED_PROPERTY_REASONS = [
+  ['server-ip', 'The panel keeps server binding settings separate from the local web interface.'],
+  ['enable-query', 'This enables an additional network listener that the panel does not manage.'],
+  ['query.port', 'This opens an additional network listener that the panel does not manage.'],
+  ['enable-rcon', 'RCON is an additional remote-control listener and is not managed here.'],
+  ['rcon.port', 'RCON is an additional remote-control listener and is not managed here.'],
+  ['rcon.password', 'This is a secret and is never shown or edited in Properties.'],
+  ['management-server-enabled', 'The alternate management protocol is not managed by MMSManager.'],
+  ['management-server-host', 'The alternate management protocol is not managed by MMSManager.'],
+  ['management-server-port', 'The alternate management protocol is not managed by MMSManager.'],
+  ['management-server-secret', 'This is a secret and is never shown or edited in Properties.'],
+  ['management-server-tls-keystore', 'The alternate management protocol is not managed by MMSManager.'],
+  ['management-server-tls-keystore-password', 'This is a secret and is never shown or edited in Properties.'],
+  ['text-filtering-config', 'Arbitrary server-side file paths are not edited in Properties.'],
+  ['text-filtering-version', 'This key is managed together with the protected text-filtering configuration.'],
+] as const
+const PROTECTED_PROPERTY_KEYS = new Set<string>(PROTECTED_PROPERTY_REASONS.map(([key]) => key))
+const WORLD_GENERATION_KEYS = new Set(['generate-structures', 'level-seed', 'level-type', 'generator-settings'])
+const RESOURCE_PACK_KEYS = new Set(['resource-pack', 'resource-pack-sha1', 'resource-pack-prompt', 'require-resource-pack'])
 
 export class ServerPropertiesError extends Error {
   constructor(readonly code: string, message: string) { super(message) }
@@ -68,13 +91,17 @@ function propertyParts(line: string): { key: string; value: string } | null {
   return key ? { key, value: unescapeValue(line.slice(valueStart)) } : null
 }
 
-function parseSettings(lines: string[]): { settings: ServerPropertySettings; unknownKeys: string[] } {
+function parseSettings(lines: string[]): { settings: ServerPropertySettings; advancedProperties: Record<string, string>; presentKeys: string[]; unknownKeys: string[] } {
   const values = new Map<string, string>()
+  const advancedProperties: Record<string, string> = {}
+  const presentKeys = new Set<string>()
   const unknownKeys = new Set<string>()
   for (const line of lines) {
     const parts = propertyParts(line)
     if (!parts) continue
-    if (SUPPORTED_NAMES.has(parts.key)) values.set(parts.key, parts.value)
+    if (SUPPORTED_NAMES.has(parts.key)) { values.set(parts.key, parts.value); presentKeys.add(parts.key) }
+    else if (ADVANCED_BY_KEY.has(parts.key)) { advancedProperties[parts.key] = parts.value; presentKeys.add(parts.key) }
+    else if (isProtectedProperty(parts.key)) presentKeys.add(parts.key)
     else unknownKeys.add(parts.key)
   }
   const numberValue = (key: string, fallback: number) => {
@@ -101,14 +128,32 @@ function parseSettings(lines: string[]): { settings: ServerPropertySettings; unk
       whiteList: booleanValue(PROPERTY_NAMES.whiteList, DEFAULT_SETTINGS.whiteList),
       allowNether: booleanValue(PROPERTY_NAMES.allowNether, DEFAULT_SETTINGS.allowNether),
     }),
+    advancedProperties,
+    presentKeys: [...presentKeys].sort(),
     unknownKeys: [...unknownKeys].sort().slice(0, 256),
   }
+}
+
+function isProtectedProperty(key: string): boolean {
+  return PROTECTED_PROPERTY_KEYS.has(key) || key.startsWith('management-server-') || key.startsWith('text-filtering-')
+}
+
+function protectedPropertyList(presentKeys: string[]) {
+  const reasons = new Map<string, string>(PROTECTED_PROPERTY_REASONS.map(([key, reason]) => [key, reason]))
+  const keys = new Set([...reasons.keys(), ...presentKeys.filter(isProtectedProperty)])
+  return [...keys].map((key) => ({
+    key,
+    reason: reasons.get(key) ?? (key.startsWith('management-server-')
+      ? 'The alternate management protocol is not managed by MMSManager.'
+      : key.startsWith('text-filtering-') ? 'Arbitrary server-side file paths are not edited in Properties.' : 'This configuration key is withheld from the general editor.'),
+    configured: presentKeys.includes(key),
+  }))
 }
 
 function hiddenContent(text: string): string {
   return text.split(/\r?\n/).filter((line) => {
     const parsed = propertyParts(line)
-    return !parsed || !SUPPORTED_NAMES.has(parsed.key)
+    return !parsed || (!SUPPORTED_NAMES.has(parsed.key) && !ADVANCED_BY_KEY.has(parsed.key))
   }).join('\n')
 }
 
@@ -118,14 +163,25 @@ function encodeValue(value: string | number | boolean): string {
   return value.replaceAll('\\', '\\\\').replaceAll('=', '\\=').replaceAll(':', '\\:').replace(/^ /, '\\ ')
 }
 
-function updateLines(original: string, update: ServerPropertiesUpdate): string {
+function containsUnsupportedControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0)
+    if (code <= 8 || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127) return true
+  }
+  return false
+}
+
+function updateLines(original: string, update: ServerPropertiesUpdate, advancedProperties: Record<string, string>): string {
   const newline = original.includes('\r\n') ? '\r\n' : '\n'
   const hasFinalNewline = original.endsWith('\n')
   const lines = original.split(/\r?\n/)
   if (hasFinalNewline) lines.pop()
-  for (const setting of Object.keys(update) as (keyof ServerPropertySettings)[]) {
-    const propertyName = PROPERTY_NAMES[setting]
-    const normalized = `${propertyName}=${encodeValue(update[setting]!)}`
+  const changes = [
+    ...(Object.keys(update) as (keyof ServerPropertySettings)[]).map((setting) => [PROPERTY_NAMES[setting], update[setting]!] as const),
+    ...Object.entries(advancedProperties),
+  ]
+  for (const [propertyName, value] of changes) {
+    const normalized = `${propertyName}=${encodeValue(value)}`
     let matched = -1
     for (let index = 0; index < lines.length; index += 1) {
       if (propertyParts(lines[index]!)?.key === propertyName) matched = index
@@ -140,7 +196,12 @@ function updateLines(original: string, update: ServerPropertiesUpdate): string {
 export class ServerPropertiesManager {
   private readonly backupRoot: string
 
-  constructor(private readonly db: AppDatabase, private readonly servers: ServerRegistry, private readonly now: () => number = Date.now) {
+  constructor(
+    private readonly db: AppDatabase,
+    private readonly servers: ServerRegistry,
+    private readonly now: () => number = Date.now,
+    private readonly isPortAvailable: (port: number) => Promise<boolean> = isLoopbackPortAvailable,
+  ) {
     this.backupRoot = join(servers.dataDirectory, 'properties-backups')
   }
 
@@ -155,12 +216,25 @@ export class ServerPropertiesManager {
     const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
     return {
       ...parsed,
+      sha256: createHash('sha256').update(original.bytes).digest('hex'),
+      serverVersion: server.version ?? 'unknown',
+      serverSoftware: server.software,
+      protectedProperties: protectedPropertyList(parsed.presentKeys),
+      unsupportedKeys: serverPropertiesCatalog.filter((entry) => !serverPropertyAvailable(entry, server.software, server.version ?? 'unknown')).map((entry) => entry.key),
       backups: history,
       restartRequired: runtime?.restartRequired ?? false,
     }
   }
 
-  async update(serverId: string, actorUserId: string, update: ServerPropertiesUpdate, options: { confirmOnlineModeChange?: boolean } = {}): Promise<ServerPropertiesResponse> {
+  async update(serverId: string, actorUserId: string, update: ServerPropertiesUpdate, options: {
+    expectedSha256: string
+    advancedProperties?: Record<string, string>
+    confirmOnlineModeChange?: boolean
+    confirmLevelNameChange?: boolean
+    confirmWorldGenerationChange?: boolean
+    confirmResourcePackChange?: boolean
+    confirmGamePortChange?: boolean
+  }): Promise<ServerPropertiesResponse> {
     const server = this.serverRow(serverId)
     const propertiesPath = await this.propertiesPath(server)
     const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
@@ -170,6 +244,8 @@ export class ServerPropertiesManager {
     const original = await this.readProperties(propertiesPath)
     const lines = original.text.split(/\r?\n/)
     const parsed = parseSettings(lines)
+    const originalSha256 = createHash('sha256').update(original.bytes).digest('hex')
+    if (originalSha256 !== options.expectedSha256) throw new ServerPropertiesError('PROPERTY_SAVE_CONFLICT', 'server.properties changed after this page was loaded. Reload before saving your changes.')
     const settings = serverPropertySettingsSchema.parse({ ...parsed.settings, ...update })
     const onlineModeChanged = settings.onlineMode !== parsed.settings.onlineMode
     if (onlineModeChanged && !options.confirmOnlineModeChange) {
@@ -178,10 +254,31 @@ export class ServerPropertiesManager {
     if (onlineModeChanged && runtime?.status !== 'stopped') {
       throw new ServerPropertiesError('ONLINE_MODE_REQUIRES_STOPPED', 'Online mode can only change while the managed server is confirmed stopped.')
     }
+    const advancedUpdates = this.validateAdvancedUpdates(server, options.advancedProperties ?? {})
+    const currentAdvancedValue = (key: string) => parsed.advancedProperties[key] ?? ADVANCED_BY_KEY.get(key)?.defaultValue ?? ''
+    const changedAdvanced = Object.fromEntries(Object.entries(advancedUpdates).filter(([key, value]) => parsed.advancedProperties[key] === undefined || value !== parsed.advancedProperties[key]))
+    const levelNameChanged = changedAdvanced['level-name'] !== undefined && changedAdvanced['level-name'] !== currentAdvancedValue('level-name')
+    if (levelNameChanged && !options.confirmLevelNameChange) throw new ServerPropertiesError('LEVEL_NAME_CONFIRMATION_REQUIRED', 'Confirm the world-folder change before saving.')
+    const worldGenerationChanged = Object.keys(changedAdvanced).some((key) => WORLD_GENERATION_KEYS.has(key))
+    if (worldGenerationChanged && !options.confirmWorldGenerationChange) throw new ServerPropertiesError('WORLD_GENERATION_CONFIRMATION_REQUIRED', 'Confirm the world-generation change before saving.')
+    const resourcePackChanged = Object.keys(changedAdvanced).some((key) => RESOURCE_PACK_KEYS.has(key))
+    if (resourcePackChanged && !options.confirmResourcePackChange) throw new ServerPropertiesError('RESOURCE_PACK_CONFIRMATION_REQUIRED', 'Confirm the resource-pack change before saving.')
+    const currentPort = Number(parsed.advancedProperties['server-port'] ?? server.port ?? ADVANCED_BY_KEY.get('server-port')?.defaultValue)
+    const requestedPort = changedAdvanced['server-port'] === undefined ? currentPort : Number(changedAdvanced['server-port'])
+    const gamePortChanged = requestedPort !== currentPort
+    if (gamePortChanged && !options.confirmGamePortChange) throw new ServerPropertiesError('GAME_PORT_CONFIRMATION_REQUIRED', 'Confirm the game-port change before saving.')
+    if (gamePortChanged) {
+      if (runtime?.status !== 'stopped') throw new ServerPropertiesError('GAME_PORT_REQUIRES_STOPPED', 'The game port can only change while the server is confirmed stopped.')
+      const otherServers = this.db.select({ id: localServers.id, name: localServers.name, port: localServers.port }).from(localServers).all()
+      const collision = otherServers.find((candidate) => candidate.id !== serverId && candidate.port === requestedPort)
+      if (collision) throw new ServerPropertiesError('GAME_PORT_CONFLICT', `Game port ${requestedPort} is already assigned to “${collision.name}”.`)
+      if (!await this.isPortAvailable(requestedPort)) throw new ServerPropertiesError('GAME_PORT_IN_USE', `Game port ${requestedPort} is already in use on this computer.`)
+    }
     const changed = Object.keys(update).some((key) => settings[key as keyof ServerPropertySettings] !== parsed.settings[key as keyof ServerPropertySettings])
+      || Object.keys(changedAdvanced).length > 0
     if (!changed) return this.get(serverId)
 
-    const nextText = updateLines(original.text, update)
+    const nextText = updateLines(original.text, update, changedAdvanced)
     if (Buffer.byteLength(nextText, 'utf8') > 65_536) throw new ServerPropertiesError('PROPERTIES_FILE_TOO_LARGE', 'The edited server.properties would exceed the supported 64 KiB limit.')
     const id = randomUUID()
     const createdAt = new Date(this.now()).toISOString()
@@ -202,30 +299,61 @@ export class ServerPropertiesManager {
       await backupHandle.sync()
     } finally { await backupHandle.close() }
 
-    const temporaryPath = join(dirname(propertiesPath), `.server.properties.${randomUUID()}.tmp`)
-    const temporaryHandle = await open(temporaryPath, 'wx', 0o600)
-    try {
-      await temporaryHandle.writeFile(nextText, 'utf8')
-      await temporaryHandle.sync()
-    } finally { await temporaryHandle.close() }
-    try {
-      await rename(temporaryPath, propertiesPath)
-      const directoryHandle = await open(dirname(propertiesPath), constants.O_RDONLY)
-      try { await directoryHandle.sync() } finally { await directoryHandle.close() }
-    } catch (error) {
-      await rm(temporaryPath, { force: true })
-      throw error
-    }
+    await this.atomicReplaceProperties(propertiesPath, Buffer.from(nextText, 'utf8'), original.bytes, original.stat, originalSha256)
 
     this.db.insert(localServerPropertiesBackups).values({ id, serverId, actorUserId, fileName: backupFile, sha256, createdAt }).run()
+    if (gamePortChanged) this.db.update(localServers).set({ port: requestedPort, updatedAt: createdAt }).where(eq(localServers.id, serverId)).run()
     const restartRequired = runtime?.status === 'running' || runtime?.restartRequired === true
     if (runtime) this.db.update(localServerRuntime).set({ restartRequired, updatedAt: createdAt }).where(eq(localServerRuntime.serverId, serverId)).run()
     else this.db.insert(localServerRuntime).values({ serverId, status: 'stopped', updatedAt: createdAt, restartRequired }).run()
     this.db.insert(localServerEvents).values({
       serverId, actorUserId, action: 'server-properties-updated', outcome: 'success', occurredAt: createdAt,
-      detail: JSON.stringify({ backupId: id, changedKeys: Object.keys(update).filter((key) => settings[key as keyof ServerPropertySettings] !== parsed.settings[key as keyof ServerPropertySettings]) }),
+      detail: JSON.stringify({ backupId: id, changedKeys: [
+        ...Object.keys(update).filter((key) => settings[key as keyof ServerPropertySettings] !== parsed.settings[key as keyof ServerPropertySettings]),
+        ...Object.keys(changedAdvanced),
+      ] }),
     }).run()
     return this.get(serverId)
+  }
+
+  private validateAdvancedUpdates(server: typeof localServers.$inferSelect, changes: Record<string, string>): Record<string, string> {
+    const validated: Record<string, string> = {}
+    for (const [key, value] of Object.entries(changes)) {
+      const definition = ADVANCED_BY_KEY.get(key)
+      if (!definition || isProtectedProperty(key)) throw new ServerPropertiesError('PROPERTY_KEY_REJECTED', `“${key}” is not available in the safe Properties catalog.`)
+      if (!serverPropertyAvailable(definition, server.software, server.version ?? 'unknown')) throw new ServerPropertiesError('PROPERTY_UNSUPPORTED_VERSION', `“${key}” is not supported for ${server.software} ${server.version ?? 'unknown'}.`)
+      if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > 8192 || containsUnsupportedControlCharacter(value)) {
+        throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', `“${key}” contains unsupported text or is too long.`)
+      }
+      if (definition.kind === 'boolean' && value !== 'true' && value !== 'false') throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', `“${key}” must be true or false.`)
+      if (definition.kind === 'integer') {
+        const number = Number(value)
+        if (!/^-?\d+$/.test(value) || !Number.isSafeInteger(number) || number < (definition.minimum ?? Number.MIN_SAFE_INTEGER) || number > (definition.maximum ?? Number.MAX_SAFE_INTEGER)) {
+          throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', `“${key}” is outside its documented integer range.`)
+        }
+      }
+      const enumOptions = [...(definition.options ?? []), ...(server.software === 'paper' ? definition.softwareOptions?.paper ?? [] : [])]
+      if (definition.kind === 'enum' && !enumOptions.includes(value)) throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', `“${key}” must use one of the supported options.`)
+      if (definition.kind === 'json') {
+        let parsed: unknown
+        try { parsed = JSON.parse(value) as unknown } catch { throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', `“${key}” must contain valid JSON.`) }
+        if (!parsed || typeof parsed !== 'object') throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', `“${key}” must contain a JSON object or array.`)
+      }
+      if (key === 'level-name' && (!value || value === '.' || value === '..' || value.length > 64 || /[\\/:*?"<>|]/.test(value) || /[. ]$/.test(value))) {
+        throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', 'The world folder name must be a single safe folder name.')
+      }
+      if (key === 'level-seed' && value.length > 128) throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', 'The world seed must be 128 characters or fewer.')
+      if (key === 'generator-settings' && Buffer.byteLength(value, 'utf8') > 4096) throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', 'Generator settings are limited to 4 KiB of JSON.')
+      if (key === 'resource-pack' && value) {
+        let url: URL
+        try { url = new URL(value) } catch { throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', 'The resource-pack URL must be a valid HTTP or HTTPS address.') }
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || value.length > 2048) throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', 'The resource-pack URL must be a valid HTTP or HTTPS address without embedded credentials.')
+      }
+      if (key === 'resource-pack-sha1' && value && !/^[a-f\d]{40}$/i.test(value)) throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', 'The resource-pack SHA-1 must contain exactly 40 hexadecimal characters.')
+      if (key === 'resource-pack-prompt' && value.length > 4096) throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', 'The resource-pack prompt is limited to 4096 characters.')
+      validated[key] = value
+    }
+    return validated
   }
 
   async previewRestore(serverId: string, backupId: string): Promise<ServerPropertiesRestorePreview> {
@@ -240,12 +368,19 @@ export class ServerPropertiesManager {
     const checksumValid = backup.checksumValid
     const changedSettings: ServerPropertiesRestorePreview['changedSettings'] = []
     if (checksumValid) {
-      const active = parseSettings(current.text.split(/\r?\n/)).settings
-      const restored = parseSettings(backup.bytes.toString('utf8').split(/\r?\n/)).settings
+      const active = parseSettings(current.text.split(/\r?\n/))
+      const restored = parseSettings(backup.bytes.toString('utf8').split(/\r?\n/))
       for (const key of Object.keys(PROPERTY_NAMES) as (keyof ServerPropertySettings)[]) {
-        const before = active[key]
-        const after = restored[key]
+        const before = active.settings[key]
+        const after = restored.settings[key]
         if (before !== after) changedSettings.push({ key: PROPERTY_NAMES[key], current: String(before), restored: String(after) })
+      }
+      const advancedKeys = new Set([...Object.keys(active.advancedProperties), ...Object.keys(restored.advancedProperties)])
+      for (const key of advancedKeys) {
+        if (active.advancedProperties[key] === restored.advancedProperties[key]) continue
+        const visibleBefore = active.advancedProperties[key] === undefined ? 'Inherited default' : 'Saved value'
+        const visibleAfter = restored.advancedProperties[key] === undefined ? 'Inherited default' : 'Backup value'
+        changedSettings.push({ key, current: visibleBefore, restored: visibleAfter })
       }
     }
     const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
