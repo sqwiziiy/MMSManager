@@ -277,6 +277,7 @@ export async function createApiApp(options: {
   apiPort?: number
   secureCookies?: boolean
   rateLimitMax?: number
+  authRateLimitMax?: number
   installFetch?: typeof fetch
   now?: () => number
   monitoringConfig?: AppConfigStore
@@ -523,7 +524,7 @@ export async function createApiApp(options: {
   }))
 
   app.post('/api/v1/auth/setup', {
-    config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
+    config: { rateLimit: { max: options.authRateLimitMax ?? 5, timeWindow: '15 minutes' } },
   }, async (request, reply) => {
     const input = parse(bootstrapSchema, request.body)
     try {
@@ -537,7 +538,7 @@ export async function createApiApp(options: {
   })
 
   app.post('/api/v1/auth/login', {
-    config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
+    config: { rateLimit: { max: options.authRateLimitMax ?? 5, timeWindow: '15 minutes' } },
   }, async (request, reply) => {
     const input = parse(loginSchema, request.body)
     try {

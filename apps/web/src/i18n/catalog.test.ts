@@ -49,6 +49,14 @@ describe('English and Russian interface catalog', () => {
     expect(translateText('Only when no players are online', 'ru')).toBe('Только если игроков нет в сети')
     expect(translateText('Player count could not be confirmed', 'ru')).toBe('Не удалось проверить число игроков')
     expect(translateText('Interrupted after the app restarted; it was not replayed', 'ru')).toContain('не запускалось')
+    expect(translateText('Recent history', 'ru')).toBe('Последние показания')
+    expect(translateText('Load older activity', 'ru')).toBe('Загрузить более ранние события')
+    expect(translateText('Space used from 10:00 to 10:10, latest 92 percent', 'ru')).toBe('Показатель «Занято места»: с 10:00 по 10:10, последнее значение 92%')
+    expect(translateText('Next backup', 'ru')).toBe('Следующее копирование')
+    expect(translateText('Last backup', 'ru')).toBe('Последнее копирование')
+    expect(translateText('Use the typed Properties editor for this configuration file.', 'ru')).toBe('Откройте раздел «Свойства», чтобы изменить этот файл.')
+    expect(isLocalizedText('25 нояб. 2026 г., 19:48:45: Занято места 92.1%', 'ru')).toBe(true)
+    expect(isLocalizedText('Переименовать config', 'ru')).toBe(true)
   })
 
   it('translates ZIP import and server removal failures, including variable details', () => {

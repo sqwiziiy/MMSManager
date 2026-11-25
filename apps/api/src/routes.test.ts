@@ -554,6 +554,24 @@ describe('authenticated local API', () => {
     expect(limited.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } })
   })
 
+  it('keeps the default sign-in limit at five attempts per 15 minutes', async () => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await app.inject({
+        method: 'POST', url: '/api/v1/auth/login',
+        headers: { ...requestHeaders, 'content-type': 'application/json' },
+        payload: { username: `missing-account-${attempt}`, password: 'not a real account credential' },
+      })
+      expect(response.statusCode).toBe(401)
+    }
+    const limited = await app.inject({
+      method: 'POST', url: '/api/v1/auth/login',
+      headers: { ...requestHeaders, 'content-type': 'application/json' },
+      payload: { username: 'another-missing-account', password: 'not a real account credential' },
+    })
+    expect(limited.statusCode).toBe(429)
+    expect(limited.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } })
+  })
+
   it('consumes the out-of-band bootstrap credential and protects telemetry/history with a session', async () => {
     const session = await bootstrapAdmin()
     expect(auth.getSetupRequired()).toBe(false)

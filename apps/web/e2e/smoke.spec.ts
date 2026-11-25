@@ -12,6 +12,7 @@ mkdirSync(screenshotDir, { recursive: true })
 let adminPassword = process.env['MMSMANAGER_E2E_ADMIN_PASSWORD']!
 const memberPassword = process.env['MMSMANAGER_E2E_MEMBER_PASSWORD']!
 const browserSessionPath = resolve(process.env['MMSMANAGER_DATA_DIR']!, 'browser-session.json')
+const adminPasswordPath = resolve(process.env['MMSMANAGER_DATA_DIR']!, 'admin-password.txt')
 const changedPasswords = new Map<string, string>()
 
 test.use({
@@ -26,7 +27,8 @@ async function signIn(page: Page, username = 'stage-admin', password = adminPass
   await expect(authHeading).toBeVisible()
   if (await page.getByRole('heading', { name: 'Sign in to MMSManager' }).isVisible()) {
     await page.getByLabel('Username').fill(username)
-    await page.locator('input[name="password"]').fill(changedPasswords.get(username) ?? password)
+    const savedAdminPassword = username === 'stage-admin' && existsSync(adminPasswordPath) ? readFileSync(adminPasswordPath, 'utf8') : password
+    await page.locator('input[name="password"]').fill(changedPasswords.get(username) ?? savedAdminPassword)
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.locator('.profile-trigger').or(page.locator('#required-password-title'))).toBeVisible()
     if (await page.locator('#required-password-title').isVisible()) {
@@ -49,6 +51,23 @@ async function signOut(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Sign out' }).click()
   await expect(page).toHaveURL(/\/login$/)
 }
+
+async function restoreEnglishPreferences(page: Page): Promise<void> {
+  const status = await page.evaluate(async () => {
+    const csrfCookie = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith('mmsmanager_csrf='))
+    const csrfToken = csrfCookie ? decodeURIComponent(csrfCookie.slice('mmsmanager_csrf='.length)) : ''
+    const response = await fetch('/api/v1/profile/preferences', { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-mms-csrf': csrfToken }, body: JSON.stringify({ language: 'en' }) })
+    return response.status
+  })
+  expect(status).toBe(200)
+  await page.goto('/settings')
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+}
+
+test.afterEach(async ({ page }) => {
+  const shouldRestore = await page.evaluate(() => document.documentElement.lang === 'ru' && Boolean(document.querySelector('.profile-trigger'))).catch(() => false)
+  if (shouldRestore) await restoreEnglishPreferences(page)
+})
 
 async function expectNoHorizontalOverflow(page: Page, route: string): Promise<void> {
   const size = await page.evaluate(() => {
@@ -1242,19 +1261,23 @@ test('managed files edit with recovery, trash and restore at desktop and mobile 
   })
   expect(languageStatus).toBe(200)
 
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto(`/servers/${serverId}/files`)
-  await expect(page.getByRole('button', { name: 'config', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Переименовать renamed-note.txt' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Переместить renamed-note.txt' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'В корзину renamed-note.txt' })).toBeVisible()
-  await expectNoHorizontalOverflow(page, 'managed file manager mobile')
-  await page.screenshot({ path: screenshotPath('stage-05c-file-manager-mobile.png'), fullPage: true, animations: 'disabled' })
-  await page.getByRole('button', { name: 'Переименовать renamed-note.txt' }).click()
-  const russianRenameDialog = page.getByRole('dialog', { name: 'Переименовать элемент' })
-  await expect(russianRenameDialog.getByLabel('Новое имя')).toBeVisible()
-  await expectNoHorizontalOverflow(page, 'Russian rename dialog mobile')
-  await page.screenshot({ path: screenshotPath('stage-06i-04-rename-russian-mobile.png'), fullPage: true, animations: 'disabled' })
+  try {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto(`/servers/${serverId}/files`)
+    await expect(page.getByRole('button', { name: 'config', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Переименовать renamed-note.txt' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Переместить renamed-note.txt' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'В корзину renamed-note.txt' })).toBeVisible()
+    await expectNoHorizontalOverflow(page, 'managed file manager mobile')
+    await page.screenshot({ path: screenshotPath('stage-05c-file-manager-mobile.png'), fullPage: true, animations: 'disabled' })
+    await page.getByRole('button', { name: 'Переименовать renamed-note.txt' }).click()
+    const russianRenameDialog = page.getByRole('dialog', { name: 'Переименовать элемент' })
+    await expect(russianRenameDialog.getByLabel('Новое имя')).toBeVisible()
+    await expectNoHorizontalOverflow(page, 'Russian rename dialog mobile')
+    await page.screenshot({ path: screenshotPath('stage-06i-04-rename-russian-mobile.png'), fullPage: true, animations: 'disabled' })
+  } finally {
+    await restoreEnglishPreferences(page)
+  }
 })
 
 test('managed files upload multiple files and preserve selected folder hierarchy', async ({ page }) => {
@@ -1692,6 +1715,7 @@ test('profile, avatar and personal preferences persist; password change revokes 
   adminPassword = newPassword
   await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible()
   await page.context().storageState({ path: browserSessionPath })
+  writeFileSync(adminPasswordPath, newPassword, { mode: 0o600 })
 })
 
 test('Stage 6H dashboard and machine layouts fit the 390/768/1280/1920px matrix', async ({ page }) => {
@@ -1812,6 +1836,9 @@ test('R4 Russian UI route matrix fits desktop and mobile layouts', async ({ page
         if (width === 390 || width === 1280) await page.screenshot({ path: screenshotPath(`r6-ru-properties-advanced-${width}.png`), fullPage: true, animations: 'disabled' })
       }
       await expectNoHorizontalOverflow(page, `Russian ${section} at ${width}px`)
+      if (section === 'automation' && width === 768) {
+        await page.screenshot({ path: screenshotPath('i7-automation-ru-tablet-768.png'), fullPage: true, animations: 'disabled' })
+      }
       if (section === 'access') await expectAccessBadgeFits(page, `Russian ${section} at ${width}px`)
       if ((width === 390 || width === 1280) && visualServerSections.has(section)) {
         await page.screenshot({ path: screenshotPath(`r4-ru-server-${section}-${width}.png`), fullPage: true, animations: 'disabled' })

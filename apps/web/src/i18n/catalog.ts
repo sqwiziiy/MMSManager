@@ -445,9 +445,11 @@ const additionalPhrases = [
   ['Create a local server', 'Создать локальный сервер'], ['Managed servers', 'Управляемые серверы'], ['Running servers', 'Работающие серверы'],
   ['Server status', 'Состояние сервера'], ['Host resources', 'Ресурсы компьютера'], ['Actual sample times', 'Время замеров'],
   ['Activity log', 'Журнал событий'], ['Recent events', 'Недавние события'], ['Recent snapshots', 'Недавние снимки'],
+  ['Load older activity', 'Загрузить более ранние события'],
   ['Registered server summary and local CPU', 'Сводка серверов и загрузка процессора'],
   ['Processor activity', 'Загрузка процессора'], ['Memory and load', 'Память и нагрузка'], ['Machine readings are unavailable', 'Замеры компьютера недоступны'],
   ['Latest sample', 'Последний замер'], ['Last successful sample', 'Последний успешный замер'], ['Saved measurements', 'Сохранённые замеры'],
+  ['Space used', 'Занято места'], ['Recent history', 'Последние показания'],
   ['Saved readings are marked out of date.', 'Сохранённые замеры помечены как устаревшие.'], ['Reading registered servers…', 'Загрузка списка серверов…'],
   ['Reading stored local machine history.', 'Загрузка истории локального компьютера.'],
   ['Reading saved readings for this month…', 'Загрузка сохранённых замеров за месяц…'],
@@ -1197,6 +1199,8 @@ const additionalPhrases = [
   ['New name', 'Новое имя'],
   ['Rename item', 'Переименовать элемент'],
   ['Move item', 'Переместить элемент'],
+  ['Use the typed Properties editor for this configuration file.', 'Откройте раздел «Свойства», чтобы изменить этот файл.'],
+  ['Next backup', 'Следующее копирование'], ['Last backup', 'Последнее копирование'],
   ['The item will stay in its current folder.', 'Элемент останется в текущей папке.'],
   ['The original name will be kept.', 'Исходное имя будет сохранено.'],
   ['Rename complete', 'Переименование выполнено'],
@@ -1273,6 +1277,7 @@ export function translateText(value: string, language: 'en' | 'ru'): string {
   const serverPages = /^(.+) pages$/.exec(normalized)
   const privateBackupUsage = /^(\d+(?:[,.]\d+)?)% of private backup storage used$/.exec(normalized)
   const cpuChart = /^CPU utilization from (.+) to (.+), latest (\d+(?:\.\d+)?) percent$/.exec(normalized)
+  const resourceChart = /^(Memory usage|Space used) from (.+) to (.+), latest (\d+(?:\.\d+)?) percent$/.exec(normalized)
   const calendarDay = /^(.+)\. (Data observed|Partial data|Future date|No data)(?:, (\d+) samples?)?(?:, (\d+) events?)?$/.exec(normalized)
   const storageRetention = /^Local file systems used by the application and server data\. Readings are saved for up to (\d+) days\.$/.exec(normalized)
   const savedJava = /^Saved Java (\d+|version unknown) · recheck on save$/.exec(normalized)
@@ -1300,6 +1305,7 @@ export function translateText(value: string, language: 'en' | 'ru'): string {
     ?? (serverPages ? `Страницы сервера «${serverPages[1]}»` : undefined)
     ?? (privateBackupUsage ? `Использовано ${privateBackupUsage[1]}% лимита резервных копий` : undefined)
     ?? (cpuChart ? `Показатель «Загрузка процессора»: с ${cpuChart[1]} по ${cpuChart[2]}, последнее значение ${cpuChart[3]}%` : undefined)
+    ?? (resourceChart ? `Показатель «${translateText(resourceChart[1]!, 'ru')}»: с ${resourceChart[2]} по ${resourceChart[3]}, последнее значение ${resourceChart[4]}%` : undefined)
     ?? (calendarDay ? `${calendarDay[1]}. ${statusTranslations[calendarDay[2]!]!}${calendarDay[3] ? `, ${russianPlural(Number(calendarDay[3]), ['образец', 'образца', 'образцов'])}` : ''}${calendarDay[4] ? `, ${russianPlural(Number(calendarDay[4]), ['событие', 'события', 'событий'])}` : ''}` : undefined)
     ?? (storageRetention ? `Локальные файловые системы приложения и данных серверов. Показания хранятся до ${russianPlural(Number(storageRetention[1]), ['день', 'дня', 'дней'])}.` : undefined)
     ?? (savedJava ? `Сохранённая Java ${savedJava[1] === 'version unknown' ? 'неизвестной версии' : savedJava[1]} · повторная проверка при сохранении` : undefined)
@@ -1357,6 +1363,9 @@ export function isLocalizedText(value: string, language: 'en' | 'ru'): boolean {
     /^.+ · история компьютера$/,
     /^.+ · история сервера$/,
     /^Показатель «Загрузка процессора»: с .+ по .+, последнее значение \d+(?:[,.]\d+)?%$/,
+    /^Показатель «(?:Использование памяти|Занято места)»: с .+ по .+, последнее значение \d+(?:[,.]\d+)?%$/,
+    /^.+: (?:Использование памяти|Занято места) \d+(?:[,.]\d+)?%$/,
+    /^(?:Переименовать|Переместить|В корзину|Скачать) .+$/,
     /^.+\. (?:Показания собраны|Частичные показания|Будущая дата|Нет данных)(?:, \d+ (?:образец|образца|образцов))?(?:, \d+ (?:событие|события|событий))?$/,
     /^Локальные файловые системы приложения и данных серверов\. Показания хранятся до \d+ дней\.$/,
     /^Сохранённая Java (?:\d+|неизвестной версии) · повторная проверка при сохранении$/,

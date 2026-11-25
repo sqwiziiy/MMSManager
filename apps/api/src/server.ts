@@ -54,6 +54,7 @@ async function main(): Promise<void> {
       ? resolve(dirname(fileURLToPath(import.meta.url)), '../../web/dist')
       : undefined,
     rateLimitMax: process.env['MMSMANAGER_E2E'] === '1' ? 5_000 : undefined,
+    authRateLimitMax: process.env['MMSMANAGER_E2E'] === '1' ? 5_000 : undefined,
   })
   await app.listen({ host: API_HOST, port: apiPort })
   collector.start()

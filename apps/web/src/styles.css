@@ -1719,8 +1719,9 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 .local-runtime-override strong { color: var(--text); font-size: 9px; font-weight: 600; }
 .local-runtime-override small { color: var(--text-secondary); font-size: 8px; line-height: 1.5; }
 .local-runtime-hint { margin: 9px 0 0; color: #b0ad99; font-size: 9px; line-height: 1.5; }
-.local-runtime-controls { display: flex; align-items: center; gap: 10px; margin-top: 13px; }
-.local-runtime-controls > small { color: var(--text-muted); font-size: 8px; line-height: 1.4; }
+.local-runtime-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; margin-top: 13px; }
+.local-runtime-controls > .button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: center; }
+.local-runtime-controls > small { flex: 1 1 200px; min-width: 0; color: var(--text-muted); font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; }
 .local-runtime-memory-grid, .local-runtime-options-grid, .local-automation-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
 .local-runtime-number { position: relative; min-width: 0; }
 .local-runtime-number input { padding-right: 46px; }
