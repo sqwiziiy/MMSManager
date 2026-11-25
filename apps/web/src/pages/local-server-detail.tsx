@@ -2,7 +2,7 @@ import { currentLocale, pluralCount } from "../i18n/catalog"
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
-  Activity, AlertTriangle, Archive, ArrowDownToLine, Ban, Check, ChevronRight, CircleCheck, Clock3, Cpu, FilePlus2, FileText, LoaderCircle,
+  Activity, AlertTriangle, Archive, ArrowDownToLine, Ban, Check, ChevronRight, CircleCheck, Clock3, Cpu, FilePlus2, FileText, LoaderCircle, MoveRight,
   Folder, FolderPlus, FolderUp, Globe, HardDrive, Layers3, LockKeyhole, Package, PencilLine, Play, RefreshCw, RotateCcw, ScrollText,
   Search, Send, Server, Settings2, Shield, Square, Terminal, Trash2, Upload, Users, Wifi,
 } from 'lucide-react'
@@ -11,7 +11,7 @@ import type { LocalServerSummary, ServerConsoleEntry, ServerConsoleSession, Serv
 import {
   confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getMyServerAccess, getServerAccessUsers, getServerConsole, getServerConsoleSessions, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, restoreServerFileRecovery, restoreTrashedServerFile, sendPlayerAction, updateServerAccess,
   sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer, removeLocalServer,
-  getServerMods, uploadServerMod, uploadServerFiles, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
+  getServerMods, uploadServerMod, uploadServerFiles, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, renameServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
 } from '../api/servers'
 import type { ServerFileUploadRequest } from '../api/servers'
 import { ApiRequestError } from '../api/client'
@@ -737,7 +737,7 @@ function LocalFiles({ serverId, managed, runtimeStatus, canManage }: { serverId:
   const [editorError, setEditorError] = useState<string | null>(null)
   const [editorBusy, setEditorBusy] = useState(false)
   const [recoveries, setRecoveries] = useState<ServerFileRecovery[]>([])
-  const [dialog, setDialog] = useState<'file' | 'folder' | 'move' | null>(null)
+  const [dialog, setDialog] = useState<'file' | 'folder' | 'rename' | 'move' | null>(null)
   const [dialogEntry, setDialogEntry] = useState<ServerFileEntry | null>(null)
   const [dialogName, setDialogName] = useState('')
   const [dialogText, setDialogText] = useState('')
@@ -819,13 +819,25 @@ function LocalFiles({ serverId, managed, runtimeStatus, canManage }: { serverId:
   async function moveItem(event: FormEvent) {
     event.preventDefault()
     if (!canManage) return
-    if (!dialogEntry || !dialogName.trim()) return
+    if (!dialogEntry) return
     setBusy(true); setError(null)
     try {
-      const destination = dialogName.trim().replace(/^\/+|\/+$/g, '')
-      const next = await moveServerFile(serverId, dialogEntry.path, destination)
-      setInventory(next); setNotice(`Moved ${dialogEntry.name} to ${destination}.`); setDialog(null); setDialogEntry(null); setDialogName('')
+      const destinationDirectory = dialogName.trim().replace(/^\/+|\/+$/g, '')
+      const next = await moveServerFile(serverId, dialogEntry.path, destinationDirectory)
+      setInventory(next); setNotice(`${translateText('Move complete', currentLocale())}: ${dialogEntry.name} → ${destinationDirectory || translateText('Server root', currentLocale())}`); setDialog(null); setDialogEntry(null); setDialogName('')
     } catch (issue) { setError(issue instanceof Error ? issue.message : 'The item could not be moved.') }
+    finally { setBusy(false) }
+  }
+
+  async function renameItem(event: FormEvent) {
+    event.preventDefault()
+    if (!canManage || !dialogEntry || !dialogName.trim()) return
+    const newName = dialogName.trim()
+    setBusy(true); setError(null)
+    try {
+      const next = await renameServerFile(serverId, dialogEntry.path, newName)
+      setInventory(next); setNotice(`${translateText('Rename complete', currentLocale())}: ${dialogEntry.name} → ${newName}`); setDialog(null); setDialogEntry(null); setDialogName('')
+    } catch (issue) { setError(issue instanceof Error ? issue.message : 'The item could not be renamed.') }
     finally { setBusy(false) }
   }
 
@@ -916,7 +928,11 @@ function LocalFiles({ serverId, managed, runtimeStatus, canManage }: { serverId:
   }
 
   function beginMove(entry: ServerFileEntry) {
-    setDialog('move'); setDialogEntry(entry); setDialogName(entry.path)
+    setDialog('move'); setDialogEntry(entry); setDialogName(entry.path.split('/').slice(0, -1).join('/'))
+  }
+
+  function beginRename(entry: ServerFileEntry) {
+    setDialog('rename'); setDialogEntry(entry); setDialogName(entry.name)
   }
 
   if (!managed) return <LockedDetail title="Read only folder" text="The file manager is available only for servers created and managed by MMSManager. Imported folders remain unchanged." />
@@ -938,9 +954,9 @@ function LocalFiles({ serverId, managed, runtimeStatus, canManage }: { serverId:
         {inventory.entries.map((entry) => <div className="local-file-row" key={entry.path}>
           <div className="local-file-primary"><span className={`local-file-icon ${entry.kind === 'folder' ? 'is-folder' : ''}`}>{entry.kind === 'folder' ? <Folder size={17} /> : entry.contentState === 'protected' || entry.contentState === 'unsafe' ? <LockKeyhole size={16} /> : <FileText size={16} />}</span>
             {entry.kind === 'folder' ? <button type="button" className="local-file-name" onClick={() => setPath(entry.path)}>{entry.name}</button> : entry.name === 'server.properties' ? <Link className="local-file-name" to={`/servers/${serverId}/properties`}>{entry.name}</Link> : entry.canEdit ? <button type="button" className="local-file-name" onClick={() => void openTextFile(entry)}>{entry.name}</button> : <span className="local-file-name" title={entry.reason ?? undefined}>{entry.name}</span>}
-            {entry.reason && <small className="local-file-state">{entry.contentState === 'protected' ? 'Protected' : entry.contentState === 'unsafe' ? 'Unsafe' : entry.contentState === 'oversized' ? 'Large text' : 'Read only'}</small>}
+            {entry.reason && <small className="local-file-state" title={translateText(entry.reason, currentLocale())}>{entry.contentState === 'protected' ? 'Protected' : entry.contentState === 'unsafe' ? 'Unsafe' : entry.contentState === 'oversized' ? 'Large text' : 'Read only'}</small>}
           </div><span className="local-file-size">{entry.kind === 'folder' ? 'Folder' : formatFileSize(entry.sizeBytes)}</span><span className="local-file-date">{entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString(currentLocale()) : 'Unavailable'}</span>
-          <div className="local-file-row-actions">{entry.canDownload && <Button kind="quiet" icon={ArrowDownToLine} title={`Download ${entry.name}`} aria-label={`Download ${entry.name}`} disabled={busy} onClick={() => void download(entry)}>Download</Button>}{canManage && entry.canRename && <Button kind="quiet" icon={PencilLine} title={`Rename or move ${entry.name}`} aria-label={`Rename or move ${entry.name}`} disabled={busy} onClick={() => beginMove(entry)}>Move</Button>}{canManage && entry.canTrash && <Button kind="quiet" icon={Trash2} title={`Move ${entry.name} to trash`} aria-label={`Move ${entry.name} to trash`} disabled={busy} onClick={() => void moveToTrash(entry)}>Trash</Button>}</div>
+          <div className="local-file-row-actions">{entry.canDownload && <Button kind="quiet" icon={ArrowDownToLine} title={`${translateText('Download', currentLocale())} ${entry.name}`} aria-label={`${translateText('Download', currentLocale())} ${entry.name}`} disabled={busy} onClick={() => void download(entry)}>{translateText('Download', currentLocale())}</Button>}{canManage && entry.canRename && <><Button kind="quiet" icon={PencilLine} title={`${translateText('Rename', currentLocale())} ${entry.name}`} aria-label={`${translateText('Rename', currentLocale())} ${entry.name}`} disabled={busy} onClick={() => beginRename(entry)}>{translateText('Rename', currentLocale())}</Button><Button kind="quiet" icon={MoveRight} title={`${translateText('Move', currentLocale())} ${entry.name}`} aria-label={`${translateText('Move', currentLocale())} ${entry.name}`} disabled={busy} onClick={() => beginMove(entry)}>{translateText('Move', currentLocale())}</Button></>}{canManage && entry.canTrash && <Button kind="quiet" icon={Trash2} title={`${translateText('Move to trash', currentLocale())} ${entry.name}`} aria-label={`${translateText('Move to trash', currentLocale())} ${entry.name}`} disabled={busy} onClick={() => void moveToTrash(entry)}>{translateText('Move to trash', currentLocale())}</Button>}</div>
         </div>)}
         {inventory.entries.length === 0 && <div className="local-files-empty"><Folder size={20} /><strong>This folder is empty</strong><span>Create a text file or folder, or upload a supported item.</span></div>}
         {inventory.truncated && <div className="local-files-limit">Showing the first 500 entries. Open a narrower folder to see more.</div>}
@@ -948,7 +964,7 @@ function LocalFiles({ serverId, managed, runtimeStatus, canManage }: { serverId:
       {trashOpen && <div className="local-files-trash"><div className="local-files-subheading"><div><strong>Recoverable trash</strong><span>Items remain on disk until restored. Permanent deletion is not available here.</span></div><Badge>{trash.length} items</Badge></div>{trash.length ? trash.map((item) => <div className="local-file-trash-row" key={item.id}><span className="local-file-icon"><Archive size={15} /></span><span><strong>{item.originalPath}</strong><small>{item.kind === 'folder' ? 'Folder' : formatFileSize(item.sizeBytes)} · {new Date(item.deletedAt).toLocaleString(currentLocale())}</small></span>{canManage && <Button icon={RotateCcw} disabled={busy} onClick={() => void restoreTrashItem(item)}>Restore</Button>}</div>) : <div className="local-files-empty compact">Trash is empty.</div>}</div>}
     </Card>
 
-    {dialog && <div className="local-file-dialog-backdrop"><section className="local-file-dialog" role="dialog" aria-modal="true" aria-labelledby="server-file-dialog-title"><div className="local-file-dialog-heading"><span className="local-backup-icon">{dialog === 'folder' ? <FolderPlus size={16} /> : dialog === 'file' ? <FilePlus2 size={16} /> : <PencilLine size={16} />}</span><div><h3 id="server-file-dialog-title">{dialog === 'folder' ? 'Create folder' : dialog === 'file' ? 'Create text file' : 'Rename or move item'}</h3><p>Paths are relative to the managed server folder.</p></div></div><form onSubmit={(event) => void (dialog === 'move' ? moveItem(event) : createItem(event))}><label className="field"><span className="field-label">{dialog === 'move' ? 'Destination path' : 'Name'}</span><input autoFocus value={dialogName} onChange={(event) => setDialogName(event.target.value)} placeholder={dialog === 'move' ? 'config/example.txt' : dialog === 'folder' ? 'config' : 'notes.txt'} /></label>{dialog === 'file' && <label className="field"><span className="field-label">Initial text</span><textarea rows={5} value={dialogText} onChange={(event) => setDialogText(event.target.value)} /></label>}{error && <div className="local-inline-error" role="alert">{error}</div>}<div className="local-file-dialog-actions"><Button type="button" disabled={busy} onClick={() => { setDialog(null); setDialogEntry(null); setError(null) }}>Cancel</Button><Button kind="primary" icon={dialog === 'move' ? PencilLine : dialog === 'folder' ? FolderPlus : FilePlus2} disabled={busy || !dialogName.trim()} type="submit">{busy ? 'Working…' : dialog === 'move' ? 'Move item' : dialog === 'folder' ? 'Create folder' : 'Create file'}</Button></div></form></section></div>}
+    {dialog && <div className="local-file-dialog-backdrop"><section className="local-file-dialog" role="dialog" aria-modal="true" aria-labelledby="server-file-dialog-title"><div className="local-file-dialog-heading"><span className="local-backup-icon">{dialog === 'folder' ? <FolderPlus size={16} /> : dialog === 'file' ? <FilePlus2 size={16} /> : dialog === 'move' ? <MoveRight size={16} /> : <PencilLine size={16} />}</span><div><h3 id="server-file-dialog-title">{dialog === 'folder' ? 'Create folder' : dialog === 'file' ? 'Create text file' : dialog === 'rename' ? 'Rename item' : 'Move item'}</h3><p>{dialog === 'rename' ? 'The item will stay in its current folder.' : dialog === 'move' ? 'The original name will be kept.' : 'Paths are relative to the managed server folder.'}</p></div></div><form onSubmit={(event) => void (dialog === 'move' ? moveItem(event) : dialog === 'rename' ? renameItem(event) : createItem(event))}><label className="field"><span className="field-label">{dialog === 'move' ? 'Destination folder' : dialog === 'rename' ? 'New name' : 'Name'}</span><input autoFocus value={dialogName} onChange={(event) => setDialogName(event.target.value)} placeholder={dialog === 'move' ? 'config' : dialog === 'rename' ? 'new-name.txt' : dialog === 'folder' ? 'config' : 'notes.txt'} /></label>{dialog === 'file' && <label className="field"><span className="field-label">Initial text</span><textarea rows={5} value={dialogText} onChange={(event) => setDialogText(event.target.value)} /></label>}{error && <div className="local-inline-error" role="alert">{error}</div>}<div className="local-file-dialog-actions"><Button type="button" disabled={busy} onClick={() => { setDialog(null); setDialogEntry(null); setError(null) }}>Cancel</Button><Button kind="primary" icon={dialog === 'move' ? MoveRight : dialog === 'rename' ? PencilLine : dialog === 'folder' ? FolderPlus : FilePlus2} disabled={busy || (dialog !== 'move' && !dialogName.trim())} type="submit">{busy ? 'Working…' : dialog === 'move' ? 'Move item' : dialog === 'rename' ? 'Rename item' : dialog === 'folder' ? 'Create folder' : 'Create file'}</Button></div></form></section></div>}
 
     {editor && <div className="local-file-dialog-backdrop"><section className="local-file-dialog local-file-editor" role="dialog" aria-modal="true" aria-labelledby="server-text-editor-title"><div className="local-file-dialog-heading"><span className="local-backup-icon"><FileText size={16} /></span><div><h3 id="server-text-editor-title">{canManage ? 'Edit' : 'View'} {editor.path}</h3><p>{formatFileSize(editor.sizeBytes)} · SHA-256 {editor.sha256?.slice(0, 16)}…</p></div><Button kind="quiet" onClick={() => { setEditor(null); setEditorError(null) }}>Close</Button></div>{editorError && <div className="local-inline-error" role="alert">{editorError}<Button icon={RotateCcw} onClick={() => void openTextFile({ name: editor.path.split('/').at(-1)!, path: editor.path, kind: 'file', sizeBytes: editor.sizeBytes, modifiedAt: editor.modifiedAt, contentState: 'editable', reason: null, canDownload: true, canEdit: true, canRename: true, canTrash: true })}>Reload file</Button></div>}<form onSubmit={(event) => void saveTextFile(event)}><textarea className="local-file-textarea" aria-label="Text file contents" spellCheck={false} value={editorText} readOnly={!canManage} onChange={(event) => setEditorText(event.target.value)} /><div className="local-file-editor-footer"><span>{canManage ? `${changed ? 'Unsaved edits' : 'No unsaved edits'} · saves create a private recovery copy` : 'Read only access'}</span>{canManage && <Button kind="primary" icon={Check} disabled={!changed || editorBusy} type="submit">{editorBusy ? 'Saving…' : 'Save text'}</Button>}</div></form>{canManage && recoveries.length > 0 && <div className="local-file-recovery-list"><strong>Private recovery copies</strong>{recoveries.slice(0, 5).map((recovery) => <div key={recovery.id}><span>{new Date(recovery.createdAt).toLocaleString(currentLocale())} · SHA-256 {recovery.sha256.slice(0, 10)}…</span><Button kind="quiet" icon={RotateCcw} disabled={editorBusy || !editor.sha256} onClick={() => void restoreTextRecovery(recovery)}>Restore</Button></div>)}</div>}</section></div>}
   </div>

@@ -365,8 +365,12 @@ export async function createServerFile(serverId: string, path: string, kind: 'fi
   return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/create`, serverFileListSchema, { method: 'POST', body: JSON.stringify(text === undefined ? { path, kind } : { path, kind, text }) })
 }
 
-export async function moveServerFile(serverId: string, sourcePath: string, destinationPath: string): Promise<ServerFileList> {
-  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/move`, serverFileListSchema, { method: 'POST', body: JSON.stringify({ sourcePath, destinationPath }) })
+export async function renameServerFile(serverId: string, path: string, newName: string): Promise<ServerFileList> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/rename`, serverFileListSchema, { method: 'POST', body: JSON.stringify({ path, newName }) })
+}
+
+export async function moveServerFile(serverId: string, sourcePath: string, destinationDirectory: string): Promise<ServerFileList> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/files/move`, serverFileListSchema, { method: 'POST', body: JSON.stringify({ sourcePath, destinationDirectory }) })
 }
 
 export async function trashServerFile(serverId: string, path: string): Promise<{ item: ServerFileTrash; inventory: ServerFileList }> {

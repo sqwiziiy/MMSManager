@@ -1164,6 +1164,18 @@ const additionalPhrases = [
   ['observed peak', 'пиковое значение'],
   ['Started', 'Запущен'],
   ['transmitted', 'передано'],
+  ['Rename', 'Переименовать'],
+  ['Move to trash', 'В корзину'],
+  ['Destination folder', 'Папка назначения'],
+  ['New name', 'Новое имя'],
+  ['Rename item', 'Переименовать элемент'],
+  ['Move item', 'Переместить элемент'],
+  ['The item will stay in its current folder.', 'Элемент останется в текущей папке.'],
+  ['The original name will be kept.', 'Исходное имя будет сохранено.'],
+  ['Rename complete', 'Переименование выполнено'],
+  ['Move complete', 'Перемещение выполнено'],
+  ['Minecraft runtime files and loader metadata are protected from generic file operations.', 'Файлы среды Minecraft и метаданные загрузчика защищены от обычных файловых операций.'],
+  ['A file or folder with a case- or Unicode-equivalent name already exists.', 'Файл или папка с таким же именем без учёта регистра или нормализации Unicode уже существуют.'],
 ] as const satisfies ReadonlyArray<readonly [string, string]>
 export const supplementalPhrasePairs = additionalPhrases
 

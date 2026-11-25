@@ -762,7 +762,8 @@ export const serverFileReadSchema = z.object({
 }).strict()
 export const serverFileWriteSchema = z.object({ path: z.string().min(1).max(2048), text: z.string().max(524288), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
 export const serverFileCreateSchema = z.object({ path: z.string().min(1).max(2048), kind: z.enum(['file', 'folder']), text: z.string().max(524288).optional() }).strict().refine((value) => value.kind === 'file' || value.text === undefined)
-export const serverFileMoveSchema = z.object({ sourcePath: z.string().min(1).max(2048), destinationPath: z.string().min(1).max(2048) }).strict()
+export const serverFileRenameSchema = z.object({ path: z.string().min(1).max(2048), newName: z.string().min(1).max(255) }).strict()
+export const serverFileMoveSchema = z.object({ sourcePath: z.string().min(1).max(2048), destinationDirectory: z.string().max(2048) }).strict()
 export const serverFileTrashSchema = z.object({
   id: z.string().uuid(),
   name: z.string().max(255),

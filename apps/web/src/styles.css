@@ -1643,7 +1643,7 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
   .local-file-primary { grid-column: 1 / -1; }
   .local-file-size { grid-column: 1; padding-left: 36px; }
   .local-file-date { grid-column: 1; padding-left: 36px; }
-  .local-file-row-actions { grid-column: 1 / -1; justify-content: flex-start; padding-left: 35px; }
+  .local-file-row-actions { grid-column: 1 / -1; justify-content: flex-start; flex-wrap: wrap; padding-left: 35px; }
   .local-file-row-actions .button { min-width: 82px; }
   .local-file-up { grid-template-columns: minmax(0, 1fr); }
   .local-file-up .local-file-primary { grid-column: 1; }

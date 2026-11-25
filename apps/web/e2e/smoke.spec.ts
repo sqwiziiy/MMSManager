@@ -274,20 +274,29 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   let fileHash = 'b'.repeat(64)
   let fileRecoveryText = 'Earlier fixture notes.\n'
   let filePresent = true
+  let fileParent = 'config'
+  let fileName = 'server-note.txt'
   let folderCreated = false
   let fileRecoveries: Array<{ id: string; path: string; sizeBytes: number; sha256: string; createdAt: string }> = []
   let fileTrash: Array<{ id: string; name: string; originalPath: string; kind: 'file' | 'folder'; sizeBytes: number | null; deletedAt: string }> = []
   const uploadedPaths = new Set<string>()
   const uploadRequests: Array<{ path: string; body: string }> = []
+  const renameRequests: Array<{ path: string; newName: string }> = []
+  const moveRequests: Array<{ sourcePath: string; destinationDirectory: string }> = []
   const safeFileEntry = (name: string, path: string) => ({ name, path, kind: 'file' as const, sizeBytes: fileText.length, modifiedAt: now, contentState: 'editable' as const, reason: null, canDownload: true, canEdit: true, canRename: true, canTrash: true })
   const fileInventory = (path: string) => ({
     serverId, path, breadcrumbs: path.split('/').filter(Boolean).map((name, index, parts) => ({ name, path: parts.slice(0, index + 1).join('/') })),
     entries: path === '' ? [
       { name: 'config', path: 'config', kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'read-only', reason: null, canDownload: false, canEdit: false, canRename: true, canTrash: true },
       { name: 'server.properties', path: 'server.properties', kind: 'file', sizeBytes: 180, modifiedAt: now, contentState: 'protected', reason: 'Use the typed Properties editor for this configuration file.', canDownload: false, canEdit: false, canRename: false, canTrash: false },
+      { name: 'versions', path: 'versions', kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'protected', reason: 'Minecraft runtime files and loader metadata are protected from generic file operations.', canDownload: false, canEdit: false, canRename: false, canTrash: false },
+      { name: 'libraries', path: 'libraries', kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'protected', reason: 'Minecraft runtime files and loader metadata are protected from generic file operations.', canDownload: false, canEdit: false, canRename: false, canTrash: false },
+      { name: '.fabric', path: '.fabric', kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'protected', reason: 'Minecraft runtime files and loader metadata are protected from generic file operations.', canDownload: false, canEdit: false, canRename: false, canTrash: false },
+      { name: 'user_jvm_args.txt', path: 'user_jvm_args.txt', kind: 'file', sizeBytes: 12, modifiedAt: now, contentState: 'protected', reason: 'Minecraft runtime files and loader metadata are protected from generic file operations.', canDownload: false, canEdit: false, canRename: false, canTrash: false },
+      ...(fileParent === '' && filePresent ? [safeFileEntry(fileName, fileName)] : []),
       ...Array.from(uploadedPaths).filter((entry) => !entry.includes('/')).map((entry) => ({ name: entry, path: entry, kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'read-only', reason: null, canDownload: false, canEdit: false, canRename: true, canTrash: true })),
     ] : [
-      ...(filePresent ? [safeFileEntry('server-note.txt', filePath)] : []),
+      ...(filePresent && path === fileParent ? [safeFileEntry(fileName, `${fileParent ? `${fileParent}/` : ''}${fileName}`)] : []),
       ...(folderCreated ? [{ name: 'notes', path: 'config/notes', kind: 'folder', sizeBytes: null, modifiedAt: now, contentState: 'read-only', reason: null, canDownload: false, canEdit: false, canRename: true, canTrash: true }] : []),
       ...Array.from(uploadedPaths).filter((entry) => entry.startsWith(`${path}/`) && !entry.slice(path.length + 1).includes('/')).map((entry) => {
         const name = entry.slice(path.length + 1)
@@ -332,7 +341,18 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
       if (input.path.endsWith('/notes') && input.kind === 'folder') folderCreated = true
       return route.fulfill({ status: 201, json: fileInventory(input.path.includes('/') ? input.path.split('/').slice(0, -1).join('/') : '') })
     }
-    if (method === 'POST' && pathname.endsWith('/files/move')) return route.fulfill({ json: fileInventory('config') })
+    if (method === 'POST' && pathname.endsWith('/files/rename')) {
+      const input = request.postDataJSON() as { path: string; newName: string }
+      renameRequests.push(input)
+      fileName = input.newName
+      return route.fulfill({ json: fileInventory(fileParent) })
+    }
+    if (method === 'POST' && pathname.endsWith('/files/move')) {
+      const input = request.postDataJSON() as { sourcePath: string; destinationDirectory: string }
+      moveRequests.push(input)
+      fileParent = input.destinationDirectory
+      return route.fulfill({ json: fileInventory(input.sourcePath.split('/').slice(0, -1).join('/')) })
+    }
     if (method === 'POST' && pathname.endsWith('/files/upload-batch')) {
       const body = request.postDataBuffer()?.toString('utf8') ?? ''
       uploadRequests.push({ path: url.searchParams.get('path') ?? '', body })
@@ -368,7 +388,7 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
     submittedCommand = (route.request().postDataJSON() as { command?: string }).command
     return route.fulfill({ status: 202, json: { ok: true } })
   })
-  return { serverId, get submittedCommand() { return submittedCommand }, get submittedPlayerAction() { return submittedPlayerAction }, get uploadRequests() { return uploadRequests } }
+  return { serverId, get submittedCommand() { return submittedCommand }, get submittedPlayerAction() { return submittedPlayerAction }, get uploadRequests() { return uploadRequests }, get renameRequests() { return renameRequests }, get moveRequests() { return moveRequests } }
 }
 
 test('first-run administrator setup creates the protected local workspace', async ({ page }) => {
@@ -1098,11 +1118,18 @@ test('local Paper plugin inventory uploads and disables only acknowledged files'
 test('managed files edit with recovery, trash and restore at desktop and mobile widths', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await signIn(page)
-  const { serverId } = await mockLocalServer(page)
+  const fixture = await mockLocalServer(page)
+  const { serverId } = fixture
   await page.goto(`/servers/${serverId}/files`)
   await expect(page.locator('.local-files-card h3', { hasText: 'Files' })).toBeVisible()
   await expect(page.getByText('server.properties')).toBeVisible()
-  await expect(page.getByText('Protected', { exact: true })).toBeVisible()
+  await expect(page.getByText('Protected', { exact: true }).first()).toBeVisible()
+  for (const name of ['versions', 'libraries', '.fabric', 'user_jvm_args.txt']) {
+    const protectedRow = page.locator('.local-file-row').filter({ hasText: name })
+    await expect(protectedRow.getByRole('button', { name: new RegExp(`Rename ${name}`) })).toHaveCount(0)
+    await expect(protectedRow.getByRole('button', { name: new RegExp(`Move ${name}`) })).toHaveCount(0)
+    await expect(protectedRow.getByRole('button', { name: new RegExp(`Move to trash ${name}`) })).toHaveCount(0)
+  }
   await page.getByRole('button', { name: 'config', exact: true }).click()
   await page.getByRole('button', { name: 'server-note.txt', exact: true }).click()
   const editor = page.getByRole('dialog', { name: 'Edit config/server-note.txt' })
@@ -1115,7 +1142,7 @@ test('managed files edit with recovery, trash and restore at desktop and mobile 
   await editor.getByRole('button', { name: 'Close' }).click()
 
   await page.once('dialog', (confirm) => void confirm.accept())
-  await page.getByRole('button', { name: 'Move server-note.txt to trash' }).click()
+  await page.getByRole('button', { name: 'Move to trash server-note.txt' }).click()
   const trashToggle = page.locator('.local-files-header-actions').getByRole('button', { name: /Trash/ })
   await trashToggle.click()
   await expect(page.getByText('config/server-note.txt')).toBeVisible()
@@ -1128,12 +1155,42 @@ test('managed files edit with recovery, trash and restore at desktop and mobile 
   await createFolder.getByLabel('Name').fill('notes')
   await createFolder.getByRole('button', { name: 'Create folder' }).click()
   await expect(page.getByRole('button', { name: 'notes', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Rename server-note.txt' }).click()
+  const renameDialog = page.getByRole('dialog', { name: 'Rename item' })
+  await renameDialog.getByLabel('New name').fill('renamed-note.txt')
+  await renameDialog.getByRole('button', { name: 'Rename item' }).click()
+  expect(fixture.renameRequests.at(-1)).toEqual({ path: 'config/server-note.txt', newName: 'renamed-note.txt' })
+  await expect(page.getByRole('button', { name: 'renamed-note.txt', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Move renamed-note.txt' }).click()
+  const moveDialog = page.getByRole('dialog', { name: 'Move item' })
+  await moveDialog.getByLabel('Destination folder').fill('')
+  await moveDialog.getByRole('button', { name: 'Move item' }).click()
+  expect(fixture.moveRequests.at(-1)).toEqual({ sourcePath: 'config/renamed-note.txt', destinationDirectory: '' })
+  await page.getByRole('button', { name: 'Server root', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'renamed-note.txt', exact: true })).toBeVisible()
   await page.screenshot({ path: screenshotPath('stage-05c-file-manager-desktop.png'), fullPage: true })
+
+  const languageStatus = await page.evaluate(async () => {
+    const csrfCookie = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith('mmsmanager_csrf='))
+    const csrfToken = csrfCookie ? decodeURIComponent(csrfCookie.slice('mmsmanager_csrf='.length)) : ''
+    const response = await fetch('/api/v1/profile/preferences', { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-mms-csrf': csrfToken }, body: JSON.stringify({ language: 'ru' }) })
+    return response.status
+  })
+  expect(languageStatus).toBe(200)
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`/servers/${serverId}/files`)
+  await expect(page.getByRole('button', { name: 'config', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Переименовать renamed-note.txt' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Переместить renamed-note.txt' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'В корзину renamed-note.txt' })).toBeVisible()
   await expectNoHorizontalOverflow(page, 'managed file manager mobile')
   await page.screenshot({ path: screenshotPath('stage-05c-file-manager-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.getByRole('button', { name: 'Переименовать renamed-note.txt' }).click()
+  const russianRenameDialog = page.getByRole('dialog', { name: 'Переименовать элемент' })
+  await expect(russianRenameDialog.getByLabel('Новое имя')).toBeVisible()
+  await expectNoHorizontalOverflow(page, 'Russian rename dialog mobile')
+  await page.screenshot({ path: screenshotPath('stage-06i-04-rename-russian-mobile.png'), fullPage: true, animations: 'disabled' })
 })
 
 test('managed files upload multiple files and preserve selected folder hierarchy', async ({ page }) => {

@@ -37,6 +37,12 @@ describe('English and Russian interface catalog', () => {
     expect(supplementalPhrasePairs.every(([source, target]) => Boolean(source.trim() && target.trim()))).toBe(true)
     expect(translateText('Personal', 'ru')).toBe('Личные настройки')
     expect(translateText('Language changes menus, settings and help text. Minecraft values and user-entered names stay unchanged. Appearance changes preview immediately and are saved to your account.', 'ru')).toContain('Язык меняет меню')
+    expect(translateText('Rename', 'ru')).toBe('Переименовать')
+    expect(translateText('Move', 'ru')).toBe('Переместить')
+    expect(translateText('Move to trash', 'ru')).toBe('В корзину')
+    expect(translateText('Destination folder', 'ru')).toBe('Папка назначения')
+    expect(translateText('New name', 'ru')).toBe('Новое имя')
+    expect(translateText('Minecraft runtime files and loader metadata are protected from generic file operations.', 'ru')).toContain('Файлы среды Minecraft')
   })
 
   it('translates ZIP import and server removal failures, including variable details', () => {

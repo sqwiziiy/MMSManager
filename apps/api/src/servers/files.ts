@@ -22,6 +22,8 @@ const MAX_DIRECTORY_ENTRIES = 500
 const TEXT_EXTENSIONS = new Set(['.txt', '.log', '.md', '.json', '.yaml', '.yml', '.toml', '.xml', '.csv', '.cfg', '.ini', '.conf'])
 const SCRIPT_EXTENSIONS = new Set(['.sh', '.bash', '.zsh', '.fish', '.bat', '.cmd', '.ps1', '.exe', '.dll', '.so', '.dylib', '.jar', '.class', '.py', '.js', '.ts', '.mjs', '.cjs', '.mcfunction', '.lua', '.wasm'])
 const WORLD_NAMES = new Set(['world', 'world_nether', 'world_the_end'])
+const ROOT_RUNTIME_DIRECTORIES = new Set(['versions', 'libraries', '.fabric'])
+const ROOT_RUNTIME_FILES = new Set(['fabric-server-launcher.properties', 'fabric-server-launcher.json', 'user_jvm_args.txt', 'unix_args.txt', 'win_args.txt'])
 
 export type ServerFileUploadManifest = { files: string[]; directories: string[] }
 export type ServerFileUploadPart = { relativePath: string; stream: AsyncIterable<Buffer | string>; truncated: () => boolean }
@@ -32,6 +34,7 @@ export class ServerFilesError extends Error {
 
 function fsError(error: unknown): error is NodeJS.ErrnoException { return error instanceof Error && 'code' in error }
 function sha256(bytes: Uint8Array): string { return createHash('sha256').update(bytes).digest('hex') }
+function portableName(value: string): string { return value.normalize('NFKC').toLowerCase() }
 function containsPathControl(value: string): boolean {
   return Array.from(value).some((character) => {
     const code = character.charCodeAt(0)
@@ -54,18 +57,22 @@ function safeParts(path: string, allowRoot = false): string[] {
   }
   if (!path && allowRoot) return []
   const parts = path.split('/')
-  if (!parts.length || parts.length > MAX_SERVER_FILE_UPLOAD_PATH_DEPTH || parts.some((part) => !part || part === '.' || part === '..' || part.length > 255 || part.includes(':') || containsPathControl(part) || /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(part))) {
+  if (!parts.length || parts.length > MAX_SERVER_FILE_UPLOAD_PATH_DEPTH || parts.some((part) => {
+    const portable = portableName(part)
+    return !part || part === '.' || part === '..' || part.length > 255 || portable.includes('/') || portable.includes('\\') || portable.includes(':') || containsPathControl(part) || /[. ]$/.test(portable) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/.test(portable)
+  })) {
     throw new ServerFilesError('FILE_PATH_REJECTED', 'The server-relative path contains an invalid segment.')
   }
-  if (parts.some((part) => part.toLowerCase() === '.mmsmanager')) {
+  if (parts.some((part) => portableName(part) === '.mmsmanager')) {
     throw new ServerFilesError('FILE_PATH_PROTECTED', 'MMSManager private operation files are not exposed in the file browser.')
   }
-  if (parts.some((part) => /^\.mms-file-[0-9a-f-]+\.tmp$/i.test(part))) throw new ServerFilesError('FILE_PATH_PROTECTED', 'Temporary file-manager paths are reserved for safe writes.')
+  if (parts.some((part) => /^\.mms-file-[0-9a-f-]+\.tmp$/i.test(part.normalize('NFKC')))) throw new ServerFilesError('FILE_PATH_PROTECTED', 'Temporary file-manager paths are reserved for safe writes.')
   return parts
 }
 function protectedReason(parts: string[], worldFolders: ReadonlySet<string> = WORLD_NAMES): string | null {
-  const lower = parts.map((part) => part.toLowerCase())
+  const lower = parts.map(portableName)
   const name = lower.at(-1) ?? ''
+  if (ROOT_RUNTIME_DIRECTORIES.has(lower[0] ?? '') || (lower.length === 1 && ROOT_RUNTIME_FILES.has(name))) return 'Minecraft runtime files and loader metadata are protected from generic file operations.'
   if (lower.some((part) => part === '.git' || part === '.ssh' || part === '.config' || part.startsWith('.mms'))) return 'Private application paths are protected from the file manager.'
   if (lower.some((part) => part === 'mods' || part === 'plugins')) return 'Use the Mods page to manage loader artifacts.'
   if (lower.some((part) => part === 'datapacks')) return 'Datapack scripts and world data are protected from generic file uploads.'
@@ -118,7 +125,7 @@ export class ServerFileService {
     const worldFolders = this.worldFolders(serverId)
     const directory = await this.resolveExisting(root, parts, 'directory')
     const handles = await readdir(directory.absolute, { withFileTypes: true })
-    const visible = handles.filter((entry) => entry.name.toLowerCase() !== '.mmsmanager' && !/^\.mms-file-[0-9a-f-]+\.tmp$/i.test(entry.name))
+    const visible = handles.filter((entry) => portableName(entry.name) !== '.mmsmanager' && !/^\.mms-file-[0-9a-f-]+\.tmp$/i.test(entry.name.normalize('NFKC')))
     const items: ServerFileEntry[] = []
     for (const entry of visible.slice(0, MAX_DIRECTORY_ENTRIES)) {
       let stat: Awaited<ReturnType<typeof lstat>>
@@ -208,7 +215,7 @@ export class ServerFileService {
       const requestedDirectoryParts = manifest.directories.map((path) => safeParts(path))
       const filePaths = fileParts.map((parts) => parts.join('/'))
       const directoryPaths = new Map<string, string[]>()
-      const portablePath = (value: string) => value.normalize('NFC').toLowerCase()
+      const portablePath = (value: string) => portableName(value)
       const portableDirectories = new Map<string, string>()
       const fileKeys = new Set<string>()
       for (const parts of [...fileParts, ...requestedDirectoryParts]) {
@@ -303,6 +310,7 @@ export class ServerFileService {
           const parentStat = directoryStats.get(parentPath)
           if (!parentStat) throw new ServerFilesError('FILE_NOT_DIRECTORY', `The parent folder for “${relativePath}” is unavailable.`)
           await this.assertSameDirectory(root, parentParts, parentStat)
+          await this.assertNoPortableAlias(join(root, ...parentParts), fullParts.at(-1)!)
           await assertMount(fullParts)
           let madeDirectory = false
           try { await mkdir(absolutePath, { mode: 0o700 }); madeDirectory = true }
@@ -320,6 +328,8 @@ export class ServerFileService {
           const fullParts = [...baseParts, ...parts]
           currentPath = relativePath
           await assertMount(fullParts)
+          const parent = await this.resolveExisting(root, fullParts.slice(0, -1), 'directory')
+          await this.assertNoPortableAlias(parent.absolute, fullParts.at(-1)!)
           if (await pathExists(join(root, ...fullParts))) throw new ServerFilesError('FILE_ALREADY_EXISTS', `“${relativePath}” already exists. Files are never overwritten.`)
         }
 
@@ -436,6 +446,7 @@ export class ServerFileService {
       const parentParts = parts.slice(0, -1)
       const parent = await this.resolveExisting(root, parentParts, 'directory')
       const target = join(parent.absolute, parts.at(-1)!)
+      await this.assertNoPortableAlias(parent.absolute, parts.at(-1)!)
       if (await pathExists(target)) throw new ServerFilesError('FILE_ALREADY_EXISTS', 'A file or folder with that name already exists.')
       await this.assertSameDirectory(root, parentParts, parent.stat)
       if (kind === 'folder') await mkdir(target, { mode: 0o700 })
@@ -452,11 +463,23 @@ export class ServerFileService {
     })
   }
 
-  async move(serverId: string, actorUserId: string, sourcePath: string, destinationPath: string): Promise<ServerFileList> {
+  async move(serverId: string, actorUserId: string, sourcePath: string, destinationDirectory: string): Promise<ServerFileList> {
+    const sourceParts = safeParts(sourcePath)
+    const destinationParts = [...safeParts(destinationDirectory, true), sourceParts.at(-1)!]
+    return this.moveParts(serverId, actorUserId, sourceParts, destinationParts, 'server-file-moved')
+  }
+
+  async rename(serverId: string, actorUserId: string, path: string, newName: string): Promise<ServerFileList> {
+    const sourceParts = safeParts(path)
+    const nameParts = safeParts(newName)
+    if (nameParts.length !== 1) throw new ServerFilesError('FILE_PATH_REJECTED', 'A new name must be a single file or folder name.')
+    const destinationParts = [...sourceParts.slice(0, -1), nameParts[0]!]
+    return this.moveParts(serverId, actorUserId, sourceParts, destinationParts, 'server-file-renamed')
+  }
+
+  private async moveParts(serverId: string, actorUserId: string, sourceParts: string[], destinationParts: string[], action: 'server-file-moved' | 'server-file-renamed'): Promise<ServerFileList> {
     return this.withMutation(serverId, async () => {
       const root = await this.serverRoot(serverId)
-      const sourceParts = safeParts(sourcePath)
-      const destinationParts = safeParts(destinationPath)
       if (sourceParts.join('/') === destinationParts.join('/')) throw new ServerFilesError('FILE_PATH_REJECTED', 'Choose a different destination path.')
       for (const parts of [sourceParts, destinationParts]) {
         const reason = this.protectedReason(serverId, parts)
@@ -468,13 +491,14 @@ export class ServerFileService {
       const destinationParentParts = destinationParts.slice(0, -1)
       const destinationParent = await this.resolveExisting(root, destinationParentParts, 'directory')
       const destination = join(destinationParent.absolute, destinationParts.at(-1)!)
+      await this.assertNoPortableAlias(destinationParent.absolute, destinationParts.at(-1)!)
       if (await pathExists(destination)) throw new ServerFilesError('FILE_ALREADY_EXISTS', 'The destination already exists. Files are never overwritten.')
       if (source.stat.isDirectory() && destination.startsWith(source.absolute + sep)) throw new ServerFilesError('FILE_PATH_REJECTED', 'A folder cannot be moved into itself.')
       await this.assertSameDirectory(root, destinationParentParts, destinationParent.stat)
       const sourceParent = await this.resolveExisting(root, sourceParts.slice(0, -1), 'directory')
       await this.assertSameDirectory(root, sourceParts.slice(0, -1), sourceParent.stat)
       await this.moveNoReplace(source.absolute, destination, source.stat)
-      this.audit(serverId, actorUserId, 'server-file-moved', { from: sourceParts.join('/'), to: destinationParts.join('/') })
+      this.audit(serverId, actorUserId, action, { from: sourceParts.join('/'), to: destinationParts.join('/') })
       return this.list(serverId, sourceParts.slice(0, -1).join('/'))
     })
   }
@@ -530,6 +554,7 @@ export class ServerFileService {
       const storedStat = await lstat(stored).catch(() => null)
       if (!storedStat || storedStat.isSymbolicLink() || (!storedStat.isFile() && !storedStat.isDirectory())) throw new ServerFilesError('FILE_TRASH_UNAVAILABLE', 'The recoverable copy is missing or unsafe.')
       const destination = join(parent.absolute, parts.at(-1)!)
+      await this.assertNoPortableAlias(parent.absolute, parts.at(-1)!)
       if (await pathExists(destination)) throw new ServerFilesError('FILE_ALREADY_EXISTS', 'The original path is occupied. Rename or move the current item before restoring.')
       await this.assertSameDirectory(root, parentParts, parent.stat)
       await this.moveNoReplace(stored, destination, storedStat)
@@ -739,7 +764,7 @@ export class ServerFileService {
       const values: unknown = JSON.parse(row?.worldFolders ?? '[]')
       if (Array.isArray(values)) {
         for (const value of values) {
-          if (typeof value === 'string' && value.length <= 255 && !/[\\/:]/.test(value) && !containsPathControl(value) && value !== '.' && value !== '..') names.add(value.toLowerCase())
+          if (typeof value === 'string' && value.length <= 255 && !/[\\/:]/.test(portableName(value)) && !containsPathControl(value) && value !== '.' && value !== '..') names.add(portableName(value))
         }
       }
     } catch { /* malformed old registry metadata cannot broaden writable access past defaults */ }
@@ -748,6 +773,14 @@ export class ServerFileService {
 
   private protectedReason(serverId: string, parts: string[]): string | null {
     return protectedReason(parts, this.worldFolders(serverId))
+  }
+
+  private async assertNoPortableAlias(parent: string, name: string): Promise<void> {
+    const requested = portableName(name)
+    const names = await readdir(parent)
+    if (names.some((existing) => existing !== name && portableName(existing) === requested)) {
+      throw new ServerFilesError('FILE_NAME_COLLISION', 'A file or folder with a case- or Unicode-equivalent name already exists.')
+    }
   }
 
   private async ensurePrivateDirectory(path: string, root: string): Promise<void> {

@@ -61,6 +61,7 @@ import {
   serverFileIdParamSchema,
   serverFileListSchema,
   serverFileMoveSchema,
+  serverFileRenameSchema,
   serverFilePathQuerySchema,
   serverFileReadQuerySchema,
   serverFileReadSchema,
@@ -1072,7 +1073,12 @@ export async function createApiApp(options: {
   app.post('/api/v1/admin/servers/:serverId/files/move', { preHandler: requireServerCapability('manageFiles', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const input = parse(serverFileMoveSchema, request.body)
-    return serverFileListSchema.parse(await files.move(params.serverId, request.principal!.userId, input.sourcePath, input.destinationPath))
+    return serverFileListSchema.parse(await files.move(params.serverId, request.principal!.userId, input.sourcePath, input.destinationDirectory))
+  })
+  app.post('/api/v1/admin/servers/:serverId/files/rename', { preHandler: requireServerCapability('manageFiles', true) }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverFileRenameSchema, request.body)
+    return serverFileListSchema.parse(await files.rename(params.serverId, request.principal!.userId, input.path, input.newName))
   })
   app.delete('/api/v1/admin/servers/:serverId/files', { preHandler: requireServerCapability('manageFiles', true) }, async (request) => {
     const params = parse(localServerIdSchema, request.params)

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { eq } from 'drizzle-orm'
-import { localServerEvents, localServerFileRecoveries, localServers, users } from '../db/schema.js'
+import { localServerEvents, localServerFileRecoveries, localServerFileTrash, localServers, users } from '../db/schema.js'
 import { openDatabase } from '../db/client.js'
 import { ServerRegistry } from './registry.js'
 import { ServerProcessManager } from './processes.js'
@@ -78,12 +78,57 @@ describe('managed server file manager', () => {
     const binaryImage = Buffer.from([0x00, 0xff, 0x10])
     await service.upload(managedId, userId, 'config', 'fake.png', Readable.from([binaryImage]), () => false)
     await expect(service.download(managedId, 'config/fake.png')).resolves.toMatchObject({ bytes: binaryImage })
-    const moved = await service.move(managedId, userId, 'notes/new.txt', 'config/renamed.txt')
+    await service.rename(managedId, userId, 'notes/new.txt', 'renamed.txt')
+    const moved = await service.move(managedId, userId, 'notes/renamed.txt', 'config')
     expect(moved.path).toBe('notes')
     expect(moved.entries).toEqual([])
     expect((await service.list(managedId, 'config')).entries.map((item) => item.name)).toContain('renamed.txt')
     expect(await readFile(join(serverDirectory, 'config', 'renamed.txt'), 'utf8')).toBe('created text\n')
-    await expect(service.move(managedId, userId, 'config/renamed.txt', 'config/uploaded.txt')).rejects.toMatchObject({ code: 'FILE_ALREADY_EXISTS' })
+    await service.create(managedId, userId, 'notes/uploaded.txt', 'file', 'collision bytes')
+    await expect(service.move(managedId, userId, 'notes/uploaded.txt', 'config')).rejects.toMatchObject({ code: 'FILE_ALREADY_EXISTS' })
+    await expect(service.rename(managedId, userId, 'config/renamed.txt', 'notes/other.txt')).rejects.toMatchObject({ code: 'FILE_PATH_REJECTED' })
+  })
+
+  it('protects root runtime assets across generic operations without blocking nested ordinary folders', async () => {
+    await mkdir(join(serverDirectory, 'versions', '1.21.4'), { recursive: true })
+    await mkdir(join(serverDirectory, 'libraries', 'org', 'example'), { recursive: true })
+    await mkdir(join(serverDirectory, '.fabric'), { recursive: true })
+    await writeFile(join(serverDirectory, 'versions', '1.21.4', 'server.jar'), 'runtime bytes')
+    await writeFile(join(serverDirectory, 'libraries', 'org', 'example', 'library.jar'), 'library bytes')
+    await writeFile(join(serverDirectory, 'user_jvm_args.txt'), '-Xmx1G\n')
+    await writeFile(join(serverDirectory, 'fabric-server-launcher.properties'), 'serverJar=versions/1.21.4/server.jar\n')
+    const root = await service.list(managedId)
+    for (const name of ['versions', 'libraries', '.fabric', 'user_jvm_args.txt', 'fabric-server-launcher.properties']) {
+      expect(root.entries.find((entry) => entry.name === name)).toMatchObject({ contentState: 'protected', canEdit: false, canRename: false, canTrash: false })
+    }
+    await expect(service.read(managedId, 'versions/1.21.4/server.jar')).resolves.toMatchObject({ contentState: 'protected', text: null })
+    await expect(service.create(managedId, userId, 'versions/notes.txt', 'file', 'blocked')).rejects.toMatchObject({ code: 'FILE_PROTECTED' })
+    await expect(service.upload(managedId, userId, 'libraries', 'notes.txt', Readable.from(['blocked']), () => false)).rejects.toMatchObject({ code: 'FILE_PROTECTED' })
+    await expect(service.create(managedId, userId, 'Ｖｅｒｓｉｏｎｓ/notes.txt', 'file', 'blocked')).rejects.toMatchObject({ code: 'FILE_PROTECTED' })
+    await expect(service.rename(managedId, userId, 'versions', 'old-versions')).rejects.toMatchObject({ code: 'FILE_PROTECTED' })
+    await expect(service.move(managedId, userId, 'readme.txt', 'versions')).rejects.toMatchObject({ code: 'FILE_PROTECTED' })
+    await expect(service.trash(managedId, userId, 'versions')).rejects.toMatchObject({ code: 'FILE_PROTECTED' })
+    await expect(service.trash(managedId, userId, 'user_jvm_args.txt')).rejects.toMatchObject({ code: 'FILE_PROTECTED' })
+
+    await mkdir(join(serverDirectory, 'config', 'versions'), { recursive: true })
+    await mkdir(join(serverDirectory, 'config', 'libraries'), { recursive: true })
+    await writeFile(join(serverDirectory, 'config', 'versions', 'notes.txt'), 'ordinary nested folder')
+    await service.rename(managedId, userId, 'config/versions/notes.txt', 'renamed.txt')
+    await service.move(managedId, userId, 'config/versions/renamed.txt', 'config/libraries')
+    expect(await readFile(join(serverDirectory, 'config', 'libraries', 'renamed.txt'), 'utf8')).toBe('ordinary nested folder')
+
+    const trashId = randomUUID()
+    await opened.db.insert(localServerFileTrash).values({ id: trashId, serverId: managedId, actorUserId: userId, name: 'restored.txt', originalPath: 'versions/restored.txt', storedName: trashId, kind: 'file', sizeBytes: 1, deletedAt: new Date().toISOString(), restoredAt: null }).run()
+    await expect(service.restoreTrash(managedId, userId, trashId)).rejects.toMatchObject({ code: 'FILE_PROTECTED' })
+  })
+
+  it('rejects case-folded and Unicode-normalized aliases on create, upload and rename', async () => {
+    await writeFile(join(serverDirectory, 'config', 'café.txt'), 'existing')
+    await writeFile(join(serverDirectory, 'config', 'rename-source.txt'), 'rename source')
+    const empty = async function* () { /* validation happens before file bodies are accepted */ }
+    await expect(service.create(managedId, userId, 'config/CAFÉ.txt', 'file', 'alias')).rejects.toMatchObject({ code: 'FILE_NAME_COLLISION' })
+    await expect(service.uploadBatch(managedId, userId, 'config', { files: ['cafe\u0301.txt'], directories: [] }, empty())).rejects.toMatchObject({ code: 'FILE_NAME_COLLISION' })
+    await expect(service.rename(managedId, userId, 'config/rename-source.txt', 'ＣＡＦÉ.txt')).rejects.toMatchObject({ code: 'FILE_NAME_COLLISION' })
   })
 
   it('streams binary batches into nested folders, creates empty directories and never overwrites', async () => {
