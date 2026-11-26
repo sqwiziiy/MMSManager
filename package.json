@@ -1,6 +1,8 @@
 {
   "name": "minepanel",
+  "version": "0.1.0-alpha.1",
   "private": true,
+  "license": "GPL-3.0-only",
   "engines": {
     "node": ">=22.13.0",
     "pnpm": ">=10.23.0"

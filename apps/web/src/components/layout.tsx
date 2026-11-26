@@ -8,6 +8,7 @@ import type { LucideIcon } from 'lucide-react'
 import { getLocalServers } from '../api/servers'
 import type { LocalServerSummary } from '@mmsmanager/shared'
 import { Button, IconButton } from './ui'
+import { BrandGlyph } from './brand-glyph'
 import { useMachineStatus } from '../state/use-machine-monitor'
 import { useAuth } from '../state/use-auth'
 import type { AuthUser } from '@mmsmanager/shared'
@@ -120,7 +121,7 @@ export function AppShell({ children, overlay, onCreate, onSignOut, user, workspa
       {mobileOpen && <button aria-label="Close navigation" className="mobile-scrim" onClick={() => setMobileOpen(false)} />}
       <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
         <div className="brand-row">
-          <NavLink to="/" className="brand-mark" aria-label={translateText('MMSManager dashboard', currentLocale())}><span className="brand-glyph"><i /><i /><i /><i /></span><span className="brand-name" data-no-translate>MMSManager</span></NavLink>
+          <NavLink to="/" className="brand-mark" aria-label={translateText('MMSManager dashboard', currentLocale())}><BrandGlyph /><span className="brand-name" data-no-translate>MMSManager</span></NavLink>
           <IconButton icon={collapsed ? PanelLeftOpen : PanelLeftClose} label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} className="collapse-sidebar" aria-expanded={!collapsed} aria-busy={sidebarSaving} onClick={toggleSidebar} />
           <IconButton icon={X} label="Close navigation" className="close-mobile" onClick={() => setMobileOpen(false)} />
         </div>

@@ -1263,6 +1263,17 @@ const additionalPhrases = [
   ['Scheduled server restart failed', 'Не удалось перезапустить сервер по расписанию'],
   ['Scheduled server restart was missed', 'Перезапуск сервера по расписанию пропущен'],
   ['Scheduled server restart interrupted', 'Перезапуск сервера по расписанию прерван'],
+  ['About', 'О проекте'],
+  ['Project information', 'Информация о проекте'],
+  ['Status', 'Статус'],
+  ['Alpha', 'Альфа'],
+  ['Developer', 'Разработчик'],
+  ['License', 'Лицензия'],
+  ['GitHub author', 'GitHub автора'],
+  ['Project repository', 'Репозиторий проекта'],
+  ['About MMSManager', 'О MMSManager'],
+  ['Project identity, release information and license', 'Сведения о проекте, выпуске и лицензии'],
+  ['Alpha release', 'Альфа-версия'],
 ] as const satisfies ReadonlyArray<readonly [string, string]>
 export const supplementalPhrasePairs = additionalPhrases
 

@@ -489,6 +489,79 @@ test('first-run administrator setup creates the protected local workspace', asyn
   expect(page.url()).not.toContain('/setup')
 })
 
+test('About presents release identity to administrators and members', async ({ page }) => {
+  let mockRole: 'administrator' | 'member' = 'administrator'
+  await page.route('**/api/v1/auth/me', async (route) => {
+    const response = await route.fetch()
+    const body = await response.json()
+    body.user.displayName = 'Demo Administrator'
+    body.user.username = 'demo-admin'
+    body.user.role = mockRole
+    if (mockRole === 'member') body.user.preferences.language = 'ru'
+    body.workspace.displayName = 'MMSManager Demo'
+    await route.fulfill({ response, json: body })
+  })
+  await page.route('**/api/v1/machine/current', (route) => route.fulfill({ json: {
+    status: 'collecting', timeZone: 'Etc/UTC', host: null, sample: null,
+    lastSuccessfulAt: null, intervalMs: 1000, provenance: 'LOCAL_HOST',
+  } }))
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await signIn(page)
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'About', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'MMSManager', level: 3 })).toBeVisible()
+  await expect(page.getByText('0.1.0-alpha.1', { exact: true })).toBeVisible()
+  await expect(page.getByText('GNU General Public License v3.0 only', { exact: true })).toBeVisible()
+  await expect(page.getByText('GPL-3.0-only', { exact: true })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'GitHub author' })).toHaveAttribute('href', 'https://github.com/sqwiziiy')
+  await expect(page.getByRole('link', { name: 'Project repository' })).toHaveAttribute('href', 'https://github.com/sqwiziiy/MMSManager')
+  expect(await page.title()).toBe('MMSManager')
+  const favicon = await page.evaluate(async () => {
+    const response = await fetch('/favicon.svg')
+    return { status: response.status, type: response.headers.get('content-type'), source: await response.text() }
+  })
+  expect(favicon.status).toBe(200)
+  expect(favicon.type).toContain('image/svg+xml')
+  expect(favicon.source).toContain('<svg')
+
+  if (process.env['MMSMANAGER_CAPTURE_README'] === '1') {
+    const directory = resolve(process.cwd(), '../../assets/readme')
+    mkdirSync(directory, { recursive: true })
+    await page.screenshot({ path: resolve(directory, 'about-desktop.png'), fullPage: true })
+    await page.goto('/servers')
+    await expect(page.getByRole('heading', { name: 'Servers', exact: true })).toBeVisible()
+    await expect(page.getByText('No local servers registered', { exact: true })).toBeVisible()
+    await page.screenshot({ path: resolve(directory, 'servers-desktop.png'), fullPage: true })
+    await page.goto('/settings')
+    await page.getByRole('button', { name: 'About', exact: true }).click()
+  }
+
+  await page.getByRole('button', { name: 'Language & appearance', exact: true }).click()
+  await page.getByLabel('Language').selectOption('ru')
+  await page.getByRole('button', { name: 'О проекте', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'MMSManager', level: 3 })).toBeVisible()
+  await expect(page.getByText('Версия', { exact: true })).toBeVisible()
+  await expect(page.getByText('Разработчик', { exact: true })).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  const closeNavigation = page.getByRole('button', { name: 'Close navigation' })
+  if (await closeNavigation.isVisible()) await closeNavigation.click()
+  await expect(closeNavigation).toBeHidden()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  await page.waitForTimeout(250)
+  if (process.env['MMSMANAGER_CAPTURE_README'] === '1') {
+    const directory = resolve(process.cwd(), '../../assets/readme')
+    await page.screenshot({ path: resolve(directory, 'about-mobile.png'), fullPage: true })
+  }
+
+  mockRole = 'member'
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'О проекте', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'О проекте', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'MMSManager', level: 3 })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Workspace', exact: true })).toHaveCount(0)
+  mockRole = 'administrator'
+})
+
 test('Stage 5G removes demo records from operational pages', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))

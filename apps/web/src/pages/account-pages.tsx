@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { AlertCircle, ArrowDownToLine, Check, CircleUserRound, Clock3, KeyRound, LoaderCircle, LockKeyhole, Palette, Plus, Save, ShieldCheck, Trash2, UserRoundPlus, Users, X } from 'lucide-react'
+import { AlertCircle, ArrowDownToLine, Check, CircleUserRound, Clock3, ExternalLink, Info, KeyRound, LoaderCircle, LockKeyhole, Palette, Plus, Save, ShieldCheck, Trash2, UserRoundPlus, Users, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import type { AdminUser, AuditRecord, LandingPage, MonitoringSettings, UserRole } from '@mmsmanager/shared'
 import {
@@ -12,6 +12,8 @@ import { Badge, Button, Card, Field, PageHeading, SectionHeading } from '../comp
 import { useAuth } from '../state/use-auth'
 import { useMachineHistory } from '../state/use-machine-monitor'
 import { NotificationsPanel } from '../components/notifications'
+import { BrandGlyph } from '../components/brand-glyph'
+import { appMetadata } from '../app-metadata'
 import { getMonitoringSettings, updateMonitoringSettings } from '../api/monitoring'
 import { DEFAULT_MONITORING_SETTINGS } from '@mmsmanager/shared'
 import { saveUiPreferencesInput } from '../i18n/preferences'
@@ -321,7 +323,30 @@ export function ProfilePage() {
   </div>
 }
 
-type SettingsTab = 'Workspace' | 'Personal' | 'Language & appearance' | 'Notifications' | 'Monitoring'
+function AboutPanel({ language }: { language: 'en' | 'ru' }) {
+  const t = (value: string) => translateText(value, language)
+  return <section className="about-panel" aria-label={t('About MMSManager')}>
+    <div className="about-identity">
+      <BrandGlyph size="large" />
+      <div><span className="about-eyebrow">{t('Project information')}</span><h3 data-no-translate>{appMetadata.name}</h3><p data-no-translate>{appMetadata.fullName}</p></div>
+    </div>
+    <div className="about-release">
+      <div><span>{t('Version')}</span><strong data-no-translate>{appMetadata.version}</strong></div>
+      <div><span>{t('Status')}</span><Badge tone="accent">{t(appMetadata.status)}</Badge></div>
+    </div>
+    <dl className="about-details">
+      <div><dt>{t('Developer')}</dt><dd data-no-translate>{appMetadata.developer}</dd></div>
+      <div><dt>{t('License')}</dt><dd><span data-no-translate>{appMetadata.licenseName}</span><code data-no-translate>{appMetadata.licenseSpdx}</code></dd></div>
+    </dl>
+    <div className="about-links">
+      <a href={appMetadata.authorUrl} target="_blank" rel="noreferrer"><span>{t('GitHub author')}</span><ExternalLink size={14} aria-hidden="true" /></a>
+      <a href={appMetadata.repositoryUrl} target="_blank" rel="noreferrer"><span>{t('Project repository')}</span><ExternalLink size={14} aria-hidden="true" /></a>
+    </div>
+    <p className="about-copyright" data-no-translate>{appMetadata.copyright}</p>
+  </section>
+}
+
+type SettingsTab = 'Workspace' | 'Personal' | 'Language & appearance' | 'Notifications' | 'Monitoring' | 'About'
 
 export function SettingsPage() {
   const auth = useAuth()
@@ -367,7 +392,7 @@ export function SettingsPage() {
     return () => controller.abort()
   }, [isAdmin, tab])
 
-  const tabList: SettingsTab[] = isAdmin ? ['Workspace', 'Personal', 'Language & appearance', 'Monitoring', 'Notifications'] : ['Personal', 'Language & appearance', 'Notifications']
+  const tabList: SettingsTab[] = isAdmin ? ['Workspace', 'Personal', 'Language & appearance', 'Monitoring', 'Notifications', 'About'] : ['Personal', 'Language & appearance', 'Notifications', 'About']
   const saveWorkspace = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setBusy(true)
@@ -425,9 +450,9 @@ export function SettingsPage() {
   return <div className="page-stack">
     <PageHeading title="Settings" description="Persistent settings for this local workspace and your account." />
     <NoticeBar notice={notice} />
-    <div className="settings-layout account-settings-layout"><nav className="settings-nav" aria-label="Settings sections">{tabList.map((name) => <button key={name} className={name === tab ? 'selected' : ''} onClick={() => setTab(name)}>{name === 'Workspace' ? <Users size={16} /> : name === 'Personal' ? <CircleUserRound size={16} /> : name === 'Language & appearance' ? <Palette size={16} /> : name === 'Monitoring' ? <Clock3 size={16} /> : <AlertCircle size={16} />}{name}</button>)}</nav>
+    <div className="settings-layout account-settings-layout"><nav className="settings-nav" aria-label={translateText('Settings sections', appearanceDraft.language)}>{tabList.map((name) => <button key={name} className={name === tab ? 'selected' : ''} onClick={() => setTab(name)}>{name === 'Workspace' ? <Users size={16} /> : name === 'Personal' ? <CircleUserRound size={16} /> : name === 'Language & appearance' ? <Palette size={16} /> : name === 'Monitoring' ? <Clock3 size={16} /> : name === 'About' ? <Info size={16} /> : <AlertCircle size={16} />}{translateText(name, appearanceDraft.language)}</button>)}</nav>
       <Card className="settings-content account-settings-content">
-        <div className="settings-content-heading"><div><h2>{tab}</h2><p>{tab === 'Workspace' ? 'Shared defaults for the single local workspace' : tab === 'Personal' ? 'Saved to your account and applied on this device' : tab === 'Language & appearance' ? 'Language and display settings for your account' : tab === 'Monitoring' ? 'Saved operational settings for the local machine' : 'Saved operational alerts for your local account'}</p></div><Badge tone="good">{tab === 'Notifications' ? 'In-app' : 'Persistent'}</Badge></div>
+        <div className="settings-content-heading"><div><h2>{translateText(tab, appearanceDraft.language)}</h2><p>{translateText(tab === 'Workspace' ? 'Shared defaults for the single local workspace' : tab === 'Personal' ? 'Saved to your account and applied on this device' : tab === 'Language & appearance' ? 'Language and display settings for your account' : tab === 'Monitoring' ? 'Saved operational settings for the local machine' : tab === 'Notifications' ? 'Saved operational alerts for your local account' : 'Project identity, release information and license', appearanceDraft.language)}</p></div><Badge tone="good">{translateText(tab === 'Notifications' ? 'In-app' : tab === 'About' ? 'Alpha release' : 'Persistent', appearanceDraft.language)}</Badge></div>
         {tab === 'Workspace' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveWorkspace(event)}><Field label="Workspace name"><input required maxLength={60} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} /></Field><Field label="Default landing page"><select value={workspaceLanding} onChange={(event) => setWorkspaceLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-readonly-row"><div><strong>Machine history timezone</strong><small>Configured when the local collector starts; raw timestamps remain UTC.</small></div><span>{history?.timeZone ? <span data-no-translate>{history.timeZone}</span> : 'Unavailable'}</span></div><div className="settings-footer"><span>Workspace changes apply for all local users.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save workspace'}</Button></div></form>}
         {tab === 'Personal' && <form className="account-settings-form" onSubmit={(event) => void savePersonal(event)}><div className="settings-row account-settings-row"><div><strong>Compact navigation</strong><small>Remember a narrower sidebar for your account.</small></div><label className="account-switch"><input aria-label="Compact navigation" type="checkbox" checked={compactNavigation} onChange={(event) => setCompactNavigation(event.target.checked)} /><span aria-hidden="true" /></label></div><Field label="Default landing page"><select value={personalLanding} onChange={(event) => setPersonalLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-footer"><span>Saved to your profile.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save preferences'}</Button></div></form>}
         {tab === 'Language & appearance' && <form className="account-settings-form appearance-form" onSubmit={(event) => void saveAppearance(event)}>
@@ -443,6 +468,7 @@ export function SettingsPage() {
         </form>}
         {tab === 'Monitoring' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveMonitoring(event)}><div className="settings-readonly-row"><div><strong>Live sample interval</strong><small>CPU, memory and network updates from one shared host sampler.</small></div><Field label="Seconds"><input type="number" min={1} max={60} step={1} value={monitoringSettings.fastSampleMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, fastSampleMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>History save interval</strong><small>Raw snapshots are saved less often; minute summaries include readings between saves.</small></div><Field label="Seconds"><input type="number" min={5} max={60} step={1} value={monitoringSettings.historySaveMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, historySaveMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>Disk refresh interval</strong><small>Disk usage refreshes separately from quick metrics.</small></div><Field label="Seconds"><input type="number" min={10} max={60} step={1} value={monitoringSettings.diskRefreshMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, diskRefreshMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>Server status check</strong><small>The dashboard player count updates after this interval.</small></div><Field label="Seconds"><input type="number" min={5} max={30} step={1} value={monitoringSettings.statusPollMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, statusPollMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-footer"><span>Changes apply immediately. History is retained using the current policy.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Applying' : 'Apply monitoring'}</Button></div></form>}
         {tab === 'Notifications' && <NotificationsPanel />}
+        {tab === 'About' && <AboutPanel language={appearanceDraft.language} />}
       </Card>
     </div>
   </div>
