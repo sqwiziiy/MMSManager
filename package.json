@@ -5,7 +5,7 @@
   "license": "GPL-3.0-only",
   "engines": {
     "node": ">=22.13.0",
-    "pnpm": ">=10.23.0"
+    "pnpm": ">=10.26.0"
   },
   "scripts": {
     "dev": "pnpm --filter @mmsmanager/shared build && pnpm --parallel --filter @minepanel/api --filter @minepanel/web dev",
