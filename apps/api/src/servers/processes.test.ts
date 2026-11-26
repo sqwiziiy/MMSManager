@@ -67,6 +67,8 @@ done
     await writeFile(join(stubbornDirectory, 'ignore-stop.jar'), Buffer.from([0x50, 0x4b, 3, 4]))
     const port = await availablePort()
     const stubbornPort = await availablePort()
+    await writeFile(join(managedDirectory, 'server.properties'), `server-port=${port}\n`)
+    await writeFile(join(stubbornDirectory, 'server.properties'), `server-port=${stubbornPort}\n`)
     await opened.db.insert(localServers).values([
       { id: managedId, name: 'Managed Fixture', directory: managedDirectory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath, javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
       { id: importedId, name: 'Imported Fixture', directory: importedDirectory, source: 'imported', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath, javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: null, eula: 'accepted', managed: false, worldFolders: '[]', createdBy: userId, createdAt: now, updatedAt: now },
@@ -194,6 +196,13 @@ done
     const raw = await readFile(join(temp, 'server-logs', stdoutLog), 'utf8')
     expect(raw).toContain('[Server thread/INFO]: Done')
     expect(raw).toContain('say fixture-console-check')
+  })
+
+  it('rejects a start when server.properties conflicts with another registered server port', async () => {
+    const managed = opened.db.select().from(localServers).where(eq(localServers.id, managedId)).get()!
+    await writeFile(join(root, 'imported-fixture', 'server.properties'), `# external conflicting configuration\nserver-port=${managed.port}\n`)
+    await expect(manager.start(managedId, userId)).rejects.toMatchObject({ code: 'PORT_CONFLICT' })
+    expect(opened.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, managedId)).get()).toBeUndefined()
   })
 
   it('allows only one concurrent start request for a server', async () => {

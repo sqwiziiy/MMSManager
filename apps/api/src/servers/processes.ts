@@ -205,7 +205,7 @@ export class ServerProcessManager {
       } else {
         const at = new Date(this.now()).toISOString()
         await this.updateRuntime(row.serverId, {
-          status: 'crashed', processPid: null, processStartMarker: null, processBootId: null,
+          status: 'crashed', processPid: null, processStartMarker: null, processBootId: null, processPort: null,
           lastExitCode: row.lastExitCode, errorMessage: 'The previously managed process is no longer present after the API restart.',
         })
         finishServerSession(this.db, row.serverId, at, 'crashed')
@@ -256,6 +256,9 @@ export class ServerProcessManager {
     if (status === 'running' && verifiedOwnedProcess && this.children.has(serverId) && memoryRssBytes !== null) {
       recordServerResourceSample(this.db, serverId, new Date(this.now()).toISOString(), { cpuPercent, memoryRssBytes, uptimeSeconds })
     }
+    const portConfiguration = await this.servers.getPortConfiguration(serverId)
+    const processPort = row && ['starting', 'running', 'stopping', 'external/unmanaged'].includes(row.status) ? row.processPort ?? null : null
+    const processPortUnknown = Boolean(server.source === 'created' && server.managed && row && ['running', 'external/unmanaged'].includes(row.status) && processPort === null)
     return {
       serverId,
       status,
@@ -266,7 +269,11 @@ export class ServerProcessManager {
       ready: status === 'running',
       playersOnline: null,
       eula: server.eula,
-      restartRequired: row?.restartRequired ?? false,
+      configuredPort: portConfiguration.port,
+      processPort,
+      portStatus: portConfiguration.status,
+      portErrorCode: portConfiguration.errorCode,
+      restartRequired: Boolean(row?.restartRequired || processPortUnknown || (processPort !== null && processPort !== portConfiguration.port)),
       lastExitCode: row?.lastExitCode ?? null,
       errorMessage: row?.errorMessage ?? null,
     }
@@ -480,6 +487,27 @@ export class ServerProcessManager {
     }
   }
 
+  /** Serializes re-registration against process and file operations without starting the server. */
+  async withUnregisteredServerRestore<T>(serverId: string, operation: (server: ReturnType<ServerProcessManager['serverRow']>) => Promise<T>): Promise<T> {
+    if (this.lifecycleOperations.has(serverId) || this.starting.has(serverId) || this.fileMutations.has(serverId)) {
+      throw new ServerProcessError('SERVER_OPERATION_BUSY', 'A server process or file operation is still active.')
+    }
+    const server = this.serverRow(serverId)
+    if (!server.removedAt) throw new ServerProcessError('SERVER_NOT_UNREGISTERED', 'This server is already present in the active inventory.')
+    if (this.children.has(serverId) || this.starting.has(serverId)) throw new ServerProcessError('SERVER_NOT_STOPPED', 'The unregistered server still has an owned process.')
+    if (server.source === 'created' && server.managed) {
+      const runtime = this.db.select({ status: localServerRuntime.status }).from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+      if (runtime?.status !== 'stopped') throw new ServerProcessError('SERVER_NOT_STOPPED', 'Confirm the managed server is stopped before restoring it to the inventory.')
+    }
+    this.lifecycleOperations.add(serverId)
+    this.fileMutations.add(serverId)
+    try { return await operation(server) }
+    finally {
+      this.fileMutations.delete(serverId)
+      this.lifecycleOperations.delete(serverId)
+    }
+  }
+
   async start(serverId: string, actorUserId: string): Promise<ServerRuntime> {
     if (this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'A server file operation is in progress.')
     if (this.starting.has(serverId)) throw new ServerProcessError('SERVER_ALREADY_STARTING', 'A start request is already being processed for this server.')
@@ -497,10 +525,21 @@ export class ServerProcessManager {
   private async startReserved(serverId: string, actorUserId: string | null): Promise<ServerRuntime> {
     let server = this.serverRow(serverId)
     this.requirePanelManaged(server)
+    if (server.eula !== 'accepted') throw new ServerProcessError('EULA_NOT_ACCEPTED', 'Accept the Minecraft EULA in the installation flow before starting this server.')
+    await this.servers.refreshPortConfigurations(true)
+    const portConfiguration = await this.servers.getPortConfiguration(serverId)
+    if (portConfiguration.status !== 'valid' || portConfiguration.port === null) {
+      const message = portConfiguration.errorCode === 'PORT_FILE_MISSING' ? 'server.properties is missing; the configured game port is unavailable.'
+        : portConfiguration.errorCode === 'PORT_FILE_UNREADABLE' ? 'server.properties could not be read safely; the configured game port is unavailable.'
+          : portConfiguration.errorCode === 'PORT_PROPERTY_MISSING' ? 'server.properties does not define server-port.'
+            : 'server.properties contains an invalid server-port value.'
+      throw new ServerProcessError('PORT_CONFIGURATION_INVALID', message)
+    }
+    const configuredPort = portConfiguration.port
+    server = { ...server, port: configuredPort }
     const unresolvedRestore = this.db.select({ id: localServerBackupRestores.id }).from(localServerBackupRestores)
       .where(and(eq(localServerBackupRestores.serverId, serverId), sql`${localServerBackupRestores.status} IN ('prepared', 'recovery-required')`)).get()
     if (unresolvedRestore) throw new ServerProcessError('SERVER_RESTORE_RECOVERY_REQUIRED', 'This server cannot start until its pending restore operation is recovered.')
-    if (server.eula !== 'accepted') throw new ServerProcessError('EULA_NOT_ACCEPTED', 'Accept the Minecraft EULA in the installation flow before starting this server.')
     if (this.children.has(serverId)) throw new ServerProcessError('SERVER_ALREADY_RUNNING', 'MMSManager already owns a process for this server.')
     const existing = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
     if (existing && !['stopped', 'crashed', 'error'].includes(existing.status)) {
@@ -528,14 +567,16 @@ export class ServerProcessManager {
     const javaStat = await lstat(server.javaPath).catch(() => null)
     if ((!javaStat?.isFile() && !javaStat?.isSymbolicLink()) || javaStat?.isDirectory()) throw new ServerProcessError('JAVA_NOT_EXECUTABLE', 'The selected Java executable is missing or unsafe.')
     await access(server.javaPath, constants.X_OK).catch(() => { throw new ServerProcessError('JAVA_NOT_EXECUTABLE', 'The selected Java executable is not executable.') })
-    if (server.port && !await isLoopbackPortAvailable(server.port)) throw new ServerProcessError('PORT_IN_USE', `Local port ${server.port} is already in use.`)
+    const portConflict = await this.servers.findPortConflict(serverId, configuredPort)
+    if (portConflict) throw new ServerProcessError('PORT_CONFLICT', `Game port ${configuredPort} is also configured for “${portConflict.name}”.`)
+    if (!await isLoopbackPortAvailable(configuredPort)) throw new ServerProcessError('PORT_IN_USE', `Local port ${configuredPort} is already in use.`)
 
     const launchId = randomUUID()
     this.cpuSnapshots.delete(serverId)
     const at = new Date(this.now()).toISOString()
     finishServerSession(this.db, serverId, at, 'interrupted')
     await this.writeRuntime(serverId, {
-      status: 'starting', processPid: null, processStartMarker: null, processBootId: null,
+      status: 'starting', processPid: null, processStartMarker: null, processBootId: null, processPort: configuredPort,
       startedAt: at, updatedAt: at, lastExitCode: null, errorMessage: null,
     })
     await this.event(serverId, actorUserId, 'server-start-requested', 'success', 'A panel-owned server process start was requested.')
@@ -855,7 +896,7 @@ export class ServerProcessManager {
       }
     }
     await this.updateRuntime(serverId, {
-      status: 'stopped', processPid: null, processStartMarker: null, processBootId: null,
+      status: 'stopped', processPid: null, processStartMarker: null, processBootId: null, processPort: null,
       startedAt: null, lastExitCode: null, errorMessage: null,
     })
     await this.addEntry(serverId, 'system', 'info', 'Administrator confirmed the previous process is no longer running; its identity check passed.')
@@ -1017,7 +1058,7 @@ export class ServerProcessManager {
     this.cpuSnapshots.delete(serverId)
     const status: 'stopped' | 'crashed' | 'error' = managed.spawnFailed ? 'error' : managed.stopRequested || code === 0 ? 'stopped' : 'crashed'
     await this.updateRuntime(serverId, {
-      status, processPid: null, processStartMarker: null, processBootId: null,
+      status, processPid: null, processStartMarker: null, processBootId: null, processPort: null,
       lastExitCode: code, errorMessage: status === 'crashed' ? `The server process exited unexpectedly with code ${code ?? 'unknown'}.` : null,
     })
     const occurredAt = new Date(this.now()).toISOString()
@@ -1034,7 +1075,7 @@ export class ServerProcessManager {
 
   private async failStart(serverId: string, actorUserId: string | null, code: string, message: string): Promise<void> {
     const occurredAt = new Date(this.now()).toISOString()
-    await this.updateRuntime(serverId, { status: 'error', processPid: null, processStartMarker: null, processBootId: null, errorMessage: message })
+    await this.updateRuntime(serverId, { status: 'error', processPid: null, processStartMarker: null, processBootId: null, processPort: null, errorMessage: message })
     recordStructuredServerEvent(this.db, { serverId, occurredAt, category: 'server', eventType: 'server_start_failed', description: 'The managed server process could not start.', confidence: 'high', source: 'panel-process' }, this.now)
     await this.addEntry(serverId, 'system', 'error', message)
     await this.event(serverId, actorUserId, code, 'failure', message)

@@ -568,6 +568,76 @@ test('About presents release identity to administrators and members', async ({ p
   mockRole = 'administrator'
 })
 
+test('backup settings show installed capacity and save configurable limits', async ({ page }) => {
+  await signIn(page)
+  const defaults = {
+    maxArchiveBytes: 20 * 1024 ** 3,
+    storageQuotaBytes: 100 * 1024 ** 3,
+    maxEntries: 100_000,
+    maxDurationMinutes: 30,
+    storageUsedBytes: 2 * 1024 ** 3,
+    storageAvailableBytes: 500 * 1024 ** 3,
+  }
+  let settings = { ...defaults }
+  let saved: typeof defaults | null = null
+  await page.route('**/api/v1/admin/backup-settings', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      const input = route.request().postDataJSON() as Omit<typeof defaults, 'storageUsedBytes' | 'storageAvailableBytes'>
+      saved = { ...settings, ...input }
+      settings = saved
+    }
+    await route.fulfill({ json: settings })
+  })
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto('/settings?section=backup')
+  await expect(page.getByRole('button', { name: 'Backup', exact: true })).toBeVisible()
+  await expect(page.getByLabel('Maximum archive size')).toHaveValue('20')
+  await expect(page.getByLabel('Maximum files and folders')).toHaveValue('100000')
+  await expect(page.getByText('2 GiB', { exact: true })).toBeVisible()
+  await expect(page.getByText('500 GiB', { exact: true })).toBeVisible()
+  await page.getByLabel('Maximum archive size').fill('24')
+  await page.getByLabel('Maximum files and folders').fill('200000')
+  await page.getByLabel('Maximum operation duration').fill('90')
+  await page.locator('.backup-quota-control .account-switch').click()
+  await expect(page.getByRole('checkbox', { name: 'Disable shared quota' })).toBeChecked()
+  await page.getByRole('button', { name: 'Save backup limits' }).click()
+  await expect.poll(() => saved).toMatchObject({
+    maxArchiveBytes: 24 * 1024 ** 3,
+    storageQuotaBytes: null,
+    maxEntries: 200_000,
+    maxDurationMinutes: 90,
+  })
+  await expect(page.getByText('Backup limits were saved.')).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'backup settings mobile')
+})
+
+test('administrators can restore a retained unregistered server from the Servers page', async ({ page }) => {
+  await signIn(page)
+  const serverId = 'd4d927f2-bb4a-4f46-a2f5-665ac5ed4771'
+  let restored = false
+  await page.route('**/api/v1/admin/servers/unregistered', (route) => route.fulfill({ json: {
+    servers: restored ? [] : [{ id: serverId, name: 'Retained Fixture', version: '1.21.4', removedAt: '2026-11-25T16:00:00.000Z', folderAvailable: true }],
+  } }))
+  await page.route(`**/api/v1/admin/servers/${serverId}/restore-registration`, async (route) => {
+    expect(route.request().method()).toBe('POST')
+    restored = true
+    await route.fulfill({ json: { ok: true, serverId } })
+  })
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto('/servers')
+  await expect(page.getByRole('heading', { name: 'Unregistered servers' })).toBeVisible()
+  const retainedRow = page.locator('.unregistered-server-row')
+  await expect(retainedRow.getByText('Retained Fixture')).toBeVisible()
+  await expect(retainedRow.getByText('1.21.4')).toBeVisible()
+  await expect(retainedRow.getByRole('button', { name: 'Restore' })).toBeEnabled()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'unregistered servers mobile')
+  await retainedRow.getByRole('button', { name: 'Restore' }).click()
+  await expect(page.locator('.unregistered-server-row')).toHaveCount(0)
+  expect(restored).toBe(true)
+})
+
 test('Stage 5G removes demo records from operational pages', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))

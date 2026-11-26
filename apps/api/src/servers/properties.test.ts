@@ -35,7 +35,7 @@ describe('managed server.properties editor', () => {
     managedDirectory = join(root, 'managed-fixture')
     const importedDirectory = join(root, 'imported-fixture')
     await mkdir(managedDirectory); await mkdir(importedDirectory)
-    original = '# Keep this header\nserver-ip=127.0.0.1\n# Unsupported values remain untouched\nonline-mode=true\ncustom.key=stay=exact\nmotd=Old\ngamemode=adventure\ndifficulty=hard\nmax-players=20\nview-distance=10\nsimulation-distance=8\nspawn-protection=16\npvp=true\nwhite-list=false\nallow-nether=true\n'
+    original = '# Keep this header\nserver-ip=127.0.0.1\n# Unsupported values remain untouched\nonline-mode=true\nserver-port=25565\ncustom.key=stay=exact\nmotd=Old\ngamemode=adventure\ndifficulty=hard\nmax-players=20\nview-distance=10\nsimulation-distance=8\nspawn-protection=16\npvp=true\nwhite-list=false\nallow-nether=true\n'
     await writeFile(join(managedDirectory, 'server.properties'), original, { mode: 0o600 })
     await writeFile(join(importedDirectory, 'server.properties'), original, { mode: 0o600 })
     await opened.db.insert(localServers).values([
@@ -61,7 +61,7 @@ describe('managed server.properties editor', () => {
     expect(result.restartRequired).toBe(true)
     expect(result.backups).toHaveLength(1)
     const text = await readFile(join(managedDirectory, 'server.properties'), 'utf8')
-    expect(text).toContain('# Keep this header\nserver-ip=127.0.0.1\n# Unsupported values remain untouched\nonline-mode=true\ncustom.key=stay=exact\n')
+    expect(text).toContain('# Keep this header\nserver-ip=127.0.0.1\n# Unsupported values remain untouched\nonline-mode=true\nserver-port=25565\ncustom.key=stay=exact\n')
     expect(text).toContain('motd=A safe \\= message\n')
     expect(text).toContain('max-players=42\n')
     expect(text).toContain('white-list=true\n')
@@ -256,7 +256,8 @@ describe('managed server.properties editor', () => {
 
   it('checks stopped state and registry collisions before changing the game port', async () => {
     await opened.db.insert(localServerRuntime).values({ serverId: managedId, status: 'stopped', updatedAt: new Date().toISOString(), restartRequired: false }).run()
-    await opened.db.update(localServers).set({ port: 25621 }).where(eq(localServers.id, importedId)).run()
+    await writeFile(join(root, 'imported-fixture', 'server.properties'), 'server-port=25621\n')
+    await opened.db.update(localServers).set({ port: 25565 }).where(eq(localServers.id, importedId)).run()
     const before = await manager.get(managedId)
     await expect(manager.update(managedId, userId, {}, {
       expectedSha256: before.sha256, advancedProperties: { 'server-port': '25621' }, confirmGamePortChange: true,

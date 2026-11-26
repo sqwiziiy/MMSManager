@@ -11,6 +11,7 @@ import { serverPropertiesCatalog, serverPropertyAvailable } from '@mmsmanager/sh
 import type { ServerPropertyCatalogEntry } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
 import { isLoopbackPortAvailable } from './install.js'
+import { parseJavaProperties, parseServerPort } from './java-properties.js'
 
 const PROPERTY_NAMES = {
   onlineMode: 'online-mode',
@@ -96,13 +97,20 @@ function parseSettings(lines: string[]): { settings: ServerPropertySettings; adv
   const advancedProperties: Record<string, string> = {}
   const presentKeys = new Set<string>()
   const unknownKeys = new Set<string>()
-  for (const line of lines) {
-    const parts = propertyParts(line)
-    if (!parts) continue
-    if (SUPPORTED_NAMES.has(parts.key)) { values.set(parts.key, parts.value); presentKeys.add(parts.key) }
-    else if (ADVANCED_BY_KEY.has(parts.key)) { advancedProperties[parts.key] = parts.value; presentKeys.add(parts.key) }
-    else if (isProtectedProperty(parts.key)) presentKeys.add(parts.key)
-    else unknownKeys.add(parts.key)
+  let parsed: Map<string, string>
+  try { parsed = parseJavaProperties(lines.join('\n')) }
+  catch {
+    parsed = new Map<string, string>()
+    for (const line of lines) {
+      const parts = propertyParts(line)
+      if (parts) parsed.set(parts.key, parts.value)
+    }
+  }
+  for (const [key, value] of parsed) {
+    if (SUPPORTED_NAMES.has(key)) { values.set(key, value); presentKeys.add(key) }
+    else if (ADVANCED_BY_KEY.has(key)) { advancedProperties[key] = value; presentKeys.add(key) }
+    else if (isProtectedProperty(key)) presentKeys.add(key)
+    else unknownKeys.add(key)
   }
   const numberValue = (key: string, fallback: number) => {
     const raw = values.get(key)
@@ -214,15 +222,20 @@ export class ServerPropertiesManager {
       .from(localServerPropertiesBackups).where(eq(localServerPropertiesBackups.serverId, serverId))
       .orderBy(desc(localServerPropertiesBackups.createdAt)).limit(20).all()
     const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+    const portConfiguration = await this.servers.getPortConfiguration(serverId)
+    const processActive = runtime && ['starting', 'running', 'stopping', 'external/unmanaged'].includes(runtime.status)
     return {
       ...parsed,
       sha256: createHash('sha256').update(original.bytes).digest('hex'),
       serverVersion: server.version ?? 'unknown',
       serverSoftware: server.software,
+      configuredPort: portConfiguration.port,
+      portStatus: portConfiguration.status,
+      portErrorCode: portConfiguration.errorCode,
       protectedProperties: protectedPropertyList(parsed.presentKeys),
       unsupportedKeys: serverPropertiesCatalog.filter((entry) => !serverPropertyAvailable(entry, server.software, server.version ?? 'unknown')).map((entry) => entry.key),
       backups: history,
-      restartRequired: runtime?.restartRequired ?? false,
+      restartRequired: Boolean(runtime?.restartRequired || (server.source === 'created' && server.managed && runtime && ['running', 'external/unmanaged'].includes(runtime.status) && runtime.processPort === null) || (processActive && runtime?.processPort !== null && runtime?.processPort !== portConfiguration.port)),
     }
   }
 
@@ -236,6 +249,7 @@ export class ServerPropertiesManager {
     confirmGamePortChange?: boolean
   }): Promise<ServerPropertiesResponse> {
     const server = this.serverRow(serverId)
+    await this.servers.refreshPortConfigurations(true)
     const propertiesPath = await this.propertiesPath(server)
     const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
     if (runtime && ['starting', 'stopping', 'external/unmanaged'].includes(runtime.status)) {
@@ -263,16 +277,19 @@ export class ServerPropertiesManager {
     if (worldGenerationChanged && !options.confirmWorldGenerationChange) throw new ServerPropertiesError('WORLD_GENERATION_CONFIRMATION_REQUIRED', 'Confirm the world-generation change before saving.')
     const resourcePackChanged = Object.keys(changedAdvanced).some((key) => RESOURCE_PACK_KEYS.has(key))
     if (resourcePackChanged && !options.confirmResourcePackChange) throw new ServerPropertiesError('RESOURCE_PACK_CONFIRMATION_REQUIRED', 'Confirm the resource-pack change before saving.')
-    const currentPort = Number(parsed.advancedProperties['server-port'] ?? server.port ?? ADVANCED_BY_KEY.get('server-port')?.defaultValue)
+    const currentPortConfiguration = parseServerPort(original.text)
+    const currentPort = currentPortConfiguration.status === 'valid' ? currentPortConfiguration.port : null
     const requestedPort = changedAdvanced['server-port'] === undefined ? currentPort : Number(changedAdvanced['server-port'])
     const gamePortChanged = requestedPort !== currentPort
+    if (gamePortChanged && requestedPort === null) throw new ServerPropertiesError('PORT_VALUE_INVALID', 'Enter a valid server-port between 1 and 65535.')
+    const targetPort = requestedPort
     if (gamePortChanged && !options.confirmGamePortChange) throw new ServerPropertiesError('GAME_PORT_CONFIRMATION_REQUIRED', 'Confirm the game-port change before saving.')
     if (gamePortChanged) {
       if (runtime?.status !== 'stopped') throw new ServerPropertiesError('GAME_PORT_REQUIRES_STOPPED', 'The game port can only change while the server is confirmed stopped.')
-      const otherServers = this.db.select({ id: localServers.id, name: localServers.name, port: localServers.port }).from(localServers).all()
-      const collision = otherServers.find((candidate) => candidate.id !== serverId && candidate.port === requestedPort)
-      if (collision) throw new ServerPropertiesError('GAME_PORT_CONFLICT', `Game port ${requestedPort} is already assigned to “${collision.name}”.`)
-      if (!await this.isPortAvailable(requestedPort)) throw new ServerPropertiesError('GAME_PORT_IN_USE', `Game port ${requestedPort} is already in use on this computer.`)
+      if (targetPort === null) throw new ServerPropertiesError('PORT_VALUE_INVALID', 'Enter a valid server-port between 1 and 65535.')
+      const collision = await this.servers.findPortConflict(serverId, targetPort)
+      if (collision) throw new ServerPropertiesError('GAME_PORT_CONFLICT', `Game port ${targetPort} is already assigned to “${collision.name}”.`)
+      if (!await this.isPortAvailable(targetPort)) throw new ServerPropertiesError('GAME_PORT_IN_USE', `Game port ${targetPort} is already in use on this computer.`)
     }
     const changed = Object.keys(update).some((key) => settings[key as keyof ServerPropertySettings] !== parsed.settings[key as keyof ServerPropertySettings])
       || Object.keys(changedAdvanced).length > 0
@@ -302,7 +319,7 @@ export class ServerPropertiesManager {
     await this.atomicReplaceProperties(propertiesPath, Buffer.from(nextText, 'utf8'), original.bytes, original.stat, originalSha256)
 
     this.db.insert(localServerPropertiesBackups).values({ id, serverId, actorUserId, fileName: backupFile, sha256, createdAt }).run()
-    if (gamePortChanged) this.db.update(localServers).set({ port: requestedPort, updatedAt: createdAt }).where(eq(localServers.id, serverId)).run()
+    await this.servers.refreshPortConfigurations(true)
     const restartRequired = runtime?.status === 'running' || runtime?.restartRequired === true
     if (runtime) this.db.update(localServerRuntime).set({ restartRequired, updatedAt: createdAt }).where(eq(localServerRuntime.serverId, serverId)).run()
     else this.db.insert(localServerRuntime).values({ serverId, status: 'stopped', updatedAt: createdAt, restartRequired }).run()
@@ -413,12 +430,23 @@ export class ServerPropertiesManager {
     if (runtime && ['starting', 'stopping', 'external/unmanaged'].includes(runtime.status)) throw new ServerPropertiesError('SERVER_BUSY', 'Properties cannot be restored while the server is starting, stopping, or unmanaged.')
     if (currentSha256 === row.sha256) return { properties: await this.get(serverId), recoveryBackupId: null }
 
+    await this.servers.refreshPortConfigurations(true)
+    const restoredPort = parseServerPort(backup.bytes.toString('utf8'))
+    if (restoredPort.status === 'valid' && restoredPort.port !== parseServerPort(current.text).port) {
+      const collision = await this.servers.findPortConflict(serverId, restoredPort.port!)
+      if (collision) throw new ServerPropertiesError('GAME_PORT_CONFLICT', `Game port ${restoredPort.port} is already assigned to “${collision.name}”.`)
+      if (runtime?.status === 'stopped' && !await this.isPortAvailable(restoredPort.port!)) {
+        throw new ServerPropertiesError('GAME_PORT_IN_USE', `Game port ${restoredPort.port} is already in use on this computer.`)
+      }
+    }
+
     const recoveryBackupId = await this.createRecoveryBackup(serverId, actorUserId, current.bytes)
     const restoreBytes = backup.bytes
     const restoreSha256 = createHash('sha256').update(restoreBytes).digest('hex')
     const occurredAt = new Date(this.now()).toISOString()
     try {
       await this.atomicReplaceProperties(path, restoreBytes, current.bytes, current.stat, currentSha256)
+      await this.servers.refreshPortConfigurations(true)
       this.db.transaction((tx) => {
         const restartRequired = runtime?.status === 'running' || runtime?.restartRequired === true
         if (runtime) tx.update(localServerRuntime).set({ restartRequired, updatedAt: occurredAt }).where(eq(localServerRuntime.serverId, serverId)).run()

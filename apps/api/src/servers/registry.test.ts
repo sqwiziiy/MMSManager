@@ -89,6 +89,40 @@ describe('local server inventory', () => {
     expect((await lstat(join(serverDirectory, 'world'))).isDirectory()).toBe(true)
   })
 
+  it('loads the configured port from server.properties at startup instead of trusting a stale SQLite cache', async () => {
+    const serverDirectory = await makeServer('Port startup fixture')
+    const registered = await registry.registerImport({ path: serverDirectory, name: 'Port startup fixture', minMemoryMb: 1024, maxMemoryMb: 2048 }, userId)
+    await opened.db.update(localServers).set({ port: 25000 }).where(eq(localServers.id, registered.id)).run()
+
+    const restartedRegistry = new ServerRegistry(opened.db, directory, {
+      MMSMANAGER_SERVER_ROOT: serverRoot,
+      MMSMANAGER_IMPORT_ROOTS: serverRoot,
+    })
+    await restartedRegistry.prepare()
+    expect(await restartedRegistry.getPortConfiguration(registered.id)).toMatchObject({ port: 25569, status: 'valid' })
+    expect(opened.db.select().from(localServers).where(eq(localServers.id, registered.id)).get()?.port).toBe(25569)
+    expect((await restartedRegistry.listPublic()).find((server) => server.id === registered.id)).toMatchObject({ port: 25569, portStatus: 'valid' })
+  })
+
+  it('refreshes external changes and clears stale SQLite values when the port becomes invalid or missing', async () => {
+    const serverDirectory = await makeServer('Port refresh fixture')
+    const registered = await registry.registerImport({ path: serverDirectory, name: 'Port refresh fixture', minMemoryMb: 1024, maxMemoryMb: 2048 }, userId)
+
+    await writeFile(join(serverDirectory, 'server.properties'), '# server-port=25565\nserver-port : 25581\nserver-port=25582\n')
+    await registry.refreshPortConfigurations(true)
+    expect(await registry.getPortConfiguration(registered.id)).toMatchObject({ port: 25582, status: 'valid' })
+    expect(opened.db.select().from(localServers).where(eq(localServers.id, registered.id)).get()?.port).toBe(25582)
+
+    await writeFile(join(serverDirectory, 'server.properties'), 'server-port=invalid\n')
+    await registry.refreshPortConfigurations(true)
+    expect(await registry.getPortConfiguration(registered.id)).toMatchObject({ port: null, status: 'invalid', errorCode: 'PORT_VALUE_INVALID' })
+    expect(opened.db.select().from(localServers).where(eq(localServers.id, registered.id)).get()?.port).toBeNull()
+
+    await rm(join(serverDirectory, 'server.properties'))
+    await registry.refreshPortConfigurations(true)
+    expect(await registry.getPortConfiguration(registered.id)).toMatchObject({ port: null, status: 'missing', errorCode: 'PORT_FILE_MISSING' })
+  })
+
   it('edits only display metadata and preserves the imported directory and files', async () => {
     const serverDirectory = await makeServer('Metadata Fixture')
     const beforeProperties = await readFile(join(serverDirectory, 'server.properties'), 'utf8')

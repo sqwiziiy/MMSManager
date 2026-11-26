@@ -4,6 +4,7 @@ import type { AppDatabase } from '../db/client.js'
 import { localServers, localServerRuntime, localServerStatusSamples } from '../db/schema.js'
 import type { DashboardPlayerSummary, ServerStatus } from '@mmsmanager/shared'
 import { recordServerResourceSample } from './history.js'
+import type { ServerRegistry } from './registry.js'
 
 const MAX_FRAME_BYTES = 65_536
 const TIMEOUT_MS = 1_500
@@ -107,7 +108,7 @@ export function queryJavaStatus(port: number): Promise<ServerStatusProbe> {
 }
 
 export class ServerStatusService {
-  private readonly pending = new Map<string, Promise<ServerStatus>>()
+  private readonly pending = new Map<string, { signature: string; promise: Promise<ServerStatus> }>()
   private readonly cache = new Map<string, { at: number; status: ServerStatus }>()
   private pollIntervalMs = 5_000
   private summaryPending: Promise<DashboardPlayerSummary> | null = null
@@ -117,6 +118,7 @@ export class ServerStatusService {
     private readonly db: AppDatabase,
     private readonly now: () => number = Date.now,
     private readonly probeStatus: (port: number) => Promise<ServerStatusProbe> = queryJavaStatus,
+    private readonly servers?: ServerRegistry,
   ) {}
 
   configurePollInterval(intervalMs: number): void {
@@ -129,20 +131,45 @@ export class ServerStatusService {
     else this.cache.clear()
   }
 
-  get(serverId: string): Promise<ServerStatus> {
+  async get(serverId: string): Promise<ServerStatus> {
+    await this.servers?.refreshPortConfigurations()
     const server = this.db.select().from(localServers).where(eq(localServers.id, serverId)).get()
-    if (!server) return Promise.reject(new ServerStatusError('SERVER_NOT_FOUND', 'Registered server not found.'))
+    if (!server) throw new ServerStatusError('SERVER_NOT_FOUND', 'Registered server not found.')
+    const configuration = this.servers
+      ? await this.servers.getPortConfiguration(serverId)
+      : { port: server.port, status: server.port === null ? 'missing' as const : 'valid' as const, errorCode: server.port === null ? 'PORT_PROPERTY_MISSING' as const : null }
+    const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+    const activeRuntime = runtime && ['starting', 'running', 'stopping', 'external/unmanaged'].includes(runtime.status)
+    const processPort = activeRuntime ? runtime.processPort ?? null : null
+    const managedProcess = server.source === 'created' && server.managed
+    const processPortUnknown = Boolean(managedProcess && runtime && ['running', 'external/unmanaged'].includes(runtime.status) && processPort === null)
+    const restartRequired = Boolean(runtime?.restartRequired || processPortUnknown || (processPort !== null && processPort !== configuration.port))
     const cached = this.cache.get(serverId)
-    if (cached && this.now() - cached.at < this.pollIntervalMs) return Promise.resolve(cached.status)
+    if (cached && this.now() - cached.at < this.pollIntervalMs
+      && cached.status.configuredPort === configuration.port
+      && cached.status.processPort === processPort
+      && cached.status.portStatus === configuration.status
+      && cached.status.restartRequired === restartRequired) return cached.status
+    const signature = `${configuration.port ?? ''}:${processPort ?? ''}:${configuration.status}:${restartRequired}`
     const pending = this.pending.get(serverId)
-    if (pending) return pending
-    const work = this.probe(serverId, server.port)
-    this.pending.set(serverId, work)
-    void work.then(() => this.pending.delete(serverId), () => this.pending.delete(serverId))
+    if (pending?.signature === signature) return pending.promise
+    if (pending) return pending.promise.then(() => this.get(serverId), () => this.get(serverId))
+    const unavailableCode = configuration.errorCode === 'PORT_FILE_MISSING' ? 'port-file-missing'
+      : configuration.errorCode === 'PORT_FILE_UNREADABLE' ? 'port-file-unreadable'
+        : configuration.errorCode === 'PORT_PROPERTY_MISSING' ? 'port-property-missing'
+          : configuration.errorCode === 'PORT_VALUE_INVALID' ? 'port-invalid' : 'port-unavailable'
+    const work = this.probe(serverId, processPort ?? configuration.port, {
+      configuredPort: configuration.port, processPort, portStatus: configuration.status,
+      portErrorCode: configuration.errorCode, restartRequired, unavailableCode,
+    })
+    this.pending.set(serverId, { signature, promise: work })
+    const clearPending = () => { if (this.pending.get(serverId)?.promise === work) this.pending.delete(serverId) }
+    void work.then(clearPending, clearPending)
     return work
   }
 
-  getPlayerSummary(visibleServerIds?: string[]): Promise<DashboardPlayerSummary> {
+  async getPlayerSummary(visibleServerIds?: string[]): Promise<DashboardPlayerSummary> {
+    await this.servers?.refreshPortConfigurations()
     if (visibleServerIds !== undefined) return this.collectPlayerSummary(visibleServerIds)
     if (this.summaryCache && this.now() - this.summaryCache.at < this.pollIntervalMs) {
       return Promise.resolve(this.summaryCache.summary)
@@ -157,6 +184,7 @@ export class ServerStatusService {
   }
 
   private async collectPlayerSummary(visibleServerIds?: string[]): Promise<DashboardPlayerSummary> {
+    await this.servers?.refreshPortConfigurations()
     if (visibleServerIds !== undefined && visibleServerIds.length === 0) {
       return { playersOnline: 0, complete: true, registeredServerCount: 0, pollIntervalMs: this.pollIntervalMs, checkedAt: new Date(this.now()).toISOString() }
     }
@@ -165,15 +193,17 @@ export class ServerStatusService {
     const checkedAt = new Date(this.now()).toISOString()
     if (servers.length === 0) return { playersOnline: 0, complete: true, registeredServerCount: 0, pollIntervalMs: this.pollIntervalMs, checkedAt }
 
-    const runtimes = new Map(this.db.select({ serverId: localServerRuntime.serverId, status: localServerRuntime.status })
-      .from(localServerRuntime).all().map((runtime) => [runtime.serverId, runtime.status]))
+    const runtimes = new Map(this.db.select({ serverId: localServerRuntime.serverId, status: localServerRuntime.status, processPort: localServerRuntime.processPort })
+      .from(localServerRuntime).all().map((runtime) => [runtime.serverId, runtime]))
     const ports = new Map<number, string>()
     let unknown = false
     for (const server of servers) {
       const runtime = runtimes.get(server.id)
-      if (server.source === 'created' && server.managed && runtime === 'stopped') continue
-      if (server.port === null) { unknown = true; continue }
-      if (!ports.has(server.port)) ports.set(server.port, server.id)
+      if (server.source === 'created' && server.managed && runtime?.status === 'stopped') continue
+      const active = runtime && ['starting', 'running', 'stopping', 'external/unmanaged'].includes(runtime.status) ? runtime.processPort : null
+      const port = active ?? server.port
+      if (port === null) { unknown = true; continue }
+      if (!ports.has(port)) ports.set(port, server.id)
     }
     if (ports.size === 0) {
       return { playersOnline: unknown ? null : 0, complete: !unknown, registeredServerCount: servers.length, pollIntervalMs: this.pollIntervalMs, checkedAt }
@@ -203,13 +233,25 @@ export class ServerStatusService {
     }
   }
 
-  private async probe(serverId: string, port: number | null): Promise<ServerStatus> {
-    const result = port ? await this.probeStatus(port) : {
+  private async probe(serverId: string, port: number | null, configuration: {
+    configuredPort: number | null
+    processPort: number | null
+    portStatus: ServerStatus['portStatus']
+    portErrorCode: ServerStatus['portErrorCode']
+    restartRequired: boolean
+    unavailableCode: string
+  }): Promise<ServerStatus> {
+    const result = port !== null ? await this.probeStatus(port) : {
       state: 'unavailable' as const, playersOnline: null, playersMax: null,
-      versionName: null, description: null, latencyMs: null, errorCode: 'port-unavailable',
+      versionName: null, description: null, latencyMs: null, errorCode: configuration.unavailableCode,
     }
     const checkedAt = new Date(this.now()).toISOString()
-    const status: ServerStatus = { serverId, checkedAt, source: 'local-status-ping', authoritativePlayerList: false, ...result }
+    const status: ServerStatus = {
+      serverId, checkedAt, source: 'local-status-ping', authoritativePlayerList: false,
+      configuredPort: configuration.configuredPort, processPort: configuration.processPort,
+      portStatus: configuration.portStatus, portErrorCode: configuration.portErrorCode,
+      restartRequired: configuration.restartRequired, ...result,
+    }
     if (status.state !== 'unavailable') {
       this.db.insert(localServerStatusSamples).values({
         serverId, checkedAt, state: status.state, playersOnline: status.playersOnline,

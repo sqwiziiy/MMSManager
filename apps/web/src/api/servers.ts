@@ -12,6 +12,8 @@ import {
   serverImportResultSchema,
   serverMetadataUpdateSchema,
   serverInventorySchema,
+  unregisteredServerListSchema,
+  serverRegistrationRestoreResultSchema,
   serverConsoleResponseSchema,
   serverConsoleSessionsResponseSchema,
   serverRuntimeResultSchema,
@@ -45,7 +47,7 @@ import {
   serverRemovalOperationListSchema,
   serverRemovalResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerRestartScheduleUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate, ServerAccessPermissions, ServerAccessGrantUser, ServerZipImportPreview, ServerRemovalOperation } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, UnregisteredServer, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerRestartScheduleUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate, ServerAccessPermissions, ServerAccessGrantUser, ServerZipImportPreview, ServerRemovalOperation } from '@mmsmanager/shared'
 import type { DashboardPlayerSummary, InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestHeaders, apiRequestResponse, reportSessionExpiry } from './client'
@@ -153,6 +155,15 @@ export async function sendPlayerAction(serverId: string, action: ServerPlayerAct
 
 export function getServerInventory(signal?: AbortSignal): Promise<ServerInventory> {
   return request('/api/v1/admin/servers', serverInventorySchema, { signal })
+}
+
+export async function getUnregisteredServers(signal?: AbortSignal): Promise<UnregisteredServer[]> {
+  const response = await request('/api/v1/admin/servers/unregistered', unregisteredServerListSchema, { signal })
+  return response.servers
+}
+
+export function restoreUnregisteredServer(serverId: string): Promise<{ ok: true; serverId: string }> {
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/restore-registration`, serverRegistrationRestoreResultSchema, { method: 'POST', body: JSON.stringify({}) })
 }
 
 export function inspectServerImport(path: string): Promise<ServerImportPreview> {

@@ -4,20 +4,20 @@ import { chmod, lstat, mkdir, open, opendir, realpath, rename, rm, rmdir, statfs
 import type { FileHandle } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { and, desc, eq, sql } from 'drizzle-orm'
+import { backupSettingsSchema, DEFAULT_BACKUP_SETTINGS } from '@mmsmanager/shared'
+import type { BackupSettings } from '@mmsmanager/shared'
 import type { AppDatabase } from '../db/client.js'
-import { localServerBackupRestores, localServerBackups, localServerEvents, localServerRuntime, localServers } from '../db/schema.js'
+import { backupSettings as backupSettingsTable, localServerBackupRestores, localServerBackups, localServerEvents, localServerRuntime, localServers } from '../db/schema.js'
 import type { ServerProcessManager } from './processes.js'
 import type { ServerRegistry } from './registry.js'
 
 const ARCHIVE_MAGIC = Buffer.from('MMSBACK1')
 const ARCHIVE_END = Buffer.from('MMSBEND1')
 const ENTRY_HEADER_BYTES = 25
-const MAX_ARCHIVE_BYTES = 20 * 1024 * 1024 * 1024
-const BACKUP_QUOTA_BYTES = 100 * 1024 * 1024 * 1024
-const MAX_BACKUP_ENTRIES = 100_000
+const MAX_SUPPORTED_ARCHIVE_BYTES = 256 * 1024 ** 3
+const MAX_SUPPORTED_BACKUP_ENTRIES = 250_000
 const MAX_PATH_BYTES = 4096
-const MAX_MANIFEST_BYTES = 64 * 1024 * 1024
-const MAX_SCAN_MS = 30 * 60 * 1000
+const MAX_SUPPORTED_MANIFEST_BYTES = 128 * 1024 * 1024
 const IO_CHUNK_BYTES = 128 * 1024
 const PRIVATE_SEGMENTS = new Set(['.git', '.ssh', '.aws', '.azure', '.gnupg', '.kube', '.docker'])
 
@@ -51,7 +51,12 @@ type ScannedEntry = ManifestEntry & { dev: number; ino: number; nlink: number; c
 type DirectoryIdentity = { path: string; dev: number; ino: number; mtimeMs: number; ctimeMs: number }
 type ServerRow = typeof localServers.$inferSelect
 type BackupRow = typeof localServerBackups.$inferSelect
-type ServiceHooks = { beforeInstall?: () => void | Promise<void> }
+type ServiceHooks = {
+  beforeInstall?: () => void | Promise<void>
+  operationClock?: () => number
+  availableBytes?: (path: string) => Promise<number>
+  manifestLimitBytes?: number
+}
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException { return error instanceof Error && 'code' in error }
 function inside(root: string, path: string): boolean {
@@ -88,7 +93,7 @@ function manifestShape(value: unknown): value is BackupManifest {
     || !['manual', 'pre-restore'].includes(String(item.kind)) || typeof item.createdAt !== 'string'
     || !Number.isSafeInteger(item.archiveSizeBytes) || typeof item.archiveSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(item.archiveSha256)
     || !Number.isInteger(item.entryCount) || !Number.isInteger(item.fileCount) || typeof item.totalFileBytes !== 'number' || !Number.isSafeInteger(item.totalFileBytes)
-    || typeof item.excludedCount !== 'number' || !Number.isInteger(item.excludedCount) || !Array.isArray(item.entries) || item.entries.length > MAX_BACKUP_ENTRIES
+    || typeof item.excludedCount !== 'number' || !Number.isInteger(item.excludedCount) || !Array.isArray(item.entries) || item.entries.length > MAX_SUPPORTED_BACKUP_ENTRIES
     || !Array.isArray(item.excluded) || item.excluded.length > 1000 || typeof item.excludedPathsTruncated !== 'boolean'
     || !Array.isArray(item.worldPaths) || item.worldPaths.length > 100 || item.worldPaths.some((path) => typeof path !== 'string' || !backupPath(path))
     || new Set(item.worldPaths).size !== item.worldPaths.length) return false
@@ -169,18 +174,31 @@ export class ServerBackupService {
     this.requireManaged(server)
     const rows = this.db.select().from(localServerBackups).where(eq(localServerBackups.serverId, serverId))
       .orderBy(desc(localServerBackups.createdAt)).limit(501).all()
-    const storageUsedBytes = this.db.select({ value: sql<number>`coalesce(sum(${localServerBackups.archiveSizeBytes} + ${localServerBackups.manifestSizeBytes}), 0)` })
-      .from(localServerBackups).get()?.value ?? 0
+    const [settings, storage] = await Promise.all([this.getSettings(), this.storageMetrics()])
     const runtimeStatus = this.runtimeStatus(serverId)
     return {
       serverId,
       items: rows.slice(0, 500).map((row) => this.publicBackup(row)),
       truncated: rows.length > 500,
-      storageUsedBytes,
-      storageLimitBytes: BACKUP_QUOTA_BYTES,
-      quotaWarning: storageUsedBytes >= BACKUP_QUOTA_BYTES * 0.8,
+      storageUsedBytes: storage.usedBytes,
+      storageLimitBytes: settings.storageQuotaBytes,
+      storageAvailableBytes: storage.availableBytes,
+      quotaWarning: settings.storageQuotaBytes !== null && storage.usedBytes >= settings.storageQuotaBytes * 0.8,
       runtimeStatus,
     }
+  }
+
+  async settingsOverview() {
+    const [settings, storage] = await Promise.all([this.getSettings(), this.storageMetrics()])
+    return { ...settings, storageUsedBytes: storage.usedBytes, storageAvailableBytes: storage.availableBytes }
+  }
+
+  async updateSettings(input: BackupSettings) {
+    const settings = backupSettingsSchema.parse(input)
+    const updatedAt = new Date(this.now()).toISOString()
+    this.db.insert(backupSettingsTable).values({ id: 1, ...settings, updatedAt })
+      .onConflictDoUpdate({ target: backupSettingsTable.id, set: { ...settings, updatedAt } }).run()
+    return this.settingsOverview()
   }
 
   async create(serverId: string, actorUserId: string | null, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void; origin?: 'manual' | 'scheduled' } = {}) {
@@ -273,13 +291,15 @@ export class ServerBackupService {
 
   async restore(serverId: string, actorUserId: string, backupId: string, confirmation: string) {
     return this.processes.withStoppedServerOperation(serverId, async () => {
+      const settings = await this.getSettings()
+      const operationDeadline = this.deadline(settings)
       const server = await this.safeServerDirectory(serverId)
       if (confirmation !== `RESTORE ${server.row.name}`) {
         throw new ServerBackupError('RESTORE_CONFIRMATION_FAILED', `Type RESTORE ${server.row.name} exactly to confirm replacement.`)
       }
       const selected = this.backupRow(serverId, backupId)
-      const { manifest } = await this.verifyBackup(selected, null)
-      const safety = await this.createSnapshot(server, actorUserId, 'pre-restore', 'system')
+      const { manifest } = await this.verifyBackup(selected, null, operationDeadline)
+      const safety = await this.createSnapshot(server, actorUserId, 'pre-restore', 'system', { settings, deadline: operationDeadline })
       const restoreId = randomUUID()
       const stageName = `.mmsmanager-restore-${restoreId}.stage`
       const rollbackName = `.mmsmanager-restore-${restoreId}.rollback`
@@ -292,7 +312,7 @@ export class ServerBackupService {
       }).run()
       let currentMoved = false
       try {
-        const extracted = await this.verifyBackup(selected, stagePath)
+        const extracted = await this.verifyBackup(selected, stagePath, operationDeadline)
         if (extracted.manifest.archiveSha256 !== manifest.archiveSha256) throw new ServerBackupError('BACKUP_CHECKSUM_FAILED', 'The selected archive changed before restore.')
         await this.assertSameServerDirectory(server)
         await this.ensureSiblingPathAvailable(rollbackPath)
@@ -350,7 +370,7 @@ export class ServerBackupService {
     })
   }
 
-  private async createSnapshot(server: { row: ServerRow; directory: string; root: string; rootDevice: number; rootInode: number; serverInode: number }, actorUserId: string | null, kind: BackupKind, origin: BackupOrigin, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void } = {}) {
+  private async createSnapshot(server: { row: ServerRow; directory: string; root: string; rootDevice: number; rootInode: number; serverInode: number }, actorUserId: string | null, kind: BackupKind, origin: BackupOrigin, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void; settings?: BackupSettings; deadline?: number } = {}) {
     let release!: () => void
     const gate = new Promise<void>((resolveGate) => { release = resolveGate })
     const previous = this.snapshotQueue
@@ -360,17 +380,19 @@ export class ServerBackupService {
     finally { release() }
   }
 
-  private async writeSnapshot(server: { row: ServerRow; directory: string; root: string; rootDevice: number; rootInode: number; serverInode: number }, actorUserId: string | null, kind: BackupKind, origin: BackupOrigin, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void } = {}) {
-    const operationDeadline = Date.now() + MAX_SCAN_MS
+  private async writeSnapshot(server: { row: ServerRow; directory: string; root: string; rootDevice: number; rootInode: number; serverInode: number }, actorUserId: string | null, kind: BackupKind, origin: BackupOrigin, options: { signal?: AbortSignal; onArchiveProgress?: (bytes: number) => void; settings?: BackupSettings; deadline?: number } = {}) {
+    const settings = options.settings ?? await this.getSettings()
+    const operationDeadline = options.deadline ?? this.deadline(settings)
+    const manifestLimitBytes = Math.min(MAX_SUPPORTED_MANIFEST_BYTES, this.hooks.manifestLimitBytes ?? MAX_SUPPORTED_MANIFEST_BYTES)
     await this.assertSameServerDirectory(server)
-    const scan = await this.scan(server, options.signal)
+    const scan = await this.scan(server, options.signal, operationDeadline, settings)
     const worldCandidates = await this.worldCandidates(server)
     const exclusionsAreMapped = scan.excludedCount === scan.excluded.length && !scan.excluded.some((entry) => entry.reason === 'unsafe-path')
     const worldPaths = [...worldCandidates].filter((path) => scan.directories.has(path) && exclusionsAreMapped
       && !scan.excluded.some((entry) => entry.path === path || entry.path.startsWith(`${path}/`))).sort()
     const estimate = ARCHIVE_MAGIC.byteLength + ENTRY_HEADER_BYTES + 12 + ARCHIVE_END.byteLength
       + scan.entries.reduce((total, entry) => total + ENTRY_HEADER_BYTES + Buffer.byteLength(entry.path, 'utf8') + entry.sizeBytes + (entry.kind === 'file' ? 32 : 0), 0)
-    if (!Number.isSafeInteger(estimate) || estimate > MAX_ARCHIVE_BYTES) throw new ServerBackupError('BACKUP_LIMIT', 'This server snapshot exceeds the 20 GiB per-backup limit.')
+    if (!Number.isSafeInteger(estimate) || estimate > settings.maxArchiveBytes) throw new ServerBackupError('BACKUP_ARCHIVE_LIMIT', 'This server snapshot exceeds the configured maximum archive size.')
     const id = randomUUID()
     const createdAt = new Date(this.now()).toISOString()
     const fileCountEstimate = scan.entries.filter((entry) => entry.kind === 'file').length
@@ -384,12 +406,18 @@ export class ServerBackupService {
       const metadata: ManifestEntry = { path: entry.path, kind: entry.kind, sizeBytes: entry.sizeBytes, mode: safeMode(entry.mode), modifiedAtMs: Math.trunc(entry.modifiedAtMs), sha256: entry.kind === 'file' ? '0'.repeat(64) : null }
       manifestSizeEstimate += Buffer.byteLength(JSON.stringify(metadata), 'utf8') + (index === 0 ? 0 : 1)
     }
-    if (!Number.isSafeInteger(manifestSizeEstimate) || manifestSizeEstimate > MAX_MANIFEST_BYTES) throw new ServerBackupError('BACKUP_LIMIT', 'The backup manifest would exceed its safe metadata size limit.')
+    if (!Number.isSafeInteger(manifestSizeEstimate) || manifestSizeEstimate > manifestLimitBytes) throw new ServerBackupError('BACKUP_MANIFEST_LIMIT', 'The backup manifest exceeds the supported safe metadata size.')
     const operationSizeEstimate = estimate + manifestSizeEstimate
     const usedBytes = this.db.select({ value: sql<number>`coalesce(sum(${localServerBackups.archiveSizeBytes} + ${localServerBackups.manifestSizeBytes}), 0)` }).from(localServerBackups).get()?.value ?? 0
-    if (usedBytes + operationSizeEstimate > BACKUP_QUOTA_BYTES) throw new ServerBackupError('BACKUP_QUOTA_EXCEEDED', 'The 100 GiB private backup storage budget would be exceeded. Existing snapshots were not removed.')
-    const free = await statfs(this.backupRoot)
-    const availableBytes = Number(free.bavail) * Number(free.bsize)
+    if (settings.storageQuotaBytes !== null && usedBytes + operationSizeEstimate > settings.storageQuotaBytes) throw new ServerBackupError('BACKUP_QUOTA_EXCEEDED', 'The configured private backup storage quota would be exceeded. Existing snapshots were not removed.')
+    let availableBytes: number
+    try {
+      const free = this.hooks.availableBytes ? null : await statfs(this.backupRoot)
+      availableBytes = this.hooks.availableBytes ? await this.hooks.availableBytes(this.backupRoot) : Number(free!.bavail) * Number(free!.bsize)
+    } catch {
+      throw new ServerBackupError('BACKUP_SPACE_UNAVAILABLE', 'Free space could not be verified, so the backup was not started.')
+    }
+    if (!Number.isFinite(availableBytes) || availableBytes < 0) throw new ServerBackupError('BACKUP_SPACE_UNAVAILABLE', 'Free space could not be verified, so the backup was not started.')
     if (Number.isFinite(availableBytes) && availableBytes < operationSizeEstimate + 32 * 1024 * 1024) throw new ServerBackupError('BACKUP_DISK_SPACE', 'There is not enough free space for this snapshot plus a safety margin.')
     const parent = join(this.backupRoot, server.row.id)
     await this.ensurePrivateDirectory(parent, this.backupRoot)
@@ -404,8 +432,8 @@ export class ServerBackupService {
       let writtenBytes = 0
       const append = async (bytes: Buffer) => {
         if (options.signal?.aborted) throw new ServerBackupError('BACKUP_INTERRUPTED', 'The backup was interrupted before atomic completion.')
-        if (Date.now() > operationDeadline) throw new ServerBackupError('BACKUP_TIMEOUT', 'The backup exceeded the 30 minute time limit.')
-        if (writtenBytes + bytes.byteLength > MAX_ARCHIVE_BYTES) throw new ServerBackupError('BACKUP_LIMIT', 'The archive exceeded the per-backup byte limit while streaming.')
+        if (this.timeNow() > operationDeadline) throw new ServerBackupError('BACKUP_TIMEOUT', 'The backup exceeded the configured operation time limit.')
+        if (writtenBytes + bytes.byteLength > settings.maxArchiveBytes) throw new ServerBackupError('BACKUP_ARCHIVE_LIMIT', 'The archive exceeded the configured maximum size while streaming.')
         await writeAll(archiveHandle!, bytes)
         archiveHash.update(bytes)
         writtenBytes += bytes.byteLength
@@ -478,7 +506,7 @@ export class ServerBackupService {
         excluded: scan.excluded, excludedPathsTruncated: scan.excludedCount > scan.excluded.length, entries: manifestEntries,
       }
       const manifestBytes = Buffer.from(JSON.stringify(manifest), 'utf8')
-      if (manifestBytes.byteLength > MAX_MANIFEST_BYTES) throw new ServerBackupError('BACKUP_LIMIT', 'The backup manifest exceeded its safe metadata size limit.')
+      if (manifestBytes.byteLength > manifestLimitBytes) throw new ServerBackupError('BACKUP_MANIFEST_LIMIT', 'The backup manifest exceeded the supported safe metadata size.')
       if (manifestBytes.byteLength !== manifestSizeEstimate) throw new ServerBackupError('BACKUP_MANIFEST_MISMATCH', 'The final manifest size differed from its bounded preflight estimate.')
       const manifestHandle = await open(join(stageDirectory, 'manifest.json'), 'wx', 0o600)
       try { await writeAll(manifestHandle, manifestBytes); await manifestHandle.sync() } finally { await manifestHandle.close() }
@@ -514,6 +542,7 @@ export class ServerBackupService {
       this.recordEvent(server.row.id, actorUserId, origin === 'scheduled' ? 'server-backup-scheduled' : kind === 'manual' ? 'server-backup-create' : 'server-backup-safety-copy', 'failure', { kind, origin, code: error instanceof ServerBackupError ? error.code : 'BACKUP_FAILED' }, new Date(this.now()).toISOString())
       if (cleanupError) throw new ServerBackupError('BACKUP_CLEANUP_FAILED', `The backup did not complete, and its private staging directory could not be safely removed. It was not added to the backup inventory. ${cleanupError instanceof Error ? cleanupError.message : ''}`)
       if (error instanceof ServerBackupError) throw error
+      if (isNodeError(error) && error.code === 'ENOSPC') throw new ServerBackupError('BACKUP_DISK_SPACE', 'The backup storage ran out of free space while writing the snapshot.')
       throw new ServerBackupError('BACKUP_FAILED', 'The snapshot was not completed. No backup was added to the inventory.')
     }
   }
@@ -553,8 +582,7 @@ export class ServerBackupService {
     return [...candidates]
   }
 
-  private async scan(server: { row: ServerRow; directory: string; rootDevice: number }, signal?: AbortSignal) {
-    const deadline = Date.now() + MAX_SCAN_MS
+  private async scan(server: { row: ServerRow; directory: string; rootDevice: number }, signal: AbortSignal | undefined, deadline: number, settings: BackupSettings) {
     const entries: ScannedEntry[] = []
     const directories = new Map<string, DirectoryIdentity>()
     const excluded: ExcludedEntry[] = []
@@ -566,7 +594,7 @@ export class ServerBackupService {
     }
     const visit = async (absolute: string, relativePath: string, depth: number): Promise<void> => {
       if (signal?.aborted) throw new ServerBackupError('BACKUP_INTERRUPTED', 'The backup was interrupted while scanning the server folder.')
-      if (Date.now() > deadline) throw new ServerBackupError('BACKUP_SCAN_TIMEOUT', 'The server folder exceeded the 30 minute inventory limit.')
+      if (this.timeNow() > deadline) throw new ServerBackupError('BACKUP_TIMEOUT', 'The backup exceeded the configured operation time limit while scanning.')
       if (depth > 64) throw new ServerBackupError('BACKUP_DEPTH_LIMIT', 'The server folder exceeds the 64-level safe nesting limit.')
       const before = await lstat(absolute)
       const canonical = await realpath(absolute).catch(() => '')
@@ -585,8 +613,8 @@ export class ServerBackupService {
         }
         for await (const dirent of directoryHandle) {
           if (signal?.aborted) throw new ServerBackupError('BACKUP_INTERRUPTED', 'The backup was interrupted while scanning the server folder.')
-          if (Date.now() > deadline) throw new ServerBackupError('BACKUP_SCAN_TIMEOUT', 'The server folder exceeded the 30 minute inventory limit.')
-          if (entries.length + excludedCount >= MAX_BACKUP_ENTRIES) throw new ServerBackupError('BACKUP_ENTRY_LIMIT', 'The server folder exceeds the 100,000-entry backup limit.')
+          if (this.timeNow() > deadline) throw new ServerBackupError('BACKUP_TIMEOUT', 'The backup exceeded the configured operation time limit while scanning.')
+          if (entries.length + excludedCount >= settings.maxEntries) throw new ServerBackupError('BACKUP_ENTRY_LIMIT', 'The server folder exceeds the configured file and folder limit.')
           const name = dirent.name
           const childRelative = relativePath ? `${relativePath}/${name}` : name
           const skip = backupPath(childRelative) ? exclusion(childRelative) : 'unsafe-path'
@@ -609,7 +637,7 @@ export class ServerBackupService {
             await visit(child, childRelative, depth + 1)
           } else if (stat.isFile()) {
             if (stat.nlink > 1) { noteExcluded(childRelative, 'hardlink'); continue }
-            if (!Number.isSafeInteger(stat.size) || stat.size < 0 || totalBytes > MAX_ARCHIVE_BYTES - stat.size) throw new ServerBackupError('BACKUP_LIMIT', 'The server content exceeds the 20 GiB per-backup limit.')
+            if (!Number.isSafeInteger(stat.size) || stat.size < 0 || totalBytes > settings.maxArchiveBytes - stat.size) throw new ServerBackupError('BACKUP_ARCHIVE_LIMIT', 'The server content exceeds the configured maximum archive size.')
             totalBytes += stat.size
             entries.push({ path: childRelative, kind: 'file', sizeBytes: stat.size, mode: safeMode(stat.mode), modifiedAtMs: Math.trunc(stat.mtimeMs), sha256: null, dev: stat.dev, ino: stat.ino, nlink: stat.nlink, ctimeMs: stat.ctimeMs })
           } else noteExcluded(childRelative, 'special-file')
@@ -620,7 +648,8 @@ export class ServerBackupService {
     return { entries, directories, excluded, excludedCount, totalBytes }
   }
 
-  private async verifyBackup(row: BackupRow, extractRoot: string | null) {
+  private async verifyBackup(row: BackupRow, extractRoot: string | null, deadline?: number) {
+    const operationDeadline = deadline ?? this.deadline(await this.getSettings())
     const { archiveHandle, archiveStat, manifest } = await this.openVerifiedArchive(row)
     try {
       let position = 0
@@ -645,9 +674,8 @@ export class ServerBackupService {
       let totalFileBytes = 0
       let fileCount = 0
       let footerSeen = false
-      const startAt = Date.now()
       while (position < archiveStat.size) {
-        if (Date.now() - startAt > MAX_SCAN_MS) throw new ServerBackupError('BACKUP_VERIFY_TIMEOUT', 'Archive verification exceeded its time limit.')
+        if (this.timeNow() > operationDeadline) throw new ServerBackupError('BACKUP_TIMEOUT', 'The backup operation exceeded its configured time limit during verification or restore.')
         const header = await readAndHash(position, ENTRY_HEADER_BYTES)
         position += ENTRY_HEADER_BYTES
         const kindCode = header[0]
@@ -676,7 +704,7 @@ export class ServerBackupService {
         seen.add(entryPath)
         const sizeBytes = asSafeInteger(sizeBig)
         const modifiedAtMs = Number(modifiedAtBig)
-        if (sizeBytes === null || sizeBytes > MAX_ARCHIVE_BYTES || !Number.isSafeInteger(modifiedAtMs) || safeMode(mode) !== mode) throw new ServerBackupError('BACKUP_ARCHIVE_INVALID', 'The archive entry metadata is outside supported bounds.')
+        if (sizeBytes === null || sizeBytes > MAX_SUPPORTED_ARCHIVE_BYTES || !Number.isSafeInteger(modifiedAtMs) || safeMode(mode) !== mode) throw new ServerBackupError('BACKUP_ARCHIVE_INVALID', 'The archive entry metadata is outside supported bounds.')
         const entryKind = kindCode === 1 ? 'file' : 'directory'
         const manifestEntry = manifest.entries[recordIndex]
         if (!manifestEntry || manifestEntry.path !== entryPath || manifestEntry.kind !== entryKind || manifestEntry.sizeBytes !== sizeBytes || manifestEntry.mode !== mode || manifestEntry.modifiedAtMs !== modifiedAtMs) {
@@ -705,6 +733,7 @@ export class ServerBackupService {
           let consumed = 0
           try {
             while (consumed < sizeBytes) {
+              if (this.timeNow() > operationDeadline) throw new ServerBackupError('BACKUP_TIMEOUT', 'The backup operation exceeded its configured time limit during verification or restore.')
               const length = Math.min(IO_CHUNK_BYTES, sizeBytes - consumed)
               const buffer = await readExact(archiveHandle, position, length)
               position += buffer.byteLength
@@ -767,7 +796,7 @@ export class ServerBackupService {
     try {
       manifestHandle = await open(manifestPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
       const manifestStat = await manifestHandle.stat()
-      if (!manifestStat.isFile() || manifestStat.isSymbolicLink() || manifestStat.nlink > 1 || (manifestStat.mode & 0o077) !== 0 || manifestStat.size < 2 || manifestStat.size > MAX_MANIFEST_BYTES) {
+      if (!manifestStat.isFile() || manifestStat.isSymbolicLink() || manifestStat.nlink > 1 || (manifestStat.mode & 0o077) !== 0 || manifestStat.size < 2 || manifestStat.size > MAX_SUPPORTED_MANIFEST_BYTES) {
         throw new ServerBackupError('BACKUP_UNSAFE', 'The private backup manifest is not a bounded regular file.')
       }
       const manifestBytes = await manifestHandle.readFile()
@@ -786,7 +815,7 @@ export class ServerBackupService {
       manifestHandle = null
       archiveHandle = await open(join(directory, 'snapshot.mmsbackup'), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
       const archiveStat = await archiveHandle.stat()
-      if (!archiveStat.isFile() || archiveStat.isSymbolicLink() || archiveStat.nlink > 1 || (archiveStat.mode & 0o077) !== 0 || archiveStat.size !== row.archiveSizeBytes || archiveStat.size > MAX_ARCHIVE_BYTES) {
+      if (!archiveStat.isFile() || archiveStat.isSymbolicLink() || archiveStat.nlink > 1 || (archiveStat.mode & 0o077) !== 0 || archiveStat.size !== row.archiveSizeBytes || archiveStat.size > MAX_SUPPORTED_ARCHIVE_BYTES) {
         throw new ServerBackupError('BACKUP_UNSAFE', 'The private archive is not a safe regular file matching its ledger size.')
       }
       return { archiveHandle, archiveStat, manifest: raw }
@@ -961,6 +990,33 @@ export class ServerBackupService {
 
   private recordEvent(serverId: string, actorUserId: string | null, action: string, outcome: 'success' | 'failure', detail: Record<string, unknown>, occurredAt: string) {
     this.db.insert(localServerEvents).values({ serverId, actorUserId, action, outcome, occurredAt, detail: JSON.stringify(detail) }).run()
+  }
+
+  private async getSettings(): Promise<BackupSettings> {
+    const row = this.db.select().from(backupSettingsTable).where(eq(backupSettingsTable.id, 1)).get()
+    if (!row) return DEFAULT_BACKUP_SETTINGS
+    return backupSettingsSchema.parse({
+      maxArchiveBytes: row.maxArchiveBytes,
+      storageQuotaBytes: row.storageQuotaBytes,
+      maxEntries: row.maxEntries,
+      maxDurationMinutes: row.maxDurationMinutes,
+    })
+  }
+
+  private deadline(settings: BackupSettings): number {
+    return this.timeNow() + settings.maxDurationMinutes * 60_000
+  }
+
+  private timeNow(): number { return this.hooks.operationClock?.() ?? Date.now() }
+
+  private async storageMetrics(): Promise<{ usedBytes: number; availableBytes: number | null }> {
+    const usedBytes = this.db.select({ value: sql<number>`coalesce(sum(${localServerBackups.archiveSizeBytes} + ${localServerBackups.manifestSizeBytes}), 0)` })
+      .from(localServerBackups).get()?.value ?? 0
+    try {
+      const free = await statfs(this.backupRoot)
+      const available = Number(free.bavail) * Number(free.bsize)
+      return { usedBytes, availableBytes: Number.isSafeInteger(available) && available >= 0 ? available : null }
+    } catch { return { usedBytes, availableBytes: null } }
   }
 
   private backupRow(serverId: string, backupId: string): BackupRow {

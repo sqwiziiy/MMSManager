@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { eq } from 'drizzle-orm'
 import { openDatabase } from './client.js'
-import { localServerAutomation, localServerAutomationJobs, localServerConsoleEntries, localServerRestartJobs, localServerRestartSchedules, localServers, machineSamples, machines, serverAccessGrants, sessions, users } from './schema.js'
+import { backupSettings, localServerAutomation, localServerAutomationJobs, localServerConsoleEntries, localServerRestartJobs, localServerRestartSchedules, localServers, machineSamples, machines, serverAccessGrants, sessions, users } from './schema.js'
 
 describe('additive database migrations', () => {
   let directory: string | null = null
@@ -49,6 +49,7 @@ describe('additive database migrations', () => {
 
     opened = await openDatabase({ path: databasePath })
     expect(opened.native.pragma('integrity_check', { simple: true })).toBe('ok')
+    expect(opened.db.select().from(backupSettings).get()).toMatchObject({ id: 1, maxArchiveBytes: 20 * 1024 ** 3, storageQuotaBytes: 100 * 1024 ** 3, maxEntries: 100_000, maxDurationMinutes: 30 })
     expect(opened.db.select().from(users).where(eq(users.id, userId)).get()?.passwordHash).toBe('fixture-only-preserved-hash')
     expect(opened.native.prepare('SELECT compact_navigation AS compactNavigation, default_landing AS defaultLanding, language, theme, accent, density, reduced_motion AS reducedMotion FROM user_preferences WHERE user_id = ?').get(userId)).toEqual({ compactNavigation: 1, defaultLanding: 'machine', language: 'en', theme: 'dark', accent: 'moss', density: 'comfortable', reducedMotion: 0 })
     expect(opened.db.select().from(machineSamples).where(eq(machineSamples.machineId, 'local')).all()).toMatchObject([{ cpuPercent: 12.5, memoryTotalBytes: 4096, source: 'fixture' }])
@@ -65,6 +66,7 @@ describe('additive database migrations', () => {
     expect(opened.native.prepare('SELECT removed_at AS removedAt FROM local_servers WHERE id = ?').get(serverId)).toEqual({ removedAt: null })
     expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'local_server_removal_operations')).toBeTruthy()
     expect(opened.native.prepare('SELECT name FROM sqlite_master WHERE type = ? AND name = ?').get('table', 'server_zip_imports')).toBeTruthy()
+    expect(opened.native.prepare('PRAGMA table_info(local_server_runtime)').all()).toMatchObject(expect.arrayContaining([expect.objectContaining({ name: 'process_port', type: 'INTEGER' })]))
     const backups = (await readdir(directory)).filter((name) => name.includes('.pre-migration-') && name.endsWith('.backup'))
     expect(backups).toHaveLength(1)
     expect((await lstat(join(directory, backups[0]!))).mode & 0o777).toBe(0o600)

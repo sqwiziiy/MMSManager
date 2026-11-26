@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { openDatabase } from '../db/client.js'
-import { localServerBackupRestores, localServerBackups, localServerRuntime, localServers, users } from '../db/schema.js'
+import { backupSettings, localServerBackupRestores, localServerBackups, localServerRuntime, localServers, users } from '../db/schema.js'
 import { ServerProcessManager } from './processes.js'
 import { ServerRegistry } from './registry.js'
 import { ServerBackupService } from './backups.js'
@@ -187,5 +187,50 @@ describe('managed server backup and restore', () => {
       port: null, eula: 'unknown', managed: false, worldFolders: '[]', createdBy: null, createdAt, updatedAt: createdAt,
     }).run()
     await expect(service.list(importedId)).rejects.toMatchObject({ code: 'SERVER_NOT_PANEL_MANAGED' })
+  })
+
+  it('persists bounded backup settings and applies archive and entry limits to manual and scheduled snapshots', async () => {
+    const defaults = await service.settingsOverview()
+    expect(defaults).toMatchObject({ maxArchiveBytes: 20 * 1024 ** 3, storageQuotaBytes: 100 * 1024 ** 3, maxEntries: 100_000, maxDurationMinutes: 30 })
+    const base = { maxArchiveBytes: defaults.maxArchiveBytes, storageQuotaBytes: defaults.storageQuotaBytes, maxEntries: defaults.maxEntries, maxDurationMinutes: defaults.maxDurationMinutes }
+    const entryLimited = await service.updateSettings({ ...base, maxEntries: 1 })
+    expect(opened.db.select().from(backupSettings).get()?.maxEntries).toBe(1)
+    await expect(service.create(serverId, actorId)).rejects.toMatchObject({ code: 'BACKUP_ENTRY_LIMIT' })
+    await expect(service.create(serverId, actorId, { origin: 'scheduled' })).rejects.toMatchObject({ code: 'BACKUP_ENTRY_LIMIT' })
+
+    await service.updateSettings({ maxArchiveBytes: 1024 ** 2, storageQuotaBytes: entryLimited.storageQuotaBytes, maxEntries: 100_000, maxDurationMinutes: entryLimited.maxDurationMinutes })
+    await writeFile(join(serverDirectory, 'oversize-fixture.bin'), Buffer.alloc(1024 ** 2 + 32 * 1024, 7))
+    await expect(service.create(serverId, actorId)).rejects.toMatchObject({ code: 'BACKUP_ARCHIVE_LIMIT' })
+    await expect(service.create(serverId, actorId, { origin: 'scheduled' })).rejects.toMatchObject({ code: 'BACKUP_ARCHIVE_LIMIT' })
+  })
+
+  it('enforces the supported manifest bound and the configured operation deadline', async () => {
+    const manifestLimited = new ServerBackupService(opened.db, servers, processes, now, { manifestLimitBytes: 1 })
+    await manifestLimited.prepare()
+    await expect(manifestLimited.create(serverId, actorId)).rejects.toMatchObject({ code: 'BACKUP_MANIFEST_LIMIT' })
+
+    let operationTime = 0
+    const timed = new ServerBackupService(opened.db, servers, processes, now, { operationClock: () => { operationTime += 30 * 60_000 + 1; return operationTime } })
+    await timed.prepare()
+    await expect(timed.create(serverId, actorId)).rejects.toMatchObject({ code: 'BACKUP_TIMEOUT' })
+  })
+
+  it('applies the shared quota, permits disabling it, and reports insufficient disk space', async () => {
+    const baseline = await service.create(serverId, actorId)
+    expect(baseline.archiveSizeBytes).toBeGreaterThan(0)
+    const current = await service.settingsOverview()
+    const limits = { maxArchiveBytes: current.maxArchiveBytes, storageQuotaBytes: current.storageQuotaBytes, maxEntries: current.maxEntries, maxDurationMinutes: current.maxDurationMinutes }
+    await service.updateSettings({ ...limits, maxArchiveBytes: 5 * 1024 ** 2, storageQuotaBytes: 1024 ** 2 })
+    await writeFile(join(serverDirectory, 'quota-fixture.bin'), Buffer.alloc(1_100_000, 8))
+    await expect(service.create(serverId, actorId)).rejects.toMatchObject({ code: 'BACKUP_QUOTA_EXCEEDED' })
+
+    const disabled = await service.updateSettings({ ...limits, maxArchiveBytes: 5 * 1024 ** 2, storageQuotaBytes: null })
+    expect(disabled.storageQuotaBytes).toBeNull()
+    const scheduled = await service.create(serverId, actorId, { origin: 'scheduled' })
+    expect(scheduled.origin).toBe('scheduled')
+
+    const noSpace = new ServerBackupService(opened.db, servers, processes, now, { availableBytes: async () => 0 })
+    await noSpace.prepare()
+    await expect(noSpace.create(serverId, actorId)).rejects.toMatchObject({ code: 'BACKUP_DISK_SPACE' })
   })
 })

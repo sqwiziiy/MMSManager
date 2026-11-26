@@ -181,6 +181,8 @@ export class ServerInstallService {
       const javaStat = await lstat(runtime.path)
       if (!javaStat.isFile() && !javaStat.isSymbolicLink()) throw new ServerInstallError('JAVA_NOT_EXECUTABLE', 'The selected Java runtime is no longer a regular executable.')
       await access(runtime.path, constants.X_OK)
+      const portConflict = await this.servers.findPortConflict('', input.port)
+      if (portConflict) throw new ServerInstallError('PORT_CONFLICT', `Game port ${input.port} is also configured for “${portConflict.name}”.`)
       if (!await isLoopbackPortAvailable(input.port)) throw new ServerInstallError('PORT_IN_USE', `Local port ${input.port} is already in use.`)
 
       const root = await realpath(this.servers.managedRoot)

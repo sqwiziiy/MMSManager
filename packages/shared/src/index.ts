@@ -243,6 +243,24 @@ export const monitoringSettingsSchema = z.object({
   statusPollMs: z.number().int().min(5_000).max(30_000),
 }).strict()
 export const monitoringSettingsUpdateSchema = monitoringSettingsSchema
+
+export const backupSettingsSchema = z.object({
+  maxArchiveBytes: z.number().int().min(1024 ** 2).max(256 * 1024 ** 3),
+  storageQuotaBytes: z.number().int().min(1024 ** 2).max(1024 ** 4).nullable(),
+  maxEntries: z.number().int().min(1).max(250_000),
+  maxDurationMinutes: z.number().int().min(1).max(360),
+}).strict()
+export type BackupSettings = z.infer<typeof backupSettingsSchema>
+export const DEFAULT_BACKUP_SETTINGS: BackupSettings = {
+  maxArchiveBytes: 20 * 1024 ** 3,
+  storageQuotaBytes: 100 * 1024 ** 3,
+  maxEntries: 100_000,
+  maxDurationMinutes: 30,
+}
+export const backupSettingsResultSchema = backupSettingsSchema.extend({
+  storageUsedBytes: z.number().int().nonnegative(),
+  storageAvailableBytes: z.number().int().nonnegative().nullable(),
+}).strict()
 export const DEFAULT_MONITORING_SETTINGS: z.infer<typeof monitoringSettingsSchema> = {
   fastSampleMs: 1_000,
   historySaveMs: 10_000,
@@ -350,6 +368,8 @@ export const machineDaySchema = z.object({
 
 export const serverSoftwareSchema = z.enum(['vanilla', 'fabric', 'paper', 'unknown'])
 export const serverEulaSchema = z.enum(['accepted', 'not-accepted', 'unknown'])
+export const serverPortStatusSchema = z.enum(['valid', 'missing', 'invalid', 'unreadable'])
+export const serverPortErrorCodeSchema = z.enum(['PORT_FILE_MISSING', 'PORT_FILE_UNREADABLE', 'PORT_PROPERTY_MISSING', 'PORT_VALUE_INVALID']).nullable()
 export const registeredServerSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
@@ -363,6 +383,8 @@ export const registeredServerSchema = z.object({
   minMemoryMb: z.number().int().positive(),
   maxMemoryMb: z.number().int().positive(),
   port: z.number().int().min(1).max(65535).nullable(),
+  portStatus: serverPortStatusSchema,
+  portErrorCode: serverPortErrorCodeSchema,
   eula: serverEulaSchema,
   managed: z.boolean(),
   worldFolders: z.array(z.string()),
@@ -373,6 +395,15 @@ export const serverInventorySchema = z.object({
   managedRoot: z.string(),
   importRoots: z.array(z.string()),
 })
+export const unregisteredServerSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  version: z.string().nullable(),
+  removedAt: z.string().datetime({ offset: true }),
+  folderAvailable: z.boolean(),
+}).strict()
+export const unregisteredServerListSchema = z.object({ servers: z.array(unregisteredServerSchema).max(100) }).strict()
+export const serverRegistrationRestoreResultSchema = z.object({ ok: z.literal(true), serverId: z.string().uuid() }).strict()
 export const localServerSummarySchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
@@ -384,6 +415,8 @@ export const localServerSummarySchema = z.object({
   minMemoryMb: z.number().int().positive(),
   maxMemoryMb: z.number().int().positive(),
   port: z.number().int().min(1).max(65535).nullable(),
+  portStatus: serverPortStatusSchema,
+  portErrorCode: serverPortErrorCodeSchema,
   eula: serverEulaSchema,
   managed: z.boolean(),
   worldFolders: z.array(z.string()),
@@ -536,6 +569,10 @@ export const serverRuntimeSchema = z.object({
   ready: z.boolean(),
   playersOnline: z.null(),
   eula: serverEulaSchema,
+  configuredPort: z.number().int().min(1).max(65535).nullable(),
+  processPort: z.number().int().min(1).max(65535).nullable(),
+  portStatus: serverPortStatusSchema,
+  portErrorCode: serverPortErrorCodeSchema,
   restartRequired: z.boolean(),
   lastExitCode: z.number().int().nullable(),
   errorMessage: z.string().nullable(),
@@ -584,6 +621,11 @@ export const serverStatusSchema = z.object({
   checkedAt: z.string().datetime({ offset: true }),
   source: z.literal('local-status-ping'),
   state: z.enum(['reachable', 'unreachable', 'unavailable']),
+  configuredPort: z.number().int().min(1).max(65535).nullable(),
+  processPort: z.number().int().min(1).max(65535).nullable(),
+  portStatus: serverPortStatusSchema,
+  portErrorCode: serverPortErrorCodeSchema,
+  restartRequired: z.boolean(),
   playersOnline: z.number().int().nonnegative().nullable(),
   playersMax: z.number().int().nonnegative().nullable(),
   versionName: z.string().max(120).nullable(),
@@ -712,6 +754,9 @@ export const serverPropertiesResponseSchema = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   serverVersion: z.string().min(1).max(32),
   serverSoftware: serverSoftwareSchema,
+  configuredPort: z.number().int().min(1).max(65535).nullable(),
+  portStatus: serverPortStatusSchema,
+  portErrorCode: serverPortErrorCodeSchema,
   presentKeys: z.array(z.string().max(80)).max(128),
   unknownKeys: z.array(z.string()).max(256),
   protectedProperties: z.array(z.object({ key: z.string().max(80), reason: z.string().max(240), configured: z.boolean() }).strict()).max(24),
@@ -816,8 +861,8 @@ export const serverBackupSchema = z.object({
   archiveSizeBytes: z.number().int().nonnegative(),
   archiveSha256: z.string().regex(/^[a-f0-9]{64}$/),
   manifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
-  entryCount: z.number().int().nonnegative().max(100_000),
-  fileCount: z.number().int().nonnegative().max(100_000),
+  entryCount: z.number().int().nonnegative().max(250_000),
+  fileCount: z.number().int().nonnegative().max(250_000),
   totalFileBytes: z.number().int().nonnegative(),
   excludedCount: z.number().int().nonnegative(),
 }).strict()
@@ -826,7 +871,8 @@ export const serverBackupsResultSchema = z.object({
   items: z.array(serverBackupSchema).max(500),
   truncated: z.boolean(),
   storageUsedBytes: z.number().int().nonnegative(),
-  storageLimitBytes: z.number().int().positive(),
+  storageLimitBytes: z.number().int().positive().nullable(),
+  storageAvailableBytes: z.number().int().nonnegative().nullable(),
   quotaWarning: z.boolean(),
   runtimeStatus: z.enum(['stopped', 'starting', 'running', 'stopping', 'crashed', 'error', 'external/unmanaged', 'unavailable']),
 }).strict()
@@ -862,8 +908,8 @@ export const serverBackupRestoreResultSchema = z.object({
   restoreId: z.string().uuid(),
   backupId: z.string().uuid(),
   safetyBackupId: z.string().uuid(),
-  restoredFileCount: z.number().int().nonnegative().max(100_000),
-  restoredDirectoryCount: z.number().int().nonnegative().max(100_000),
+  restoredFileCount: z.number().int().nonnegative().max(250_000),
+  restoredDirectoryCount: z.number().int().nonnegative().max(250_000),
   restoredBytes: z.number().int().nonnegative(),
   completedAt: z.string().datetime({ offset: true }),
   rollbackCleanupPending: z.boolean(),
@@ -1138,6 +1184,7 @@ export type MachineStorage = z.infer<typeof machineStorageSchema>
 export type MachineResourcePoint = z.infer<typeof machineResourcePointSchema>
 export type MachineHistory = z.infer<typeof machineHistorySchema>
 export type MonitoringSettings = z.infer<typeof monitoringSettingsSchema>
+export type BackupSettingsResult = z.infer<typeof backupSettingsResultSchema>
 export type MachineCalendarDay = z.infer<typeof machineCalendarDaySchema>
 export type MachineCalendar = z.infer<typeof machineCalendarSchema>
 export type MachineEvent = z.infer<typeof machineEventSchema>
@@ -1158,6 +1205,7 @@ export type AdminUser = z.infer<typeof adminUserSchema>
 export type AuditRecord = z.infer<typeof auditRecordSchema>
 export type RegisteredServer = z.infer<typeof registeredServerSchema>
 export type ServerInventory = z.infer<typeof serverInventorySchema>
+export type UnregisteredServer = z.infer<typeof unregisteredServerSchema>
 export type LocalServerSummary = z.infer<typeof localServerSummarySchema>
 export type ServerMetadataUpdate = z.infer<typeof serverMetadataUpdateSchema>
 export type ServerAccessPermissions = z.infer<typeof serverAccessPermissionsSchema>

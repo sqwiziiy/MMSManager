@@ -1,0 +1,1 @@
+ALTER TABLE `local_server_runtime` ADD `process_port` integer;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createServer, type Server } from 'node:net'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -8,6 +8,7 @@ import { eq } from 'drizzle-orm'
 import { openDatabase } from '../db/client.js'
 import { localServers, localServerRuntime, localServerStatusSamples } from '../db/schema.js'
 import { queryJavaStatus, ServerStatusService, type ServerStatusProbe } from './status.js'
+import { ServerRegistry } from './registry.js'
 
 function varInt(value: number): Buffer {
   const bytes: number[] = []
@@ -40,6 +41,41 @@ async function closeServer(server: Server): Promise<void> {
 }
 
 describe('bounded local Minecraft status ping', () => {
+  it('probes the process port while reporting a changed configured port and restart requirement', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'mmsmanager-process-port-status-'))
+    const opened = await openDatabase({ path: join(temp, 'state.sqlite') })
+    const root = join(temp, 'servers')
+    const serverDirectory = join(root, 'fixture')
+    await mkdir(serverDirectory, { recursive: true })
+    await writeFile(join(serverDirectory, 'server.properties'), 'server-port=25565\n')
+    const registry = new ServerRegistry(opened.db, temp, { MMSMANAGER_SERVER_ROOT: root })
+    await registry.prepare()
+    const id = randomUUID()
+    const at = new Date().toISOString()
+    await opened.db.insert(localServers).values({
+      id, name: 'Port changed while running', directory: serverDirectory, source: 'created', software: 'paper', version: '1.21.4',
+      jarName: 'server.jar', javaPath: null, javaMajor: null, minMemoryMb: 512, maxMemoryMb: 1024,
+      port: 25565, eula: 'accepted', managed: true, worldFolders: '[]', createdBy: null, createdAt: at, updatedAt: at,
+    }).run()
+    await opened.db.insert(localServerRuntime).values({ serverId: id, status: 'running', processPort: 25565, updatedAt: at, restartRequired: false }).run()
+    await writeFile(join(serverDirectory, 'server.properties'), '# changed externally during the process\nserver-port=25575\n')
+    let probedPort: number | null = null
+    const probe = async (port: number): Promise<ServerStatusProbe> => {
+      probedPort = port
+      return { state: 'reachable', playersOnline: 2, playersMax: 20, versionName: 'Fixture', description: null, latencyMs: 1, errorCode: null }
+    }
+    try {
+      const service = new ServerStatusService(opened.db, Date.now, probe, registry)
+      const result = await service.get(id)
+      expect(probedPort).toBe(25565)
+      expect(result).toMatchObject({ configuredPort: 25575, processPort: 25565, portStatus: 'valid', restartRequired: true, state: 'reachable' })
+      expect(opened.db.select().from(localServers).where(eq(localServers.id, id)).get()?.port).toBe(25575)
+    } finally {
+      opened.native.close()
+      await rm(temp, { recursive: true, force: true })
+    }
+  })
+
   it('reads real framed counts, ignores unverified sample identities and persists one bounded-source sample', async () => {
     const fixture = await fixtureServer(statusFrame())
     const temp = await mkdtemp(join(tmpdir(), 'mmsmanager-status-'))

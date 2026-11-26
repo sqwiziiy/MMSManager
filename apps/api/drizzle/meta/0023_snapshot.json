@@ -1,0 +1,4819 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "3107cb07-5866-4bd0-ad5b-2a3f835f8d33",
+  "prevId": "3be65a3e-845f-49fe-97ca-d13ca641eb94",
+  "tables": {
+    "security_audit_events": {
+      "name": "security_audit_events",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "subject_user_id": {
+          "name": "subject_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "security_audit_events_time_idx": {
+          "name": "security_audit_events_time_idx",
+          "columns": [
+            "occurred_at"
+          ],
+          "isUnique": false
+        },
+        "security_audit_events_actor_idx": {
+          "name": "security_audit_events_actor_idx",
+          "columns": [
+            "actor_user_id",
+            "occurred_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "security_audit_events_actor_user_id_users_id_fk": {
+          "name": "security_audit_events_actor_user_id_users_id_fk",
+          "tableFrom": "security_audit_events",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "security_audit_events_subject_user_id_users_id_fk": {
+          "name": "security_audit_events_subject_user_id_users_id_fk",
+          "tableFrom": "security_audit_events",
+          "tableTo": "users",
+          "columnsFrom": [
+            "subject_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "security_audit_events_outcome_check": {
+          "name": "security_audit_events_outcome_check",
+          "value": "\"security_audit_events\".\"outcome\" IN ('success', 'failure')"
+        }
+      }
+    },
+    "auth_state": {
+      "name": "auth_state",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bootstrap_hash": {
+          "name": "bootstrap_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bootstrap_expires_at": {
+          "name": "bootstrap_expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "bootstrap_consumed_at": {
+          "name": "bootstrap_consumed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "initialized_at": {
+          "name": "initialized_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "auth_state_singleton_check": {
+          "name": "auth_state_singleton_check",
+          "value": "\"auth_state\".\"id\" = 1"
+        }
+      }
+    },
+    "backup_settings": {
+      "name": "backup_settings",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_archive_bytes": {
+          "name": "max_archive_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "storage_quota_bytes": {
+          "name": "storage_quota_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "max_entries": {
+          "name": "max_entries",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_duration_minutes": {
+          "name": "max_duration_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "backup_settings_singleton_check": {
+          "name": "backup_settings_singleton_check",
+          "value": "\"backup_settings\".\"id\" = 1"
+        },
+        "backup_settings_archive_check": {
+          "name": "backup_settings_archive_check",
+          "value": "\"backup_settings\".\"max_archive_bytes\" BETWEEN 1048576 AND 274877906944"
+        },
+        "backup_settings_quota_check": {
+          "name": "backup_settings_quota_check",
+          "value": "\"backup_settings\".\"storage_quota_bytes\" IS NULL OR \"backup_settings\".\"storage_quota_bytes\" BETWEEN 1048576 AND 1099511627776"
+        },
+        "backup_settings_entries_check": {
+          "name": "backup_settings_entries_check",
+          "value": "\"backup_settings\".\"max_entries\" BETWEEN 1 AND 250000"
+        },
+        "backup_settings_duration_check": {
+          "name": "backup_settings_duration_check",
+          "value": "\"backup_settings\".\"max_duration_minutes\" BETWEEN 1 AND 360"
+        }
+      }
+    },
+    "local_server_automation": {
+      "name": "local_server_automation",
+      "columns": {
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "backup_enabled": {
+          "name": "backup_enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "frequency": {
+          "name": "frequency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'daily'"
+        },
+        "local_time": {
+          "name": "local_time",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'03:00'"
+        },
+        "weekday": {
+          "name": "weekday",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "next_run_at": {
+          "name": "next_run_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_run_at": {
+          "name": "last_run_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_status": {
+          "name": "last_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "local_server_automation_server_id_local_servers_id_fk": {
+          "name": "local_server_automation_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_automation",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_server_automation_updated_by_users_id_fk": {
+          "name": "local_server_automation_updated_by_users_id_fk",
+          "tableFrom": "local_server_automation",
+          "tableTo": "users",
+          "columnsFrom": [
+            "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_automation_enabled_check": {
+          "name": "local_server_automation_enabled_check",
+          "value": "\"local_server_automation\".\"backup_enabled\" IN (0, 1)"
+        },
+        "local_server_automation_frequency_check": {
+          "name": "local_server_automation_frequency_check",
+          "value": "\"local_server_automation\".\"frequency\" IN ('daily', 'weekly')"
+        },
+        "local_server_automation_time_check": {
+          "name": "local_server_automation_time_check",
+          "value": "\"local_server_automation\".\"local_time\" GLOB '[0-2][0-9]:[0-5][0-9]' AND substr(\"local_server_automation\".\"local_time\", 1, 2) BETWEEN '00' AND '23'"
+        },
+        "local_server_automation_weekday_check": {
+          "name": "local_server_automation_weekday_check",
+          "value": "\"local_server_automation\".\"weekday\" IS NULL OR (\"local_server_automation\".\"weekday\" >= 0 AND \"local_server_automation\".\"weekday\" <= 6)"
+        },
+        "local_server_automation_frequency_weekday_check": {
+          "name": "local_server_automation_frequency_weekday_check",
+          "value": "(\"local_server_automation\".\"frequency\" = 'daily' AND \"local_server_automation\".\"weekday\" IS NULL) OR (\"local_server_automation\".\"frequency\" = 'weekly' AND \"local_server_automation\".\"weekday\" IS NOT NULL)"
+        },
+        "local_server_automation_status_check": {
+          "name": "local_server_automation_status_check",
+          "value": "\"local_server_automation\".\"last_status\" IS NULL OR \"local_server_automation\".\"last_status\" IN ('completed', 'failed', 'missed')"
+        }
+      }
+    },
+    "local_server_automation_jobs": {
+      "name": "local_server_automation_jobs",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scheduled_for": {
+          "name": "scheduled_for",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "backup_id": {
+          "name": "backup_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "acknowledged_at": {
+          "name": "acknowledged_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_automation_jobs_schedule_unique": {
+          "name": "local_server_automation_jobs_schedule_unique",
+          "columns": [
+            "server_id",
+            "kind",
+            "scheduled_for"
+          ],
+          "isUnique": true
+        },
+        "local_server_automation_jobs_time_idx": {
+          "name": "local_server_automation_jobs_time_idx",
+          "columns": [
+            "server_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "local_server_automation_jobs_status_idx": {
+          "name": "local_server_automation_jobs_status_idx",
+          "columns": [
+            "status",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_automation_jobs_server_id_local_servers_id_fk": {
+          "name": "local_server_automation_jobs_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_automation_jobs",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_server_automation_jobs_backup_id_local_server_backups_id_fk": {
+          "name": "local_server_automation_jobs_backup_id_local_server_backups_id_fk",
+          "tableFrom": "local_server_automation_jobs",
+          "tableTo": "local_server_backups",
+          "columnsFrom": [
+            "backup_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_automation_jobs_kind_check": {
+          "name": "local_server_automation_jobs_kind_check",
+          "value": "\"local_server_automation_jobs\".\"kind\" = 'backup'"
+        },
+        "local_server_automation_jobs_status_check": {
+          "name": "local_server_automation_jobs_status_check",
+          "value": "\"local_server_automation_jobs\".\"status\" IN ('running', 'completed', 'failed', 'missed')"
+        }
+      }
+    },
+    "local_server_backup_restores": {
+      "name": "local_server_backup_restores",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "backup_id": {
+          "name": "backup_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "safety_backup_id": {
+          "name": "safety_backup_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "staging_name": {
+          "name": "staging_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "rollback_name": {
+          "name": "rollback_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "error_code": {
+          "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_backup_restores_server_time_idx": {
+          "name": "local_server_backup_restores_server_time_idx",
+          "columns": [
+            "server_id",
+            "started_at"
+          ],
+          "isUnique": false
+        },
+        "local_server_backup_restores_status_idx": {
+          "name": "local_server_backup_restores_status_idx",
+          "columns": [
+            "status",
+            "started_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_backup_restores_server_id_local_servers_id_fk": {
+          "name": "local_server_backup_restores_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_backup_restores",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_server_backup_restores_backup_id_local_server_backups_id_fk": {
+          "name": "local_server_backup_restores_backup_id_local_server_backups_id_fk",
+          "tableFrom": "local_server_backup_restores",
+          "tableTo": "local_server_backups",
+          "columnsFrom": [
+            "backup_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "local_server_backup_restores_safety_backup_id_local_server_backups_id_fk": {
+          "name": "local_server_backup_restores_safety_backup_id_local_server_backups_id_fk",
+          "tableFrom": "local_server_backup_restores",
+          "tableTo": "local_server_backups",
+          "columnsFrom": [
+            "safety_backup_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "local_server_backup_restores_actor_user_id_users_id_fk": {
+          "name": "local_server_backup_restores_actor_user_id_users_id_fk",
+          "tableFrom": "local_server_backup_restores",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_backup_restores_status_check": {
+          "name": "local_server_backup_restores_status_check",
+          "value": "\"local_server_backup_restores\".\"status\" IN ('prepared', 'completed', 'rolled-back', 'recovery-required')"
+        }
+      }
+    },
+    "local_server_backups": {
+      "name": "local_server_backups",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'manual'"
+        },
+        "directory_name": {
+          "name": "directory_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "archive_size_bytes": {
+          "name": "archive_size_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "manifest_size_bytes": {
+          "name": "manifest_size_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "world_paths_json": {
+          "name": "world_paths_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "archive_sha256": {
+          "name": "archive_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "manifest_sha256": {
+          "name": "manifest_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "entry_count": {
+          "name": "entry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "file_count": {
+          "name": "file_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "total_file_bytes": {
+          "name": "total_file_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "excluded_count": {
+          "name": "excluded_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_backups_directory_unique": {
+          "name": "local_server_backups_directory_unique",
+          "columns": [
+            "server_id",
+            "directory_name"
+          ],
+          "isUnique": true
+        },
+        "local_server_backups_server_time_idx": {
+          "name": "local_server_backups_server_time_idx",
+          "columns": [
+            "server_id",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_backups_server_id_local_servers_id_fk": {
+          "name": "local_server_backups_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_backups",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_server_backups_actor_user_id_users_id_fk": {
+          "name": "local_server_backups_actor_user_id_users_id_fk",
+          "tableFrom": "local_server_backups",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_backups_kind_check": {
+          "name": "local_server_backups_kind_check",
+          "value": "\"local_server_backups\".\"kind\" IN ('manual', 'pre-restore')"
+        },
+        "local_server_backups_origin_check": {
+          "name": "local_server_backups_origin_check",
+          "value": "\"local_server_backups\".\"origin\" IN ('manual', 'scheduled', 'system')"
+        },
+        "local_server_backups_archive_size_check": {
+          "name": "local_server_backups_archive_size_check",
+          "value": "\"local_server_backups\".\"archive_size_bytes\" >= 0"
+        },
+        "local_server_backups_manifest_size_check": {
+          "name": "local_server_backups_manifest_size_check",
+          "value": "\"local_server_backups\".\"manifest_size_bytes\" >= 0"
+        },
+        "local_server_backups_entry_count_check": {
+          "name": "local_server_backups_entry_count_check",
+          "value": "\"local_server_backups\".\"entry_count\" >= 0 AND \"local_server_backups\".\"file_count\" >= 0 AND \"local_server_backups\".\"excluded_count\" >= 0"
+        },
+        "local_server_backups_total_bytes_check": {
+          "name": "local_server_backups_total_bytes_check",
+          "value": "\"local_server_backups\".\"total_file_bytes\" >= 0"
+        }
+      }
+    },
+    "local_server_console_entries": {
+      "name": "local_server_console_entries",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "severity": {
+          "name": "severity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "message": {
+          "name": "message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_console_entries_order_idx": {
+          "name": "local_server_console_entries_order_idx",
+          "columns": [
+            "server_id",
+            "id"
+          ],
+          "isUnique": false
+        },
+        "local_server_console_entries_session_order_idx": {
+          "name": "local_server_console_entries_session_order_idx",
+          "columns": [
+            "session_id",
+            "id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_console_entries_server_id_local_servers_id_fk": {
+          "name": "local_server_console_entries_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_console_entries",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_server_console_entries_session_id_local_server_sessions_id_fk": {
+          "name": "local_server_console_entries_session_id_local_server_sessions_id_fk",
+          "tableFrom": "local_server_console_entries",
+          "tableTo": "local_server_sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_console_entries_source_check": {
+          "name": "local_server_console_entries_source_check",
+          "value": "\"local_server_console_entries\".\"source\" IN ('stdout', 'stderr', 'system', 'command')"
+        },
+        "local_server_console_entries_severity_check": {
+          "name": "local_server_console_entries_severity_check",
+          "value": "\"local_server_console_entries\".\"severity\" IN ('info', 'warn', 'error', 'debug')"
+        }
+      }
+    },
+    "local_server_events": {
+      "name": "local_server_events",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "detail": {
+          "name": "detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_events_time_idx": {
+          "name": "local_server_events_time_idx",
+          "columns": [
+            "occurred_at"
+          ],
+          "isUnique": false
+        },
+        "local_server_events_server_idx": {
+          "name": "local_server_events_server_idx",
+          "columns": [
+            "server_id",
+            "occurred_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_events_server_id_local_servers_id_fk": {
+          "name": "local_server_events_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_events",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_server_events_actor_user_id_users_id_fk": {
+          "name": "local_server_events_actor_user_id_users_id_fk",
+          "tableFrom": "local_server_events",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_events_outcome_check": {
+          "name": "local_server_events_outcome_check",
+          "value": "\"local_server_events\".\"outcome\" IN ('success', 'failure')"
+        }
+      }
+    },
+    "local_server_file_recoveries": {
+      "name": "local_server_file_recoveries",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "original_path": {
+          "name": "original_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "file_name": {
+          "name": "file_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "size_bytes": {
+          "name": "size_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_file_recoveries_server_time_idx": {
+          "name": "local_server_file_recoveries_server_time_idx",
+          "columns": [
+            "server_id",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_file_recoveries_server_id_local_servers_id_fk": {
+          "name": "local_server_file_recoveries_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_file_recoveries",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_server_file_recoveries_actor_user_id_users_id_fk": {
+          "name": "local_server_file_recoveries_actor_user_id_users_id_fk",
+          "tableFrom": "local_server_file_recoveries",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "local_server_file_trash": {
+      "name": "local_server_file_trash",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "original_path": {
+          "name": "original_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "stored_name": {
+          "name": "stored_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "size_bytes": {
+          "name": "size_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "restored_at": {
+          "name": "restored_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_file_trash_server_time_idx": {
+          "name": "local_server_file_trash_server_time_idx",
+          "columns": [
+            "server_id",
+            "deleted_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_file_trash_server_id_local_servers_id_fk": {
+          "name": "local_server_file_trash_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_file_trash",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_server_file_trash_actor_user_id_users_id_fk": {
+          "name": "local_server_file_trash_actor_user_id_users_id_fk",
+          "tableFrom": "local_server_file_trash",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_file_trash_kind_check": {
+          "name": "local_server_file_trash_kind_check",
+          "value": "\"local_server_file_trash\".\"kind\" IN ('file', 'folder')"
+        }
+      }
+    },
+    "local_server_properties_backups": {
+      "name": "local_server_properties_backups",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "file_name": {
+          "name": "file_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_properties_backups_server_time_idx": {
+          "name": "local_server_properties_backups_server_time_idx",
+          "columns": [
+            "server_id",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_properties_backups_server_id_local_servers_id_fk": {
+          "name": "local_server_properties_backups_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_properties_backups",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_server_properties_backups_actor_user_id_users_id_fk": {
+          "name": "local_server_properties_backups_actor_user_id_users_id_fk",
+          "tableFrom": "local_server_properties_backups",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "local_server_removal_operations": {
+      "name": "local_server_removal_operations",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "mode": {
+          "name": "mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "server_name": {
+          "name": "server_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "directory": {
+          "name": "directory",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "error_code": {
+          "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_removal_operations_server_time_idx": {
+          "name": "local_server_removal_operations_server_time_idx",
+          "columns": [
+            "server_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "local_server_removal_operations_state_idx": {
+          "name": "local_server_removal_operations_state_idx",
+          "columns": [
+            "state",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_removal_operations_server_id_local_servers_id_fk": {
+          "name": "local_server_removal_operations_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_removal_operations",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "local_server_removal_operations_actor_user_id_users_id_fk": {
+          "name": "local_server_removal_operations_actor_user_id_users_id_fk",
+          "tableFrom": "local_server_removal_operations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_removal_operations_mode_check": {
+          "name": "local_server_removal_operations_mode_check",
+          "value": "\"local_server_removal_operations\".\"mode\" IN ('unregister', 'permanent')"
+        },
+        "local_server_removal_operations_state_check": {
+          "name": "local_server_removal_operations_state_check",
+          "value": "\"local_server_removal_operations\".\"state\" IN ('prepared', 'quarantined', 'purging', 'unregistered', 'purged', 'failed', 'recovery-required')"
+        }
+      }
+    },
+    "local_server_resource_samples": {
+      "name": "local_server_resource_samples",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "minute_start": {
+          "name": "minute_start",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sampled_at": {
+          "name": "sampled_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "cpu_percent": {
+          "name": "cpu_percent",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "memory_rss_bytes": {
+          "name": "memory_rss_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "players_online": {
+          "name": "players_online",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "players_max": {
+          "name": "players_max",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "uptime_seconds": {
+          "name": "uptime_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_resource_samples_server_minute_unique": {
+          "name": "local_server_resource_samples_server_minute_unique",
+          "columns": [
+            "server_id",
+            "minute_start"
+          ],
+          "isUnique": true
+        },
+        "local_server_resource_samples_minute_idx": {
+          "name": "local_server_resource_samples_minute_idx",
+          "columns": [
+            "minute_start"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_resource_samples_server_id_local_servers_id_fk": {
+          "name": "local_server_resource_samples_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_resource_samples",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_resource_samples_cpu_check": {
+          "name": "local_server_resource_samples_cpu_check",
+          "value": "\"local_server_resource_samples\".\"cpu_percent\" IS NULL OR (\"local_server_resource_samples\".\"cpu_percent\" >= 0 AND \"local_server_resource_samples\".\"cpu_percent\" <= 100)"
+        },
+        "local_server_resource_samples_rss_check": {
+          "name": "local_server_resource_samples_rss_check",
+          "value": "\"local_server_resource_samples\".\"memory_rss_bytes\" IS NULL OR \"local_server_resource_samples\".\"memory_rss_bytes\" >= 0"
+        },
+        "local_server_resource_samples_players_check": {
+          "name": "local_server_resource_samples_players_check",
+          "value": "\"local_server_resource_samples\".\"players_online\" IS NULL OR (\"local_server_resource_samples\".\"players_online\" >= 0 AND (\"local_server_resource_samples\".\"players_max\" IS NULL OR \"local_server_resource_samples\".\"players_max\" >= \"local_server_resource_samples\".\"players_online\"))"
+        },
+        "local_server_resource_samples_uptime_check": {
+          "name": "local_server_resource_samples_uptime_check",
+          "value": "\"local_server_resource_samples\".\"uptime_seconds\" IS NULL OR \"local_server_resource_samples\".\"uptime_seconds\" >= 0"
+        }
+      }
+    },
+    "local_server_restart_jobs": {
+      "name": "local_server_restart_jobs",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scheduled_for": {
+          "name": "scheduled_for",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "deadline_at": {
+          "name": "deadline_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "acknowledged_at": {
+          "name": "acknowledged_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_restart_jobs_slot_unique": {
+          "name": "local_server_restart_jobs_slot_unique",
+          "columns": [
+            "server_id",
+            "scheduled_for"
+          ],
+          "isUnique": true
+        },
+        "local_server_restart_jobs_server_time_idx": {
+          "name": "local_server_restart_jobs_server_time_idx",
+          "columns": [
+            "server_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "local_server_restart_jobs_due_idx": {
+          "name": "local_server_restart_jobs_due_idx",
+          "columns": [
+            "status",
+            "next_attempt_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_restart_jobs_server_id_local_servers_id_fk": {
+          "name": "local_server_restart_jobs_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_restart_jobs",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_restart_jobs_status_check": {
+          "name": "local_server_restart_jobs_status_check",
+          "value": "\"local_server_restart_jobs\".\"status\" IN ('running', 'executed', 'skipped', 'deferred', 'failed', 'interrupted', 'missed')"
+        },
+        "local_server_restart_jobs_outcome_check": {
+          "name": "local_server_restart_jobs_outcome_check",
+          "value": "\"local_server_restart_jobs\".\"outcome\" IN ('pending', 'completed', 'players-online', 'player-count-unknown', 'server-offline', 'unmanaged', 'conflict', 'pending-restore', 'pending-removal', 'deadline-reached', 'missed', 'interrupted', 'restart-failed', 'schedule-changed')"
+        }
+      }
+    },
+    "local_server_restart_schedules": {
+      "name": "local_server_restart_schedules",
+      "columns": {
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "frequency": {
+          "name": "frequency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'daily'"
+        },
+        "local_time": {
+          "name": "local_time",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'03:00'"
+        },
+        "weekday": {
+          "name": "weekday",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "only_when_empty": {
+          "name": "only_when_empty",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
+        },
+        "wait_policy": {
+          "name": "wait_policy",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'skip'"
+        },
+        "retry_interval_minutes": {
+          "name": "retry_interval_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 5
+        },
+        "wait_deadline_minutes": {
+          "name": "wait_deadline_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 30
+        },
+        "next_run_at": {
+          "name": "next_run_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_run_at": {
+          "name": "last_run_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_status": {
+          "name": "last_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_outcome": {
+          "name": "last_outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "local_server_restart_schedules_server_id_local_servers_id_fk": {
+          "name": "local_server_restart_schedules_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_restart_schedules",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "local_server_restart_schedules_updated_by_users_id_fk": {
+          "name": "local_server_restart_schedules_updated_by_users_id_fk",
+          "tableFrom": "local_server_restart_schedules",
+          "tableTo": "users",
+          "columnsFrom": [
+            "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_restart_schedule_enabled_check": {
+          "name": "local_server_restart_schedule_enabled_check",
+          "value": "\"local_server_restart_schedules\".\"enabled\" IN (0, 1)"
+        },
+        "local_server_restart_schedule_frequency_check": {
+          "name": "local_server_restart_schedule_frequency_check",
+          "value": "\"local_server_restart_schedules\".\"frequency\" IN ('daily', 'weekly')"
+        },
+        "local_server_restart_schedule_time_check": {
+          "name": "local_server_restart_schedule_time_check",
+          "value": "\"local_server_restart_schedules\".\"local_time\" GLOB '[0-2][0-9]:[0-5][0-9]' AND substr(\"local_server_restart_schedules\".\"local_time\", 1, 2) BETWEEN '00' AND '23'"
+        },
+        "local_server_restart_schedule_weekday_check": {
+          "name": "local_server_restart_schedule_weekday_check",
+          "value": "\"local_server_restart_schedules\".\"weekday\" IS NULL OR (\"local_server_restart_schedules\".\"weekday\" >= 0 AND \"local_server_restart_schedules\".\"weekday\" <= 6)"
+        },
+        "local_server_restart_schedule_weekday_required_check": {
+          "name": "local_server_restart_schedule_weekday_required_check",
+          "value": "(\"local_server_restart_schedules\".\"frequency\" = 'daily' AND \"local_server_restart_schedules\".\"weekday\" IS NULL) OR (\"local_server_restart_schedules\".\"frequency\" = 'weekly' AND \"local_server_restart_schedules\".\"weekday\" IS NOT NULL)"
+        },
+        "local_server_restart_schedule_empty_check": {
+          "name": "local_server_restart_schedule_empty_check",
+          "value": "\"local_server_restart_schedules\".\"only_when_empty\" IN (0, 1)"
+        },
+        "local_server_restart_schedule_wait_check": {
+          "name": "local_server_restart_schedule_wait_check",
+          "value": "\"local_server_restart_schedules\".\"wait_policy\" IN ('skip', 'retry')"
+        },
+        "local_server_restart_schedule_retry_bounds_check": {
+          "name": "local_server_restart_schedule_retry_bounds_check",
+          "value": "\"local_server_restart_schedules\".\"retry_interval_minutes\" BETWEEN 1 AND 30 AND \"local_server_restart_schedules\".\"wait_deadline_minutes\" BETWEEN 1 AND 180 AND \"local_server_restart_schedules\".\"retry_interval_minutes\" <= \"local_server_restart_schedules\".\"wait_deadline_minutes\""
+        },
+        "local_server_restart_schedule_status_check": {
+          "name": "local_server_restart_schedule_status_check",
+          "value": "\"local_server_restart_schedules\".\"last_status\" IS NULL OR \"local_server_restart_schedules\".\"last_status\" IN ('executed', 'skipped', 'deferred', 'failed', 'interrupted', 'missed')"
+        }
+      }
+    },
+    "local_server_runtime": {
+      "name": "local_server_runtime",
+      "columns": {
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "process_pid": {
+          "name": "process_pid",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "process_start_marker": {
+          "name": "process_start_marker",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "process_boot_id": {
+          "name": "process_boot_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_exit_code": {
+          "name": "last_exit_code",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "restart_required": {
+          "name": "restart_required",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        }
+      },
+      "indexes": {
+        "local_server_runtime_status_idx": {
+          "name": "local_server_runtime_status_idx",
+          "columns": [
+            "status",
+            "updated_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_runtime_server_id_local_servers_id_fk": {
+          "name": "local_server_runtime_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_runtime",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_runtime_status_check": {
+          "name": "local_server_runtime_status_check",
+          "value": "\"local_server_runtime\".\"status\" IN ('stopped', 'starting', 'running', 'stopping', 'crashed', 'error', 'external/unmanaged')"
+        },
+        "local_server_runtime_restart_check": {
+          "name": "local_server_runtime_restart_check",
+          "value": "\"local_server_runtime\".\"restart_required\" IN (0, 1)"
+        }
+      }
+    },
+    "local_server_sessions": {
+      "name": "local_server_sessions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "uptime_seconds": {
+          "name": "uptime_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_sessions_server_start_idx": {
+          "name": "local_server_sessions_server_start_idx",
+          "columns": [
+            "server_id",
+            "started_at"
+          ],
+          "isUnique": false
+        },
+        "local_server_sessions_end_idx": {
+          "name": "local_server_sessions_end_idx",
+          "columns": [
+            "server_id",
+            "ended_at"
+          ],
+          "isUnique": false
+        },
+        "local_server_sessions_active_unique": {
+          "name": "local_server_sessions_active_unique",
+          "columns": [
+            "server_id"
+          ],
+          "isUnique": true,
+          "where": "\"local_server_sessions\".\"ended_at\" IS NULL"
+        }
+      },
+      "foreignKeys": {
+        "local_server_sessions_server_id_local_servers_id_fk": {
+          "name": "local_server_sessions_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_sessions",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_sessions_outcome_check": {
+          "name": "local_server_sessions_outcome_check",
+          "value": "\"local_server_sessions\".\"outcome\" IN ('running', 'stopped', 'crashed', 'interrupted')"
+        },
+        "local_server_sessions_uptime_check": {
+          "name": "local_server_sessions_uptime_check",
+          "value": "\"local_server_sessions\".\"uptime_seconds\" IS NULL OR \"local_server_sessions\".\"uptime_seconds\" >= 0"
+        }
+      }
+    },
+    "local_server_status_samples": {
+      "name": "local_server_status_samples",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "checked_at": {
+          "name": "checked_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "players_online": {
+          "name": "players_online",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "players_max": {
+          "name": "players_max",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "version_name": {
+          "name": "version_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "latency_ms": {
+          "name": "latency_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_code": {
+          "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'local-status-ping'"
+        }
+      },
+      "indexes": {
+        "local_server_status_samples_server_time_idx": {
+          "name": "local_server_status_samples_server_time_idx",
+          "columns": [
+            "server_id",
+            "checked_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_status_samples_server_id_local_servers_id_fk": {
+          "name": "local_server_status_samples_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_status_samples",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "local_server_structured_events": {
+      "name": "local_server_structured_events",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "console_entry_id": {
+          "name": "console_entry_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "category": {
+          "name": "category",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "event_type": {
+          "name": "event_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "raw_message": {
+          "name": "raw_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "confidence": {
+          "name": "confidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_server_structured_events_server_time_idx": {
+          "name": "local_server_structured_events_server_time_idx",
+          "columns": [
+            "server_id",
+            "occurred_at"
+          ],
+          "isUnique": false
+        },
+        "local_server_structured_events_console_idx": {
+          "name": "local_server_structured_events_console_idx",
+          "columns": [
+            "console_entry_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_server_structured_events_server_id_local_servers_id_fk": {
+          "name": "local_server_structured_events_server_id_local_servers_id_fk",
+          "tableFrom": "local_server_structured_events",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_server_structured_events_category_check": {
+          "name": "local_server_structured_events_category_check",
+          "value": "\"local_server_structured_events\".\"category\" IN ('server', 'player', 'moderation')"
+        },
+        "local_server_structured_events_confidence_check": {
+          "name": "local_server_structured_events_confidence_check",
+          "value": "\"local_server_structured_events\".\"confidence\" IN ('high', 'medium')"
+        },
+        "local_server_structured_events_source_check": {
+          "name": "local_server_structured_events_source_check",
+          "value": "\"local_server_structured_events\".\"source\" IN ('owned-log', 'panel-process')"
+        }
+      }
+    },
+    "local_servers": {
+      "name": "local_servers",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "directory": {
+          "name": "directory",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "software": {
+          "name": "software",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "jar_name": {
+          "name": "jar_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "java_path": {
+          "name": "java_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "java_major": {
+          "name": "java_major",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "java_selection_mode": {
+          "name": "java_selection_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'manual'"
+        },
+        "java_compatibility_override_hash": {
+          "name": "java_compatibility_override_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "required_java_major": {
+          "name": "required_java_major",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "min_memory_mb": {
+          "name": "min_memory_mb",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_memory_mb": {
+          "name": "max_memory_mb",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "jvm_options_json": {
+          "name": "jvm_options_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'{\"collector\":\"default\",\"maxGCPauseMs\":null,\"parallelGcThreads\":null,\"alwaysPreTouch\":false,\"disableExplicitGc\":false}'"
+        },
+        "start_script_sha256": {
+          "name": "start_script_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "port": {
+          "name": "port",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "eula": {
+          "name": "eula",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "managed": {
+          "name": "managed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "world_folders": {
+          "name": "world_folders",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "removed_at": {
+          "name": "removed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "local_servers_directory_unique": {
+          "name": "local_servers_directory_unique",
+          "columns": [
+            "directory"
+          ],
+          "isUnique": true,
+          "where": "\"local_servers\".\"removed_at\" IS NULL"
+        },
+        "local_servers_created_at_idx": {
+          "name": "local_servers_created_at_idx",
+          "columns": [
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "local_servers_created_by_users_id_fk": {
+          "name": "local_servers_created_by_users_id_fk",
+          "tableFrom": "local_servers",
+          "tableTo": "users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "local_servers_source_check": {
+          "name": "local_servers_source_check",
+          "value": "\"local_servers\".\"source\" IN ('created', 'imported')"
+        },
+        "local_servers_software_check": {
+          "name": "local_servers_software_check",
+          "value": "\"local_servers\".\"software\" IN ('vanilla', 'fabric', 'paper', 'unknown')"
+        },
+        "local_servers_java_selection_mode_check": {
+          "name": "local_servers_java_selection_mode_check",
+          "value": "\"local_servers\".\"java_selection_mode\" IN ('auto', 'manual')"
+        },
+        "local_servers_memory_check": {
+          "name": "local_servers_memory_check",
+          "value": "\"local_servers\".\"min_memory_mb\" >= 512 AND \"local_servers\".\"max_memory_mb\" >= \"local_servers\".\"min_memory_mb\""
+        },
+        "local_servers_port_check": {
+          "name": "local_servers_port_check",
+          "value": "\"local_servers\".\"port\" IS NULL OR (\"local_servers\".\"port\" >= 1 AND \"local_servers\".\"port\" <= 65535)"
+        },
+        "local_servers_eula_check": {
+          "name": "local_servers_eula_check",
+          "value": "\"local_servers\".\"eula\" IN ('accepted', 'not-accepted', 'unknown')"
+        },
+        "local_servers_managed_check": {
+          "name": "local_servers_managed_check",
+          "value": "\"local_servers\".\"managed\" IN (0, 1)"
+        }
+      }
+    },
+    "machine_day_rollups": {
+      "name": "machine_day_rollups",
+      "columns": {
+        "machine_id": {
+          "name": "machine_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "local_date": {
+          "name": "local_date",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sample_count": {
+          "name": "sample_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "cpu_sum": {
+          "name": "cpu_sum",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cpu_count": {
+          "name": "cpu_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "cpu_minimum": {
+          "name": "cpu_minimum",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cpu_maximum": {
+          "name": "cpu_maximum",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "memory_peak_used_bytes": {
+          "name": "memory_peak_used_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "memory_total_bytes": {
+          "name": "memory_total_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "memory_peak_percent": {
+          "name": "memory_peak_percent",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_snapshot_used_bytes": {
+          "name": "storage_snapshot_used_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_peak_used_bytes": {
+          "name": "storage_peak_used_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_total_bytes": {
+          "name": "storage_total_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_received_bytes": {
+          "name": "network_received_bytes",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_transmitted_bytes": {
+          "name": "network_transmitted_bytes",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "first_sample_at": {
+          "name": "first_sample_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_sample_at": {
+          "name": "last_sample_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "machine_day_rollups_key_unique": {
+          "name": "machine_day_rollups_key_unique",
+          "columns": [
+            "machine_id",
+            "time_zone",
+            "local_date"
+          ],
+          "isUnique": true
+        },
+        "machine_day_rollups_month_idx": {
+          "name": "machine_day_rollups_month_idx",
+          "columns": [
+            "machine_id",
+            "time_zone",
+            "local_date"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "machine_day_rollups_machine_id_machines_id_fk": {
+          "name": "machine_day_rollups_machine_id_machines_id_fk",
+          "tableFrom": "machine_day_rollups",
+          "tableTo": "machines",
+          "columnsFrom": [
+            "machine_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "machine_events": {
+      "name": "machine_events",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "machine_id": {
+          "name": "machine_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "local_date": {
+          "name": "local_date",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "category": {
+          "name": "category",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "severity": {
+          "name": "severity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "message": {
+          "name": "message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "machine_events_date_idx": {
+          "name": "machine_events_date_idx",
+          "columns": [
+            "machine_id",
+            "time_zone",
+            "local_date",
+            "occurred_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "machine_minute_rollups": {
+      "name": "machine_minute_rollups",
+      "columns": {
+        "machine_id": {
+          "name": "machine_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "local_date": {
+          "name": "local_date",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "minute_start": {
+          "name": "minute_start",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sample_count": {
+          "name": "sample_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "cpu_sum": {
+          "name": "cpu_sum",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cpu_count": {
+          "name": "cpu_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "cpu_minimum": {
+          "name": "cpu_minimum",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cpu_maximum": {
+          "name": "cpu_maximum",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "memory_peak_used_bytes": {
+          "name": "memory_peak_used_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "memory_total_bytes": {
+          "name": "memory_total_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "memory_peak_percent": {
+          "name": "memory_peak_percent",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_last_used_bytes": {
+          "name": "storage_last_used_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_peak_used_bytes": {
+          "name": "storage_peak_used_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_total_bytes": {
+          "name": "storage_total_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_rx_rate_sum": {
+          "name": "network_rx_rate_sum",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_tx_rate_sum": {
+          "name": "network_tx_rate_sum",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_rate_count": {
+          "name": "network_rate_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "network_received_bytes": {
+          "name": "network_received_bytes",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_transmitted_bytes": {
+          "name": "network_transmitted_bytes",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "first_sample_at": {
+          "name": "first_sample_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_sample_at": {
+          "name": "last_sample_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "machine_minute_rollups_key_unique": {
+          "name": "machine_minute_rollups_key_unique",
+          "columns": [
+            "machine_id",
+            "time_zone",
+            "minute_start"
+          ],
+          "isUnique": true
+        },
+        "machine_minute_rollups_date_idx": {
+          "name": "machine_minute_rollups_date_idx",
+          "columns": [
+            "machine_id",
+            "time_zone",
+            "local_date",
+            "minute_start"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "machine_minute_rollups_machine_id_machines_id_fk": {
+          "name": "machine_minute_rollups_machine_id_machines_id_fk",
+          "tableFrom": "machine_minute_rollups",
+          "tableTo": "machines",
+          "columnsFrom": [
+            "machine_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "machine_samples": {
+      "name": "machine_samples",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "machine_id": {
+          "name": "machine_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "collected_at": {
+          "name": "collected_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "minute_start": {
+          "name": "minute_start",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "local_date": {
+          "name": "local_date",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "cpu_percent": {
+          "name": "cpu_percent",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "core_count": {
+          "name": "core_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "load_one": {
+          "name": "load_one",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "load_five": {
+          "name": "load_five",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "load_fifteen": {
+          "name": "load_fifteen",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "memory_used_bytes": {
+          "name": "memory_used_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "memory_available_bytes": {
+          "name": "memory_available_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "memory_total_bytes": {
+          "name": "memory_total_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "swap_used_bytes": {
+          "name": "swap_used_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "swap_total_bytes": {
+          "name": "swap_total_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_device": {
+          "name": "storage_device",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_mount": {
+          "name": "storage_mount",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_used_bytes": {
+          "name": "storage_used_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_available_bytes": {
+          "name": "storage_available_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "storage_total_bytes": {
+          "name": "storage_total_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_interface": {
+          "name": "network_interface",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_rx_bytes_per_second": {
+          "name": "network_rx_bytes_per_second",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_tx_bytes_per_second": {
+          "name": "network_tx_bytes_per_second",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_rx_transferred_bytes": {
+          "name": "network_rx_transferred_bytes",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "network_tx_transferred_bytes": {
+          "name": "network_tx_transferred_bytes",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "sample_status": {
+          "name": "sample_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "unavailable_fields": {
+          "name": "unavailable_fields",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "machine_samples_machine_collected_unique": {
+          "name": "machine_samples_machine_collected_unique",
+          "columns": [
+            "machine_id",
+            "collected_at"
+          ],
+          "isUnique": true
+        },
+        "machine_samples_machine_date_idx": {
+          "name": "machine_samples_machine_date_idx",
+          "columns": [
+            "machine_id",
+            "local_date",
+            "collected_at"
+          ],
+          "isUnique": false
+        },
+        "machine_samples_machine_time_idx": {
+          "name": "machine_samples_machine_time_idx",
+          "columns": [
+            "machine_id",
+            "collected_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "machine_samples_machine_id_machines_id_fk": {
+          "name": "machine_samples_machine_id_machines_id_fk",
+          "tableFrom": "machine_samples",
+          "tableTo": "machines",
+          "columnsFrom": [
+            "machine_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "machine_storage_samples": {
+      "name": "machine_storage_samples",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "machine_id": {
+          "name": "machine_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "volume_id": {
+          "name": "volume_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "roles": {
+          "name": "roles",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "collected_at": {
+          "name": "collected_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "minute_start": {
+          "name": "minute_start",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "local_date": {
+          "name": "local_date",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "used_bytes": {
+          "name": "used_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "available_bytes": {
+          "name": "available_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "total_bytes": {
+          "name": "total_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "used_percent": {
+          "name": "used_percent",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "machine_storage_samples_key_unique": {
+          "name": "machine_storage_samples_key_unique",
+          "columns": [
+            "machine_id",
+            "volume_id",
+            "collected_at"
+          ],
+          "isUnique": true
+        },
+        "machine_storage_samples_volume_time_idx": {
+          "name": "machine_storage_samples_volume_time_idx",
+          "columns": [
+            "machine_id",
+            "volume_id",
+            "collected_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "machine_storage_samples_machine_id_machines_id_fk": {
+          "name": "machine_storage_samples_machine_id_machines_id_fk",
+          "tableFrom": "machine_storage_samples",
+          "tableTo": "machines",
+          "columnsFrom": [
+            "machine_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "machines": {
+      "name": "machines",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "hostname": {
+          "name": "hostname",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "platform": {
+          "name": "platform",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "distro": {
+          "name": "distro",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "release": {
+          "name": "release",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "architecture": {
+          "name": "architecture",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "cpu_model": {
+          "name": "cpu_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "core_count": {
+          "name": "core_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "uptime_seconds": {
+          "name": "uptime_seconds",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "first_seen_at": {
+          "name": "first_seen_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "server_access_grants": {
+      "name": "server_access_grants",
+      "columns": {
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "view_server": {
+          "name": "view_server",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "view_logs": {
+          "name": "view_logs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "send_console_commands": {
+          "name": "send_console_commands",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "control_lifecycle": {
+          "name": "control_lifecycle",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "start_server": {
+          "name": "start_server",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "stop_server": {
+          "name": "stop_server",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "restart_server": {
+          "name": "restart_server",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "view_players": {
+          "name": "view_players",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "moderate_players": {
+          "name": "moderate_players",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "view_mods": {
+          "name": "view_mods",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "manage_mods": {
+          "name": "manage_mods",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "view_files": {
+          "name": "view_files",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "manage_files": {
+          "name": "manage_files",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "view_settings": {
+          "name": "view_settings",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "manage_settings": {
+          "name": "manage_settings",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "view_worlds": {
+          "name": "view_worlds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "view_backups": {
+          "name": "view_backups",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "create_backups": {
+          "name": "create_backups",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "server_access_grants_user_idx": {
+          "name": "server_access_grants_user_idx",
+          "columns": [
+            "user_id",
+            "view_server",
+            "view_players"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "server_access_grants_server_id_local_servers_id_fk": {
+          "name": "server_access_grants_server_id_local_servers_id_fk",
+          "tableFrom": "server_access_grants",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "server_access_grants_user_id_users_id_fk": {
+          "name": "server_access_grants_user_id_users_id_fk",
+          "tableFrom": "server_access_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "server_access_grants_updated_by_users_id_fk": {
+          "name": "server_access_grants_updated_by_users_id_fk",
+          "tableFrom": "server_access_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "server_access_grants_pk": {
+          "columns": [
+            "server_id",
+            "user_id"
+          ],
+          "name": "server_access_grants_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "server_access_grants_boolean_check": {
+          "name": "server_access_grants_boolean_check",
+          "value": "\"server_access_grants\".\"view_server\" IN (0, 1) AND \"server_access_grants\".\"view_logs\" IN (0, 1) AND \"server_access_grants\".\"send_console_commands\" IN (0, 1) AND \"server_access_grants\".\"control_lifecycle\" IN (0, 1) AND \"server_access_grants\".\"start_server\" IN (0, 1) AND \"server_access_grants\".\"stop_server\" IN (0, 1) AND \"server_access_grants\".\"restart_server\" IN (0, 1) AND \"server_access_grants\".\"view_players\" IN (0, 1) AND \"server_access_grants\".\"moderate_players\" IN (0, 1) AND \"server_access_grants\".\"view_mods\" IN (0, 1) AND \"server_access_grants\".\"manage_mods\" IN (0, 1) AND \"server_access_grants\".\"view_files\" IN (0, 1) AND \"server_access_grants\".\"manage_files\" IN (0, 1) AND \"server_access_grants\".\"view_settings\" IN (0, 1) AND \"server_access_grants\".\"manage_settings\" IN (0, 1) AND \"server_access_grants\".\"view_worlds\" IN (0, 1) AND \"server_access_grants\".\"view_backups\" IN (0, 1) AND \"server_access_grants\".\"create_backups\" IN (0, 1)"
+        },
+        "server_access_grants_dependencies_check": {
+          "name": "server_access_grants_dependencies_check",
+          "value": "(\"server_access_grants\".\"send_console_commands\" = 0 AND \"server_access_grants\".\"control_lifecycle\" = 0) AND (\"server_access_grants\".\"view_server\" = 1 OR (\"server_access_grants\".\"view_logs\" = 0 AND \"server_access_grants\".\"start_server\" = 0 AND \"server_access_grants\".\"stop_server\" = 0 AND \"server_access_grants\".\"restart_server\" = 0 AND \"server_access_grants\".\"view_players\" = 0 AND \"server_access_grants\".\"moderate_players\" = 0 AND \"server_access_grants\".\"view_mods\" = 0 AND \"server_access_grants\".\"manage_mods\" = 0 AND \"server_access_grants\".\"view_files\" = 0 AND \"server_access_grants\".\"manage_files\" = 0 AND \"server_access_grants\".\"view_settings\" = 0 AND \"server_access_grants\".\"manage_settings\" = 0 AND \"server_access_grants\".\"view_worlds\" = 0 AND \"server_access_grants\".\"view_backups\" = 0 AND \"server_access_grants\".\"create_backups\" = 0)) AND (\"server_access_grants\".\"moderate_players\" = 0 OR \"server_access_grants\".\"view_players\" = 1) AND (\"server_access_grants\".\"manage_mods\" = 0 OR \"server_access_grants\".\"view_mods\" = 1) AND (\"server_access_grants\".\"manage_files\" = 0 OR \"server_access_grants\".\"view_files\" = 1) AND (\"server_access_grants\".\"manage_settings\" = 0 OR \"server_access_grants\".\"view_settings\" = 1) AND (\"server_access_grants\".\"create_backups\" = 0 OR \"server_access_grants\".\"view_backups\" = 1)"
+        }
+      }
+    },
+    "server_install_operations": {
+      "name": "server_install_operations",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "directory_name": {
+          "name": "directory_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "software": {
+          "name": "software",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "request_json": {
+          "name": "request_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "progress": {
+          "name": "progress",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "phase": {
+          "name": "phase",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "artifact_url": {
+          "name": "artifact_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "artifact_size": {
+          "name": "artifact_size",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "artifact_sha1": {
+          "name": "artifact_sha1",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "artifact_sha256": {
+          "name": "artifact_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_code": {
+          "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_message": {
+          "name": "error_message",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "partial_directory": {
+          "name": "partial_directory",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "server_install_operations_time_idx": {
+          "name": "server_install_operations_time_idx",
+          "columns": [
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "server_install_operations_status_idx": {
+          "name": "server_install_operations_status_idx",
+          "columns": [
+            "status",
+            "updated_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "server_install_operations_actor_user_id_users_id_fk": {
+          "name": "server_install_operations_actor_user_id_users_id_fk",
+          "tableFrom": "server_install_operations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "server_install_operations_server_id_local_servers_id_fk": {
+          "name": "server_install_operations_server_id_local_servers_id_fk",
+          "tableFrom": "server_install_operations",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "server_install_operations_status_check": {
+          "name": "server_install_operations_status_check",
+          "value": "\"server_install_operations\".\"status\" IN ('pending', 'downloading', 'validating', 'completed', 'failed')"
+        },
+        "server_install_operations_progress_check": {
+          "name": "server_install_operations_progress_check",
+          "value": "\"server_install_operations\".\"progress\" >= 0 AND \"server_install_operations\".\"progress\" <= 100"
+        }
+      }
+    },
+    "server_templates": {
+      "name": "server_templates",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "software": {
+          "name": "software",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "min_memory_mb": {
+          "name": "min_memory_mb",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_memory_mb": {
+          "name": "max_memory_mb",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "server_templates_name_unique": {
+          "name": "server_templates_name_unique",
+          "columns": [
+            "lower(\"name\")"
+          ],
+          "isUnique": true
+        },
+        "server_templates_updated_idx": {
+          "name": "server_templates_updated_idx",
+          "columns": [
+            "updated_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "server_templates_created_by_users_id_fk": {
+          "name": "server_templates_created_by_users_id_fk",
+          "tableFrom": "server_templates",
+          "tableTo": "users",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "server_templates_updated_by_users_id_fk": {
+          "name": "server_templates_updated_by_users_id_fk",
+          "tableFrom": "server_templates",
+          "tableTo": "users",
+          "columnsFrom": [
+            "updated_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "server_templates_software_check": {
+          "name": "server_templates_software_check",
+          "value": "\"server_templates\".\"software\" IN ('vanilla', 'fabric', 'paper')"
+        },
+        "server_templates_memory_check": {
+          "name": "server_templates_memory_check",
+          "value": "\"server_templates\".\"min_memory_mb\" >= 512 AND \"server_templates\".\"max_memory_mb\" >= \"server_templates\".\"min_memory_mb\" AND \"server_templates\".\"max_memory_mb\" <= 131072"
+        }
+      }
+    },
+    "server_zip_imports": {
+      "name": "server_zip_imports",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "upload_name": {
+          "name": "upload_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "compressed_bytes": {
+          "name": "compressed_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "preview_json": {
+          "name": "preview_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error_code": {
+          "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "server_zip_imports_actor_time_idx": {
+          "name": "server_zip_imports_actor_time_idx",
+          "columns": [
+            "actor_user_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "server_zip_imports_state_expiry_idx": {
+          "name": "server_zip_imports_state_expiry_idx",
+          "columns": [
+            "state",
+            "expires_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "server_zip_imports_actor_user_id_users_id_fk": {
+          "name": "server_zip_imports_actor_user_id_users_id_fk",
+          "tableFrom": "server_zip_imports",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "server_zip_imports_server_id_local_servers_id_fk": {
+          "name": "server_zip_imports_server_id_local_servers_id_fk",
+          "tableFrom": "server_zip_imports",
+          "tableTo": "local_servers",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "server_zip_imports_size_check": {
+          "name": "server_zip_imports_size_check",
+          "value": "\"server_zip_imports\".\"compressed_bytes\" >= 0"
+        },
+        "server_zip_imports_state_check": {
+          "name": "server_zip_imports_state_check",
+          "value": "\"server_zip_imports\".\"state\" IN ('ready', 'importing', 'published', 'expired', 'failed')"
+        }
+      }
+    },
+    "sessions": {
+      "name": "sessions",
+      "columns": {
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "csrf_hash": {
+          "name": "csrf_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "sessions_user_active_idx": {
+          "name": "sessions_user_active_idx",
+          "columns": [
+            "user_id",
+            "revoked_at",
+            "expires_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "sessions_user_id_users_id_fk": {
+          "name": "sessions_user_id_users_id_fk",
+          "tableFrom": "sessions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "sessions_expiry_check": {
+          "name": "sessions_expiry_check",
+          "value": "\"sessions\".\"expires_at\" > \"sessions\".\"created_at\""
+        }
+      }
+    },
+    "user_notification_reads": {
+      "name": "user_notification_reads",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "read_at": {
+          "name": "read_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "user_notification_reads_read_idx": {
+          "name": "user_notification_reads_read_idx",
+          "columns": [
+            "user_id",
+            "read_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "user_notification_reads_user_id_users_id_fk": {
+          "name": "user_notification_reads_user_id_users_id_fk",
+          "tableFrom": "user_notification_reads",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "user_notification_reads_pk": {
+          "columns": [
+            "user_id",
+            "event_id"
+          ],
+          "name": "user_notification_reads_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "user_preferences": {
+      "name": "user_preferences",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "compact_navigation": {
+          "name": "compact_navigation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "default_landing": {
+          "name": "default_landing",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'dashboard'"
+        },
+        "language": {
+          "name": "language",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'en'"
+        },
+        "theme": {
+          "name": "theme",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'dark'"
+        },
+        "accent": {
+          "name": "accent",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'moss'"
+        },
+        "density": {
+          "name": "density",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'comfortable'"
+        },
+        "reduced_motion": {
+          "name": "reduced_motion",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "user_preferences_user_id_users_id_fk": {
+          "name": "user_preferences_user_id_users_id_fk",
+          "tableFrom": "user_preferences",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "user_preferences_landing_check": {
+          "name": "user_preferences_landing_check",
+          "value": "\"user_preferences\".\"default_landing\" IN ('dashboard', 'machine')"
+        },
+        "user_preferences_language_check": {
+          "name": "user_preferences_language_check",
+          "value": "\"user_preferences\".\"language\" IN ('en', 'ru')"
+        },
+        "user_preferences_theme_check": {
+          "name": "user_preferences_theme_check",
+          "value": "\"user_preferences\".\"theme\" IN ('dark', 'light', 'system')"
+        },
+        "user_preferences_accent_check": {
+          "name": "user_preferences_accent_check",
+          "value": "\"user_preferences\".\"accent\" IN ('moss', 'blue', 'clay')"
+        },
+        "user_preferences_density_check": {
+          "name": "user_preferences_density_check",
+          "value": "\"user_preferences\".\"density\" IN ('comfortable', 'compact')"
+        }
+      }
+    },
+    "users": {
+      "name": "users",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "username": {
+          "name": "username",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "username_key": {
+          "name": "username_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
+        },
+        "must_change_password": {
+          "name": "must_change_password",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "avatar_key": {
+          "name": "avatar_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_login_at": {
+          "name": "last_login_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "password_changed_at": {
+          "name": "password_changed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "users_username_key_unique": {
+          "name": "users_username_key_unique",
+          "columns": [
+            "username_key"
+          ],
+          "isUnique": true
+        },
+        "users_enabled_role_idx": {
+          "name": "users_enabled_role_idx",
+          "columns": [
+            "enabled",
+            "role"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "users_role_check": {
+          "name": "users_role_check",
+          "value": "\"users\".\"role\" IN ('administrator', 'member')"
+        },
+        "users_enabled_check": {
+          "name": "users_enabled_check",
+          "value": "\"users\".\"enabled\" IN (0, 1)"
+        },
+        "users_must_change_password_check": {
+          "name": "users_must_change_password_check",
+          "value": "\"users\".\"must_change_password\" IN (0, 1)"
+        }
+      }
+    },
+    "workspace_preferences": {
+      "name": "workspace_preferences",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "default_landing": {
+          "name": "default_landing",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'dashboard'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "workspace_preferences_singleton_check": {
+          "name": "workspace_preferences_singleton_check",
+          "value": "\"workspace_preferences\".\"id\" = 1"
+        },
+        "workspace_preferences_landing_check": {
+          "name": "workspace_preferences_landing_check",
+          "value": "\"workspace_preferences\".\"default_landing\" IN ('dashboard', 'machine')"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {
+      "server_templates_name_unique": {
+        "columns": {
+          "lower(\"name\")": {
+            "isExpression": true
+          }
+        }
+      }
+    }
+  }
+}

@@ -12,6 +12,7 @@ import type { AppDatabase } from '../db/client.js'
 import { localServerEvents, localServers, serverZipImports } from '../db/schema.js'
 import type { JavaRuntimeRegistry } from './java.js'
 import type { ServerRegistry } from './registry.js'
+import { parseServerPort } from './java-properties.js'
 
 export const MAX_SERVER_ZIP_BYTES = 128 * 1024 * 1024
 const MAX_ARCHIVE_ENTRIES = 20_000
@@ -71,10 +72,7 @@ function advertisedPath(name: string, directory: boolean): string {
   return segments.join('/')
 }
 function parsePort(contents: string | null): number | null {
-  const value = contents?.split(/\r?\n/).map((line) => line.match(/^\s*server-port\s*[=:]\s*(.*?)\s*$/)?.[1]).find((item) => item !== undefined)
-  if (!value || !/^\d{1,5}$/.test(value)) return null
-  const port = Number(value)
-  return port >= 1 && port <= 65535 ? port : null
+  return contents === null ? null : parseServerPort(contents).port
 }
 function parseEula(contents: string | null): 'accepted' | 'not-accepted' | 'unknown' {
   const line = contents?.split(/\r?\n/).find((item) => /^\s*eula\s*=/.test(item.trim()))
@@ -271,6 +269,11 @@ export class ServerZipImportService {
     const staged = parseStored(row)
     const preview = staged.preview
     if (!preview.supported || !preview.jarName || preview.software === 'unknown') throw new ServerZipImportError('ZIP_LOADER_UNSUPPORTED', preview.unsupportedReason ?? 'This archive does not contain a supported server loader JAR.')
+    if (preview.port !== null) {
+      await this.servers.refreshPortConfigurations(true)
+      const portConflict = await this.servers.findPortConflict('', preview.port)
+      if (portConflict) throw new ServerZipImportError('PORT_CONFLICT', `Game port ${preview.port} is also configured for “${portConflict.name}”.`)
+    }
     if (!input.trustExecutable) throw new ServerZipImportError('ZIP_TRUST_REQUIRED', 'Confirm that you trust the server JAR and mods before importing them.')
     const runtime = this.javaRuntimes.list().find((candidate) => candidate.path === input.javaPath)
     if (!runtime) throw new ServerZipImportError('JAVA_RUNTIME_REQUIRED', 'Choose a Java runtime discovered by MMSManager before importing this server.')

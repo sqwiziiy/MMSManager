@@ -67,6 +67,7 @@ async function main(): Promise<void> {
     closing = true
     await app.close()
     await processes.shutdown()
+    servers.stopPortMonitor()
     await collector.stop()
     database.native.close()
   }

@@ -28,6 +28,8 @@ import {
   machineHistorySchema,
   monitoringSettingsSchema,
   monitoringSettingsUpdateSchema,
+  backupSettingsSchema,
+  backupSettingsResultSchema,
   installCatalogQuerySchema,
   installCatalogSchema,
   installOperationIdSchema,
@@ -105,6 +107,8 @@ import {
   serverMetadataUpdateSchema,
   serverImportRequestSchema,
   serverInventorySchema,
+  unregisteredServerListSchema,
+  serverRegistrationRestoreResultSchema,
   serverZipImportPublishSchema,
   serverZipImportPublishResultSchema,
   serverZipImportUploadResultSchema,
@@ -297,7 +301,7 @@ export async function createApiApp(options: {
   const runtimeSettings = new ServerRuntimeSettingsService(options.db, options.servers, processes, options.javaRuntimes, options.now)
   const serverAccess = new ServerAccessService(options.db, options.now)
   const properties = new ServerPropertiesManager(options.db, options.servers, options.now)
-  const serverStatus = new ServerStatusService(options.db, options.now)
+  const serverStatus = new ServerStatusService(options.db, options.now, undefined, options.servers)
   serverStatus.configurePollInterval(options.monitoringConfig?.get().statusPollMs ?? DEFAULT_MONITORING_SETTINGS.statusPollMs)
   const mods = new ServerModsService(options.db, options.servers, processes, options.now)
   const files = new ServerFileService(options.db, options.servers, processes, options.now)
@@ -309,8 +313,8 @@ export async function createApiApp(options: {
   await zipImports.prepare()
   const automation = new ServerAutomationService(options.db, backups, options.timeZone, options.now, processes)
   await automation.prepare()
-  app.addHook('onReady', async () => { automation.start() })
-  app.addHook('onClose', async () => { await automation.stop() })
+  app.addHook('onReady', async () => { automation.start(); options.servers.startPortMonitor() })
+  app.addHook('onClose', async () => { options.servers.stopPortMonitor(); await automation.stop() })
   const worlds = new ServerWorldService(options.db, options.servers, backups)
   const serverHistory = new ServerHistoryService(options.db, options.timeZone, options.now)
   const webOrigin = options.webOrigin ?? WEB_ORIGIN
@@ -421,7 +425,7 @@ export async function createApiApp(options: {
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ServerRemovalError) {
-      const status = error.code.endsWith('_NOT_FOUND') ? 404 : error.code.includes('BUSY') || error.code.includes('STOPPED') || error.code.includes('UNSAFE') || error.code.includes('UNMANAGED') || error.code.includes('RECOVERY') || error.code.includes('COLLISION') ? 409 : 400
+      const status = error.code.endsWith('_NOT_FOUND') ? 404 : error.code.includes('BUSY') || error.code.includes('STOPPED') || error.code.includes('UNSAFE') || error.code.includes('UNMANAGED') || error.code.includes('RECOVERY') || error.code.includes('COLLISION') || error.code.includes('CONFLICT') || error.code.includes('FOLDER_MISSING') || error.code === 'SERVER_NOT_UNREGISTERED' ? 409 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
     if (error instanceof ServerZipImportError) {
@@ -697,6 +701,11 @@ export async function createApiApp(options: {
     managedRoot: options.servers.managedRoot,
     importRoots: options.servers.importRoots,
   }))
+  app.get('/api/v1/admin/servers/unregistered', { preHandler: requireAdmin }, async () => unregisteredServerListSchema.parse({ servers: await removals.listUnregistered() }))
+  app.post('/api/v1/admin/servers/:serverId/restore-registration', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverRegistrationRestoreResultSchema.parse(await removals.restoreUnregistered(params.serverId, request.principal!.userId))
+  })
   app.get('/api/v1/servers', { preHandler: requireAuth }, async (request) => {
     const statuses = processes.listPublicStatuses()
     const allowedIds = new Set(serverAccess.serverIds(request.principal!, 'viewServer'))
@@ -1194,6 +1203,11 @@ export async function createApiApp(options: {
     serverStatus.configurePollInterval(settings.statusPollMs)
     options.onMonitoringSettingsChanged?.(settings)
     return monitoringSettingsSchema.parse(settings)
+  })
+  app.get('/api/v1/admin/backup-settings', { preHandler: requireAdmin }, async () => backupSettingsResultSchema.parse(await backups.settingsOverview()))
+  app.patch('/api/v1/admin/backup-settings', { preHandler: requireAdminMutation }, async (request) => {
+    const input = parse(backupSettingsSchema, request.body)
+    return backupSettingsResultSchema.parse(await backups.updateSettings(input))
   })
   app.get('/api/v1/machine/history', { preHandler: requireAuth }, async (request) => {
     const query = parse(historyQuerySchema, request.query)

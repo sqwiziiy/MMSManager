@@ -15,6 +15,7 @@ import { primaryStorageVolume, useMachineStorage } from '../state/use-machine-st
 import { formatBytes, formatPercent, formatTimestamp } from '../lib/format'
 import { apiErrorMessage } from '../api/client'
 import { getActivity } from '../api/activity'
+import { serverPortIssueText } from '../lib/server-port'
 
 export function DashboardPage({ onCreate }: { onCreate: () => void }) {
   const [registered, setRegistered] = useState<LocalServerSummary[]>([])
@@ -94,7 +95,7 @@ export function DashboardPage({ onCreate }: { onCreate: () => void }) {
         <div className="fleet-list">{serverLoading ? <div className="local-server-empty">Reading registered servers…</div> : serverError ? <div className="local-server-empty" role="status">{serverError} <button className="text-link" onClick={() => void loadServers()}>Retry</button></div> : registered.length ? registered.slice(0, 5).map((server) => <Link className="fleet-row" to={`/servers/${server.id}/overview`} key={server.id}>
           <span className="local-server-icon"><Server size={16} /></span>
           <span className="fleet-row-main"><strong data-no-translate>{server.name}</strong><small><span data-no-translate>{server.software}</span> · <span data-no-translate>{server.version ?? 'version unknown'}</span> · {server.source === 'imported' ? 'read only' : 'managed'}</small></span>
-          <span className="fleet-row-right"><Badge tone={server.runtimeStatus === 'running' ? 'good' : server.runtimeStatus === 'error' || server.runtimeStatus === 'crashed' ? 'danger' : 'neutral'}>{server.runtimeStatus === 'external/unmanaged' ? 'Unmanaged' : server.runtimeStatus ?? 'Unavailable'}</Badge><small>{server.port ? <>Game port {server.port}</> : 'Port unknown'}</small></span>
+          <span className="fleet-row-right"><Badge tone={server.runtimeStatus === 'running' ? 'good' : server.runtimeStatus === 'error' || server.runtimeStatus === 'crashed' ? 'danger' : 'neutral'}>{server.runtimeStatus === 'external/unmanaged' ? 'Unmanaged' : server.runtimeStatus ?? 'Unavailable'}</Badge><small>{server.portStatus === 'valid' ? <>Game port {server.port}</> : translateText(serverPortIssueText(server.portErrorCode) ?? 'Port unknown', currentLocale())}</small></span>
         </Link>) : <div className="local-server-empty">No servers registered on this computer.</div>}</div>
         {isAdmin && <button className="fleet-create" onClick={onCreate}><span className="fleet-create-plus"><Plus size={12} aria-hidden="true" /></span><span>Create a local server</span><ArrowUpRight size={14} /></button>}
       </Card>

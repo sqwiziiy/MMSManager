@@ -455,6 +455,7 @@ export const localServerRuntime = sqliteTable('local_server_runtime', {
   processPid: integer('process_pid'),
   processStartMarker: text('process_start_marker'),
   processBootId: text('process_boot_id'),
+  processPort: integer('process_port'),
   startedAt: text('started_at'),
   updatedAt: text('updated_at').notNull(),
   lastExitCode: integer('last_exit_code'),
@@ -547,6 +548,21 @@ export const localServerBackups = sqliteTable('local_server_backups', {
   check('local_server_backups_manifest_size_check', sql`${table.manifestSizeBytes} >= 0`),
   check('local_server_backups_entry_count_check', sql`${table.entryCount} >= 0 AND ${table.fileCount} >= 0 AND ${table.excludedCount} >= 0`),
   check('local_server_backups_total_bytes_check', sql`${table.totalFileBytes} >= 0`),
+])
+
+export const backupSettings = sqliteTable('backup_settings', {
+  id: integer('id').primaryKey(),
+  maxArchiveBytes: integer('max_archive_bytes').notNull(),
+  storageQuotaBytes: integer('storage_quota_bytes'),
+  maxEntries: integer('max_entries').notNull(),
+  maxDurationMinutes: integer('max_duration_minutes').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  check('backup_settings_singleton_check', sql`${table.id} = 1`),
+  check('backup_settings_archive_check', sql`${table.maxArchiveBytes} BETWEEN 1048576 AND 274877906944`),
+  check('backup_settings_quota_check', sql`${table.storageQuotaBytes} IS NULL OR ${table.storageQuotaBytes} BETWEEN 1048576 AND 1099511627776`),
+  check('backup_settings_entries_check', sql`${table.maxEntries} BETWEEN 1 AND 250000`),
+  check('backup_settings_duration_check', sql`${table.maxDurationMinutes} BETWEEN 1 AND 360`),
 ])
 
 export const localServerBackupRestores = sqliteTable('local_server_backup_restores', {

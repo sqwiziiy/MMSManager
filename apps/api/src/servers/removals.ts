@@ -1,7 +1,7 @@
 import { lstat, mkdir, readdir, realpath, rename, rmdir, unlink, chmod } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { and, desc, eq, or, sql } from 'drizzle-orm'
+import { and, desc, eq, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import type { AppDatabase } from '../db/client.js'
 import { localServerAutomationJobs, localServerBackupRestores, localServerEvents, localServerRemovalOperations, localServers, serverInstallOperations } from '../db/schema.js'
 import type { ServerProcessManager } from './processes.js'
@@ -15,6 +15,10 @@ function errorCode(error: unknown): string { return error instanceof Error && 'c
 function isDirectChild(root: string, candidate: string): boolean {
   const path = relative(root, candidate)
   return path !== '' && path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path) && !path.includes(sep)
+}
+function isWithin(root: string, candidate: string): boolean {
+  const path = relative(root, candidate)
+  return path !== '' && path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path)
 }
 
 export class ServerRemovalError extends Error {
@@ -60,6 +64,76 @@ export class ServerRemovalService {
       createdAt: localServerRemovalOperations.createdAt,
       updatedAt: localServerRemovalOperations.updatedAt,
     }).from(localServerRemovalOperations).orderBy(desc(localServerRemovalOperations.createdAt)).limit(limit).all()
+  }
+
+  async listUnregistered(limit = 100) {
+    const rows = this.db.select({ id: localServers.id, name: localServers.name, version: localServers.version, directory: localServers.directory, removedAt: localServers.removedAt })
+      .from(localServers).where(and(isNotNull(localServers.removedAt), sql`EXISTS (
+        SELECT 1 FROM local_server_removal_operations AS removal
+        WHERE removal.server_id = ${localServers.id} AND removal.mode = 'unregister' AND removal.state = 'unregistered'
+      )`, sql`NOT EXISTS (
+        SELECT 1 FROM local_server_removal_operations AS permanent
+        WHERE permanent.server_id = ${localServers.id} AND permanent.mode = 'permanent'
+      )`)).orderBy(desc(localServers.removedAt)).limit(limit).all()
+    return await Promise.all(rows.map(async (server) => ({
+      id: server.id, name: server.name, version: server.version, removedAt: server.removedAt!,
+      folderAvailable: await lstat(server.directory).then((stat) => stat.isDirectory() && !stat.isSymbolicLink(), (error: unknown) => {
+        if (isFsError(error) && error.code === 'ENOENT') return false
+        return false
+      }),
+    })))
+  }
+
+  async restoreUnregistered(serverId: string, actorUserId: string): Promise<{ ok: true; serverId: string }> {
+    return this.processes.withUnregisteredServerRestore(serverId, async (server) => {
+      const permanentRemoval = this.db.select({ id: localServerRemovalOperations.id }).from(localServerRemovalOperations)
+        .where(and(eq(localServerRemovalOperations.serverId, serverId), eq(localServerRemovalOperations.mode, 'permanent'))).limit(1).get()
+      const priorRemoval = this.db.select({ id: localServerRemovalOperations.id }).from(localServerRemovalOperations)
+        .where(and(eq(localServerRemovalOperations.serverId, serverId), eq(localServerRemovalOperations.mode, 'unregister'), eq(localServerRemovalOperations.state, 'unregistered')))
+        .orderBy(desc(localServerRemovalOperations.createdAt)).limit(1).get()
+      if (permanentRemoval || !priorRemoval) throw new ServerRemovalError('SERVER_NOT_UNREGISTERED', 'Only a retained server registration can be restored. Permanently removed servers cannot be restored here.')
+      const directory = resolve(server.directory)
+      const folder = await lstat(directory).catch((error: unknown) => {
+        if (isFsError(error) && error.code === 'ENOENT') throw new ServerRemovalError('SERVER_RESTORE_FOLDER_MISSING', 'The original server folder is missing. Its registration was not changed.')
+        throw error
+      })
+      if (!folder.isDirectory() || folder.isSymbolicLink()) throw new ServerRemovalError('SERVER_RESTORE_FOLDER_UNSAFE', 'The original server path is not a real directory. Its registration was not changed.')
+      const canonical = await realpath(directory).catch(() => '')
+      if (canonical !== directory) throw new ServerRemovalError('SERVER_RESTORE_FOLDER_UNSAFE', 'The original server folder resolves through a link or changed path.')
+      if (server.source === 'created' && server.managed) {
+        const root = await realpath(this.servers.managedRoot).catch(() => '')
+        const rootStat = root ? await lstat(root).catch(() => null) : null
+        if (!root || !isDirectChild(root, canonical) || !rootStat?.isDirectory() || rootStat.dev !== folder.dev) {
+          throw new ServerRemovalError('SERVER_RESTORE_FOLDER_UNSAFE', 'The managed server folder is outside the configured server root or on a different filesystem.')
+        }
+      } else {
+        const roots = await Promise.all(this.servers.importRoots.map((path) => realpath(path).catch(() => null)))
+        if (!roots.some((root) => root !== null && isWithin(root, canonical))) {
+          throw new ServerRemovalError('SERVER_RESTORE_FOLDER_UNSAFE', 'The original imported folder is outside the currently allowed import roots.')
+        }
+      }
+      const activeServers = this.db.select({ id: localServers.id, directory: localServers.directory }).from(localServers).where(isNull(localServers.removedAt)).all()
+      for (const activeServer of activeServers) {
+        const activeDirectory = await realpath(activeServer.directory).catch(() => resolve(activeServer.directory))
+        if (activeDirectory === canonical) throw new ServerRemovalError('SERVER_RESTORE_CONFLICT', 'Another registered server already uses the original folder.')
+      }
+      const latestFolder = await lstat(directory).catch(() => null)
+      if (!latestFolder?.isDirectory() || latestFolder.isSymbolicLink() || latestFolder.dev !== folder.dev || latestFolder.ino !== folder.ino || await realpath(directory).catch(() => '') !== canonical) {
+        throw new ServerRemovalError('SERVER_RESTORE_FOLDER_UNSAFE', 'The original server folder changed while its registration was being checked.')
+      }
+      const at = new Date(this.now()).toISOString()
+      this.db.transaction((tx) => {
+        const restored = tx.update(localServers).set({ removedAt: null, updatedAt: at })
+          .where(and(eq(localServers.id, serverId), isNotNull(localServers.removedAt))).run()
+        if (restored.changes !== 1) throw new ServerRemovalError('SERVER_NOT_UNREGISTERED', 'The server registration changed before it could be restored.')
+        tx.insert(localServerEvents).values({
+          serverId, actorUserId, action: 'server-unregistered-restored', outcome: 'success', occurredAt: at,
+          detail: JSON.stringify({ removalId: priorRemoval.id, folderKept: true, serverStarted: false }),
+        }).run()
+      })
+      await this.servers.refreshPortConfigurations(true)
+      return { ok: true, serverId }
+    })
   }
 
   async retry(operationId: string, confirmation: string, actorUserId: string) {

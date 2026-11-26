@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { AlertCircle, ArrowDownToLine, Check, CircleUserRound, Clock3, ExternalLink, Info, KeyRound, LoaderCircle, LockKeyhole, Palette, Plus, Save, ShieldCheck, Trash2, UserRoundPlus, Users, X } from 'lucide-react'
+import { AlertCircle, Archive, ArrowDownToLine, Check, CircleUserRound, Clock3, ExternalLink, HardDrive, Info, KeyRound, LoaderCircle, LockKeyhole, Palette, Plus, Save, ShieldCheck, Trash2, UserRoundPlus, Users, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import type { AdminUser, AuditRecord, LandingPage, MonitoringSettings, UserRole } from '@mmsmanager/shared'
+import type { AdminUser, AuditRecord, BackupSettings, BackupSettingsResult, LandingPage, MonitoringSettings, UserRole } from '@mmsmanager/shared'
 import {
   changePassword, createAdminUser, deleteAdminUser, getAuditEvents, getWorkspacePreferences, listAdminUsers, removeAvatar,
   resetAdminUserPassword, updateAdminUser, updateProfile, updateUserPreferences, updateWorkspacePreferences, uploadAvatar,
@@ -15,7 +15,8 @@ import { NotificationsPanel } from '../components/notifications'
 import { BrandGlyph } from '../components/brand-glyph'
 import { appMetadata } from '../app-metadata'
 import { getMonitoringSettings, updateMonitoringSettings } from '../api/monitoring'
-import { DEFAULT_MONITORING_SETTINGS } from '@mmsmanager/shared'
+import { getBackupSettings, updateBackupSettings } from '../api/backup-settings'
+import { DEFAULT_BACKUP_SETTINGS, DEFAULT_MONITORING_SETTINGS } from '@mmsmanager/shared'
 import { saveUiPreferencesInput } from '../i18n/preferences'
 import { useUiPreferences } from '../i18n/locale-context'
 import type { UiPreferences } from '../i18n/locale-context'
@@ -346,7 +347,66 @@ function AboutPanel({ language }: { language: 'en' | 'ru' }) {
   </section>
 }
 
-type SettingsTab = 'Workspace' | 'Personal' | 'Language & appearance' | 'Notifications' | 'Monitoring' | 'About'
+function formatSettingsBytes(value: number | null, language: 'en' | 'ru'): string {
+  if (value === null) return translateText('Unavailable', language)
+  const units = language === 'ru' ? ['Б', 'КиБ', 'МиБ', 'ГиБ', 'ТиБ'] : ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let size = value
+  let unit = 0
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1 }
+  return `${new Intl.NumberFormat(language, { maximumFractionDigits: unit > 1 ? 2 : 1 }).format(size)} ${units[unit]}`
+}
+
+function BackupSettingsPanel({ language }: { language: 'en' | 'ru' }) {
+  const [settings, setSettings] = useState<BackupSettingsResult>({ ...DEFAULT_BACKUP_SETTINGS, storageUsedBytes: 0, storageAvailableBytes: null })
+  const [loading, setLoading] = useState(true)
+  const [loaded, setLoaded] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<Notice | null>(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    void getBackupSettings(controller.signal).then((result) => { setSettings(result); setLoaded(true) }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setNotice({ tone: 'error', message: requestMessage(error) })
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [])
+  const update = (value: Partial<BackupSettings>) => setSettings((current) => ({ ...current, ...value }))
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setBusy(true)
+    setNotice(null)
+    try {
+      const { maxArchiveBytes, storageQuotaBytes, maxEntries, maxDurationMinutes } = settings
+      setSettings(await updateBackupSettings({ maxArchiveBytes, storageQuotaBytes, maxEntries, maxDurationMinutes }))
+      setNotice({ tone: 'ok', message: translateText('Backup limits were saved.', language) })
+    } catch (error) { setNotice({ tone: 'error', message: requestMessage(error) }) }
+    finally { setBusy(false) }
+  }
+  const reset = async () => {
+    setBusy(true)
+    setNotice(null)
+    try {
+      setSettings(await updateBackupSettings(DEFAULT_BACKUP_SETTINGS))
+      setNotice({ tone: 'ok', message: translateText('Backup limits were reset.', language) })
+    } catch (error) { setNotice({ tone: 'error', message: requestMessage(error) }) }
+    finally { setBusy(false) }
+  }
+  return <form className="account-settings-form backup-settings-form" onSubmit={(event) => void save(event)}>
+    <NoticeBar notice={notice} />
+    {loaded ? <>
+    <div className="settings-readonly-row backup-capacity-row"><div className="backup-capacity-icon"><HardDrive size={16} /><span><strong>{translateText('Backup storage used', language)}</strong><small>{translateText('Free space on backup volume', language)}</small></span></div><span><span data-no-translate>{formatSettingsBytes(settings.storageUsedBytes, language)}</span><small><span data-no-translate>{formatSettingsBytes(settings.storageAvailableBytes, language)}</span></small></span></div>
+    <div className="appearance-grid">
+      <Field label={translateText('Maximum archive size', language)}><input type="number" min={0.001} max={256} step={0.001} value={Number((settings.maxArchiveBytes / 1024 ** 3).toFixed(3))} onChange={(event) => update({ maxArchiveBytes: Math.round(Number(event.target.value) * 1024 ** 3) })} /><small>GiB · 0.001–256</small></Field>
+      <Field label={translateText('Maximum files and folders', language)}><input type="number" min={1} max={250000} step={1} value={settings.maxEntries} onChange={(event) => update({ maxEntries: Number(event.target.value) })} /><small>{translateText('files and folders', language)} · 1–250,000</small></Field>
+      <Field label={translateText('Maximum operation duration', language)}><input type="number" min={1} max={360} step={1} value={settings.maxDurationMinutes} onChange={(event) => update({ maxDurationMinutes: Number(event.target.value) })} /><small>{translateText('minutes', language)} · 1–360</small></Field>
+      <div className="backup-quota-control"><Field label={translateText('Shared storage quota', language)}><input type="number" min={0.001} max={1024} step={0.001} disabled={settings.storageQuotaBytes === null} value={settings.storageQuotaBytes === null ? '' : Number((settings.storageQuotaBytes / 1024 ** 3).toFixed(3))} onChange={(event) => update({ storageQuotaBytes: Math.round(Number(event.target.value) * 1024 ** 3) })} /><small>GiB · 0.001–1,024</small></Field><label className="account-switch"><input type="checkbox" checked={settings.storageQuotaBytes === null} onChange={(event) => update({ storageQuotaBytes: event.target.checked ? null : DEFAULT_BACKUP_SETTINGS.storageQuotaBytes })} /><span aria-hidden="true" />{translateText('Disable shared quota', language)}</label></div>
+    </div>
+    <div className="settings-readonly-row"><div><strong>{translateText('Shared storage quota', language)}</strong><small>{translateText('Backup limits', language)}</small></div><span data-no-translate>{settings.storageQuotaBytes === null ? translateText('No shared quota', language) : formatSettingsBytes(settings.storageQuotaBytes, language)}</span></div>
+    <div className="settings-footer"><span>{translateText('Configure safe limits for manual and scheduled server backups.', language)}</span><div><Button type="button" kind="secondary" disabled={busy || loading || !loaded} onClick={() => void reset()}>{translateText('Reset to defaults', language)}</Button><Button type="submit" kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy || loading || !loaded}>{translateText(loading ? 'Loading' : 'Save backup limits', language)}</Button></div></div>
+    </> : <div className="local-backups-empty">{translateText(loading ? 'Loading backup settings…' : 'Backup settings are unavailable.', language)}</div>}
+  </form>
+}
+
+type SettingsTab = 'Workspace' | 'Personal' | 'Language & appearance' | 'Notifications' | 'Monitoring' | 'Backup' | 'About'
 
 export function SettingsPage() {
   const auth = useAuth()
@@ -354,7 +414,7 @@ export function SettingsPage() {
   const { history } = useMachineHistory()
   const isAdmin = auth.snapshot?.user.role === 'administrator'
   const snapshot = auth.snapshot!
-  const [tab, setTab] = useState<SettingsTab>(isAdmin ? 'Workspace' : 'Personal')
+  const [tab, setTab] = useState<SettingsTab>(() => isAdmin && new URLSearchParams(window.location.search).get('section') === 'backup' ? 'Backup' : isAdmin ? 'Workspace' : 'Personal')
   const [workspaceName, setWorkspaceName] = useState(snapshot.workspace.displayName)
   const [workspaceLanding, setWorkspaceLanding] = useState<LandingPage>(snapshot.workspace.defaultLanding)
   const [compactNavigation, setCompactNavigation] = useState(snapshot.user.preferences.compactNavigation)
@@ -392,7 +452,7 @@ export function SettingsPage() {
     return () => controller.abort()
   }, [isAdmin, tab])
 
-  const tabList: SettingsTab[] = isAdmin ? ['Workspace', 'Personal', 'Language & appearance', 'Monitoring', 'Notifications', 'About'] : ['Personal', 'Language & appearance', 'Notifications', 'About']
+  const tabList: SettingsTab[] = isAdmin ? ['Workspace', 'Personal', 'Language & appearance', 'Monitoring', 'Backup', 'Notifications', 'About'] : ['Personal', 'Language & appearance', 'Notifications', 'About']
   const saveWorkspace = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setBusy(true)
@@ -450,9 +510,9 @@ export function SettingsPage() {
   return <div className="page-stack">
     <PageHeading title="Settings" description="Persistent settings for this local workspace and your account." />
     <NoticeBar notice={notice} />
-    <div className="settings-layout account-settings-layout"><nav className="settings-nav" aria-label={translateText('Settings sections', appearanceDraft.language)}>{tabList.map((name) => <button key={name} className={name === tab ? 'selected' : ''} onClick={() => setTab(name)}>{name === 'Workspace' ? <Users size={16} /> : name === 'Personal' ? <CircleUserRound size={16} /> : name === 'Language & appearance' ? <Palette size={16} /> : name === 'Monitoring' ? <Clock3 size={16} /> : name === 'About' ? <Info size={16} /> : <AlertCircle size={16} />}{translateText(name, appearanceDraft.language)}</button>)}</nav>
+    <div className="settings-layout account-settings-layout"><nav className="settings-nav" aria-label={translateText('Settings sections', appearanceDraft.language)}>{tabList.map((name) => <button key={name} className={name === tab ? 'selected' : ''} onClick={() => setTab(name)}>{name === 'Workspace' ? <Users size={16} /> : name === 'Personal' ? <CircleUserRound size={16} /> : name === 'Language & appearance' ? <Palette size={16} /> : name === 'Monitoring' ? <Clock3 size={16} /> : name === 'Backup' ? <Archive size={16} /> : name === 'About' ? <Info size={16} /> : <AlertCircle size={16} />}{translateText(name, appearanceDraft.language)}</button>)}</nav>
       <Card className="settings-content account-settings-content">
-        <div className="settings-content-heading"><div><h2>{translateText(tab, appearanceDraft.language)}</h2><p>{translateText(tab === 'Workspace' ? 'Shared defaults for the single local workspace' : tab === 'Personal' ? 'Saved to your account and applied on this device' : tab === 'Language & appearance' ? 'Language and display settings for your account' : tab === 'Monitoring' ? 'Saved operational settings for the local machine' : tab === 'Notifications' ? 'Saved operational alerts for your local account' : 'Project identity, release information and license', appearanceDraft.language)}</p></div><Badge tone="good">{translateText(tab === 'Notifications' ? 'In-app' : tab === 'About' ? 'Alpha release' : 'Persistent', appearanceDraft.language)}</Badge></div>
+        <div className="settings-content-heading"><div><h2>{translateText(tab, appearanceDraft.language)}</h2><p>{translateText(tab === 'Workspace' ? 'Shared defaults for the single local workspace' : tab === 'Personal' ? 'Saved to your account and applied on this device' : tab === 'Language & appearance' ? 'Language and display settings for your account' : tab === 'Monitoring' ? 'Saved operational settings for the local machine' : tab === 'Backup' ? 'Configure safe limits for manual and scheduled server backups.' : tab === 'Notifications' ? 'Saved operational alerts for your local account' : 'Project identity, release information and license', appearanceDraft.language)}</p></div><Badge tone="good">{translateText(tab === 'Notifications' ? 'In-app' : tab === 'About' ? 'Alpha release' : 'Persistent', appearanceDraft.language)}</Badge></div>
         {tab === 'Workspace' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveWorkspace(event)}><Field label="Workspace name"><input required maxLength={60} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} /></Field><Field label="Default landing page"><select value={workspaceLanding} onChange={(event) => setWorkspaceLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-readonly-row"><div><strong>Machine history timezone</strong><small>Configured when the local collector starts; raw timestamps remain UTC.</small></div><span>{history?.timeZone ? <span data-no-translate>{history.timeZone}</span> : 'Unavailable'}</span></div><div className="settings-footer"><span>Workspace changes apply for all local users.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save workspace'}</Button></div></form>}
         {tab === 'Personal' && <form className="account-settings-form" onSubmit={(event) => void savePersonal(event)}><div className="settings-row account-settings-row"><div><strong>Compact navigation</strong><small>Remember a narrower sidebar for your account.</small></div><label className="account-switch"><input aria-label="Compact navigation" type="checkbox" checked={compactNavigation} onChange={(event) => setCompactNavigation(event.target.checked)} /><span aria-hidden="true" /></label></div><Field label="Default landing page"><select value={personalLanding} onChange={(event) => setPersonalLanding(event.target.value as LandingPage)}><option value="dashboard">Dashboard</option><option value="machine">Machine overview</option></select></Field><div className="settings-footer"><span>Saved to your profile.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save preferences'}</Button></div></form>}
         {tab === 'Language & appearance' && <form className="account-settings-form appearance-form" onSubmit={(event) => void saveAppearance(event)}>
@@ -467,6 +527,7 @@ export function SettingsPage() {
           <div className="settings-footer"><Button type="button" kind="secondary" disabled={busy} onClick={resetAppearance}>Reset appearance</Button><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Saving' : 'Save preferences'}</Button></div>
         </form>}
         {tab === 'Monitoring' && isAdmin && <form className="account-settings-form" onSubmit={(event) => void saveMonitoring(event)}><div className="settings-readonly-row"><div><strong>Live sample interval</strong><small>CPU, memory and network updates from one shared host sampler.</small></div><Field label="Seconds"><input type="number" min={1} max={60} step={1} value={monitoringSettings.fastSampleMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, fastSampleMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>History save interval</strong><small>Raw snapshots are saved less often; minute summaries include readings between saves.</small></div><Field label="Seconds"><input type="number" min={5} max={60} step={1} value={monitoringSettings.historySaveMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, historySaveMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>Disk refresh interval</strong><small>Disk usage refreshes separately from quick metrics.</small></div><Field label="Seconds"><input type="number" min={10} max={60} step={1} value={monitoringSettings.diskRefreshMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, diskRefreshMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-readonly-row"><div><strong>Server status check</strong><small>The dashboard player count updates after this interval.</small></div><Field label="Seconds"><input type="number" min={5} max={30} step={1} value={monitoringSettings.statusPollMs / 1000} onChange={(event) => setMonitoringSettings((value) => ({ ...value, statusPollMs: Number(event.target.value) * 1000 }))} /></Field></div><div className="settings-footer"><span>Changes apply immediately. History is retained using the current policy.</span><Button kind="primary" icon={busy ? LoaderCircle : Save} disabled={busy}>{busy ? 'Applying' : 'Apply monitoring'}</Button></div></form>}
+        {tab === 'Backup' && isAdmin && <BackupSettingsPanel language={appearanceDraft.language} />}
         {tab === 'Notifications' && <NotificationsPanel />}
         {tab === 'About' && <AboutPanel language={appearanceDraft.language} />}
       </Card>

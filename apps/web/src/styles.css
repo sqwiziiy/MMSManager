@@ -2573,6 +2573,29 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 
 .about-panel { display: flex; flex-direction: column; gap: 18px; padding: 18px; }
 .about-identity { display: flex; align-items: center; gap: 18px; padding: 20px; border: 1px solid var(--line-quiet); border-radius: 12px; background: var(--surface-subtle); }
+.backup-settings-form .settings-readonly-row > span { display: grid; gap: 5px; text-align: right; }
+.backup-settings-form .settings-readonly-row > span small { color: var(--text-muted); font-family: inherit; font-size: 9px; }
+.backup-capacity-icon { display: flex; align-items: center; gap: 10px; }
+.backup-capacity-icon > svg { color: var(--accent-strong); }
+.backup-capacity-icon > span { display: grid; gap: 3px; }
+.backup-quota-control { display: grid; align-content: start; gap: 9px; }
+.backup-quota-control .account-switch { align-self: end; width: fit-content; }
+.backup-settings-form .settings-footer > div { display: flex; align-items: center; gap: 8px; }
+.unregistered-servers-section { display: grid; gap: 11px; }
+.unregistered-servers-section > .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.unregistered-servers-section > .section-heading p { margin: 4px 0 0; color: var(--text-muted); font-size: 10px; }
+.unregistered-server-list { display: grid; gap: 8px; }
+.unregistered-server-row { min-width: 0; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto auto; align-items: center; gap: 11px; padding: 12px; }
+.unregistered-server-copy { min-width: 0; display: grid; gap: 3px; }
+.unregistered-server-copy strong { overflow-wrap: anywhere; color: var(--text); font-size: 11px; font-weight: 550; }
+.unregistered-server-copy span, .unregistered-server-copy small { color: var(--text-muted); font-size: 9px; }
+.unregistered-server-copy small { font-variant-numeric: tabular-nums; }
+@media (max-width: 620px) {
+  .backup-settings-form .settings-footer > div { width: 100%; flex-wrap: wrap; }
+  .backup-settings-form .settings-footer > div .button { flex: 1; }
+  .unregistered-server-row { grid-template-columns: 30px minmax(0, 1fr); }
+  .unregistered-server-row > .badge, .unregistered-server-row > .button { grid-column: 2; justify-self: start; }
+}
 .about-identity > div { min-width: 0; }
 .about-eyebrow { display: block; color: var(--text-muted); font-size: 10px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
 .about-identity h3 { margin: 5px 0 3px; color: var(--text); font-size: 24px; letter-spacing: -.04em; }

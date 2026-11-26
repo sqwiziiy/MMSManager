@@ -10,7 +10,7 @@ import type { FastifyInstance } from 'fastify'
 import { API_HOST, WEB_ORIGIN } from './config.js'
 import { AppConfigStore } from './app-config.js'
 import { openDatabase } from './db/client.js'
-import { auditEvents, localServerEvents, localServerStructuredEvents, machineSamples, localServerRuntime, localServers, serverAccessGrants } from './db/schema.js'
+import { auditEvents, localServerEvents, localServerRemovalOperations, localServerStructuredEvents, machineSamples, localServerRuntime, localServers, serverAccessGrants } from './db/schema.js'
 import { recordServerResourceSample, recordStructuredServerEvent } from './servers/history.js'
 import { AuthService } from './auth/service.js'
 import { AvatarStore } from './auth/avatar-store.js'
@@ -489,6 +489,38 @@ describe('authenticated local API', () => {
     })
     expect(invalid.statusCode).toBe(400)
     expect((await new AppConfigStore(dataDirectory).load()).fastSampleMs).toBe(2_000)
+  })
+
+  it('persists bounded backup settings and limits the settings endpoints to administrators', async () => {
+    const admin = await bootstrapAdmin()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
+    const read = await app.inject({ method: 'GET', url: '/api/v1/admin/backup-settings', headers: adminHeaders })
+    expect(read.statusCode, read.body).toBe(200)
+    expect(read.json()).toMatchObject({ maxArchiveBytes: 20 * 1024 ** 3, storageQuotaBytes: 100 * 1024 ** 3, maxEntries: 100_000, maxDurationMinutes: 30, storageUsedBytes: 0 })
+    expect(read.json().storageAvailableBytes).toEqual(expect.any(Number))
+
+    const update = await app.inject({
+      method: 'PATCH', url: '/api/v1/admin/backup-settings', headers: adminHeaders,
+      payload: { maxArchiveBytes: 2 * 1024 ** 2, storageQuotaBytes: null, maxEntries: 200, maxDurationMinutes: 45 },
+    })
+    expect(update.statusCode, update.body).toBe(200)
+    expect(update.json()).toMatchObject({ maxArchiveBytes: 2 * 1024 ** 2, storageQuotaBytes: null, maxEntries: 200, maxDurationMinutes: 45 })
+    expect(opened.native.prepare('SELECT max_archive_bytes AS maxArchiveBytes, storage_quota_bytes AS storageQuotaBytes, max_entries AS maxEntries, max_duration_minutes AS maxDurationMinutes FROM backup_settings WHERE id = 1').get()).toEqual({ maxArchiveBytes: 2 * 1024 ** 2, storageQuotaBytes: null, maxEntries: 200, maxDurationMinutes: 45 })
+
+    const invalid = await app.inject({
+      method: 'PATCH', url: '/api/v1/admin/backup-settings', headers: adminHeaders,
+      payload: { maxArchiveBytes: 2 * 1024 ** 2, storageQuotaBytes: 1, maxEntries: 200, maxDurationMinutes: 45 },
+    })
+    expect(invalid.statusCode).toBe(400)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/admin/backup-settings', headers: adminHeaders })).json()).toMatchObject({ storageQuotaBytes: null, maxEntries: 200 })
+
+    const ownerToken = /mmsmanager_session=([^;]+)/.exec(admin.cookieHeader)?.[1]
+    const owner = ownerToken ? auth.authenticate(ownerToken) : null
+    const memberPassword = 'synthetic backup settings member 4M!v8Qz2'
+    await auth.createUser(owner!, { username: 'backup-settings-member', displayName: 'Backup Settings Member', password: memberPassword, role: 'member' })
+    const member = await signInCreatedAccount('backup-settings-member', memberPassword)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/admin/backup-settings', headers: member.headers })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'PATCH', url: '/api/v1/admin/backup-settings', headers: member.headers, payload: { maxArchiveBytes: 2 * 1024 ** 2, storageQuotaBytes: null, maxEntries: 200, maxDurationMinutes: 45 } })).statusCode).toBe(403)
   })
 
   it('deletes accounts only with administrator CSRF and username confirmation while retaining anonymous audit history', async () => {
@@ -1386,7 +1418,7 @@ describe('authenticated local API', () => {
     const worldData = Buffer.from([0, 1, 2, 255, 10, 13])
     const archive = storedZip([
       { path: 'bundle/server-1.20.4.jar', bytes: serverJar },
-      { path: 'bundle/server.properties', bytes: Buffer.from('server-port=25570\nmotd=ZIP fixture\n') },
+      { path: 'bundle/server.properties', bytes: Buffer.from('# server-port=24444\nserver-port : 25569\nserver-port=25570\nmotd=ZIP fixture\n') },
       { path: 'bundle/eula.txt', bytes: Buffer.from('eula=false\n') },
       { path: 'bundle/world/level.dat', bytes: worldData },
     ], true)
@@ -1412,6 +1444,7 @@ describe('authenticated local API', () => {
     })
     expect(publish.statusCode, publish.body).toBe(201)
     expect(publish.json()).toMatchObject({ importState: 'published', started: false, startError: null, server: { name: 'ZIP fixture world', source: 'created', managed: true, javaMajor: 21, eula: 'not-accepted' } })
+    expect(publish.json().server).toMatchObject({ port: 25570, portStatus: 'valid', portErrorCode: null })
     const serverId = publish.json().server.id as string
     const row = await opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()
     expect(row).toMatchObject({ javaSelectionMode: 'auto', javaMajor: 21, requiredJavaMajor: 17 })
@@ -1490,6 +1523,85 @@ describe('authenticated local API', () => {
     expect(unregister.statusCode, unregister.body).toBe(200)
     expect(unregister.json().operation).toMatchObject({ state: 'unregistered', mode: 'unregister' })
     expect(await readFile(join(externalDirectory, 'keep.txt'), 'utf8')).toBe('external data remains')
+  })
+
+  it('restores an unregistered server record without changing its folder, history, identity, or stopped state', async () => {
+    const admin = await bootstrapAdmin()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
+    const owner = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
+    const at = '2026-11-23T12:00:00.000Z'
+    const serverId = randomUUID()
+    const directory = join(servers.managedRoot, 'retained-server-fixture')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'server.properties'), 'level-name=kept-world\n')
+    await writeFile(join(directory, 'world.bin'), 'untouched world bytes')
+    await opened.db.insert(localServers).values({
+      id: serverId, name: 'Retained Fixture', directory, source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar',
+      javaPath: '/fixture/java', javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: 25565,
+      eula: 'accepted', managed: true, worldFolders: '["kept-world"]', createdBy: owner.userId, createdAt: at, updatedAt: at,
+    }).run()
+    await opened.db.insert(localServerRuntime).values({
+      serverId, status: 'stopped', processPid: null, processStartMarker: null, processBootId: null,
+      startedAt: null, updatedAt: at, lastExitCode: null, errorMessage: null, restartRequired: true,
+    }).run()
+    await opened.db.insert(localServerEvents).values({ serverId, actorUserId: owner.userId, action: 'retained-history-fixture', outcome: 'success', occurredAt: at, detail: 'preserve history' }).run()
+    const unregister = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/remove`, headers: adminHeaders, payload: { mode: 'unregister', confirmation: 'Retained Fixture' } })
+    expect(unregister.statusCode, unregister.body).toBe(200)
+    const listUrl = '/api/v1/admin/servers/unregistered'
+    const listed = await app.inject({ method: 'GET', url: listUrl, headers: adminHeaders })
+    expect(listed.statusCode, listed.body).toBe(200)
+    expect(listed.json().servers).toContainEqual(expect.objectContaining({ id: serverId, name: 'Retained Fixture', version: '1.21.4', folderAvailable: true }))
+
+    const memberPassword = 'synthetic registration restore member 4H!u2Jp7'
+    await auth.createUser(owner, { username: 'restore-list-member', displayName: 'Restore List Member', password: memberPassword, role: 'member' })
+    const member = await signInCreatedAccount('restore-list-member', memberPassword)
+    expect((await app.inject({ method: 'GET', url: listUrl, headers: member.headers })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restore-registration`, headers: member.headers, payload: {} })).statusCode).toBe(403)
+
+    const conflictId = randomUUID()
+    await opened.db.insert(localServers).values({
+      id: conflictId, name: 'Conflicting Fixture', directory, source: 'imported', software: 'unknown', version: null, jarName: null,
+      javaPath: null, javaMajor: null, requiredJavaMajor: null, minMemoryMb: 512, maxMemoryMb: 1024, port: null,
+      eula: 'unknown', managed: false, worldFolders: '[]', createdBy: null, createdAt: at, updatedAt: at,
+    }).run()
+    const conflicted = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restore-registration`, headers: adminHeaders, payload: {} })
+    expect(conflicted.statusCode).toBe(409)
+    expect(conflicted.json()).toMatchObject({ error: { code: 'SERVER_RESTORE_CONFLICT' } })
+    expect((await opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get())?.removedAt).not.toBeNull()
+    await opened.db.delete(localServers).where(eq(localServers.id, conflictId)).run()
+
+    const restored = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restore-registration`, headers: adminHeaders, payload: {} })
+    expect(restored.statusCode, restored.body).toBe(200)
+    expect(restored.json()).toEqual({ ok: true, serverId })
+    expect(await opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()).toMatchObject({ id: serverId, name: 'Retained Fixture', version: '1.21.4', removedAt: null })
+    expect(await opened.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()?.status).toBe('stopped')
+    const restoredEvents = await opened.db.select().from(localServerEvents).where(eq(localServerEvents.serverId, serverId)).all()
+    expect(restoredEvents).toHaveLength(3)
+    expect(restoredEvents.map((event) => event.action)).toEqual(expect.arrayContaining(['retained-history-fixture', 'server-unregistered', 'server-unregistered-restored']))
+    expect(await readFile(join(directory, 'world.bin'), 'utf8')).toBe('untouched world bytes')
+    expect((await app.inject({ method: 'GET', url: '/api/v1/servers', headers: adminHeaders })).json().servers).toContainEqual(expect.objectContaining({ id: serverId, name: 'Retained Fixture' }))
+    expect((await app.inject({ method: 'GET', url: listUrl, headers: adminHeaders })).json().servers).not.toContainEqual(expect.objectContaining({ id: serverId }))
+
+    const permanentId = randomUUID()
+    const permanentDirectory = join(servers.managedRoot, 'permanently-removed-fixture')
+    await opened.db.insert(localServers).values({
+      id: permanentId, name: 'Permanently removed fixture', directory: permanentDirectory, source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar',
+      javaPath: '/fixture/java', javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: 25566,
+      eula: 'accepted', managed: true, worldFolders: '[]', createdBy: owner.userId, createdAt: at, updatedAt: at, removedAt: at,
+    }).run()
+    await opened.db.insert(localServerRuntime).values({
+      serverId: permanentId, status: 'stopped', processPid: null, processStartMarker: null, processBootId: null,
+      startedAt: null, updatedAt: at, lastExitCode: null, errorMessage: null, restartRequired: false,
+    }).run()
+    await opened.db.insert(localServerRemovalOperations).values({
+      id: randomUUID(), serverId: permanentId, mode: 'permanent', state: 'purged', actorUserId: owner.userId,
+      serverName: 'Permanently removed fixture', directory: permanentDirectory, source: 'created', errorCode: null,
+      errorMessage: null, createdAt: at, updatedAt: at,
+    }).run()
+    expect((await app.inject({ method: 'GET', url: listUrl, headers: adminHeaders })).json().servers).not.toContainEqual(expect.objectContaining({ id: permanentId }))
+    const permanentRestore = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${permanentId}/restore-registration`, headers: adminHeaders, payload: {} })
+    expect(permanentRestore.statusCode).toBe(409)
+    expect(permanentRestore.json()).toMatchObject({ error: { code: 'SERVER_NOT_UNREGISTERED' } })
   })
 
 })

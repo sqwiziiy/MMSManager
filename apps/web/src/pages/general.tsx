@@ -1,14 +1,15 @@
 import { currentLocale, translateText } from "../i18n/catalog"
+import { serverPortIssueText } from '../lib/server-port'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { FormEvent } from 'react'
 import {
   Activity, AlertTriangle, Archive, ArrowRight, CalendarDays, ChevronRight, CircleHelp,
   Cpu, Database, FolderSearch, HardDrive, MemoryStick, Monitor, Plus,
-  RefreshCw, Search, Server, Shield, Users, Wifi,
+  RefreshCw, RotateCcw, Search, Server, Shield, Users, Wifi,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import type { LocalServerSummary, MachineHistory, MachineResourcePoint, ServerBackup, ServerRemovalOperation } from '@mmsmanager/shared'
+import type { LocalServerSummary, MachineHistory, MachineResourcePoint, ServerBackup, ServerRemovalOperation, UnregisteredServer } from '@mmsmanager/shared'
 import type { ActivityCategory, ActivityItem } from '@mmsmanager/shared'
 import { MetricTrack } from '../components/charts'
 import { Badge, Button, Card, EmptyNote, Field, PageHeading, SectionHeading } from '../components/ui'
@@ -17,7 +18,7 @@ import { primaryStorageVolume, useMachineStorage } from '../state/use-machine-st
 import { LiveResourceChart } from '../components/live-chart'
 import { mergeResourcePoints } from '../lib/resource-points'
 import { formatBytes, formatPercent, formatRate, formatTimestamp } from '../lib/format'
-import { getLocalServers, getServerBackups, getServerInventory, getServerRemovalHistory, retryServerRemoval } from '../api/servers'
+import { getLocalServers, getServerBackups, getServerInventory, getServerRemovalHistory, getUnregisteredServers, restoreUnregisteredServer, retryServerRemoval } from '../api/servers'
 import { getMachineHistory } from '../api/machine'
 import type { ServerInventory } from '@mmsmanager/shared'
 import { useAuth } from '../state/use-auth'
@@ -37,6 +38,10 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
   const [localError, setLocalError] = useState<string | null>(null)
   const [importOpen, setImportOpen] = useState(false)
   const [removalHistory, setRemovalHistory] = useState<ServerRemovalOperation[]>([])
+  const [unregisteredServers, setUnregisteredServers] = useState<UnregisteredServer[]>([])
+  const [unregisteredError, setUnregisteredError] = useState<string | null>(null)
+  const [restoringServerId, setRestoringServerId] = useState<string | null>(null)
+  const [restoreError, setRestoreError] = useState<string | null>(null)
   const [retryingRemoval, setRetryingRemoval] = useState<ServerRemovalOperation | null>(null)
   const [retryConfirmation, setRetryConfirmation] = useState('')
   const [retryError, setRetryError] = useState<string | null>(null)
@@ -60,6 +65,14 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
       setLoadingLocal(false)
     }
   }, [isAdmin])
+  const loadUnregistered = useCallback(async (signal?: AbortSignal) => {
+    try {
+      setUnregisteredServers(await getUnregisteredServers(signal))
+      setUnregisteredError(null)
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setUnregisteredError(apiErrorMessage(error, 'The unregistered server list could not be loaded.'))
+    }
+  }, [])
   useEffect(() => {
     const controller = new AbortController()
     void loadLocal(controller.signal)
@@ -71,6 +84,22 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
     void getServerRemovalHistory(controller.signal).then(setRemovalHistory).catch(() => undefined)
     return () => controller.abort()
   }, [isAdmin])
+  useEffect(() => {
+    if (!isAdmin) { setUnregisteredServers([]); setUnregisteredError(null); return }
+    const controller = new AbortController()
+    void loadUnregistered(controller.signal)
+    return () => controller.abort()
+  }, [isAdmin, loadUnregistered])
+
+  const restoreRegistration = async (server: UnregisteredServer) => {
+    setRestoringServerId(server.id)
+    setRestoreError(null)
+    try {
+      await restoreUnregisteredServer(server.id)
+      await Promise.all([loadLocal(), loadUnregistered()])
+    } catch (error) { setRestoreError(apiErrorMessage(error, 'The server could not be restored to the registered list.')) }
+    finally { setRestoringServerId(null) }
+  }
 
   const retryRemoval = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -102,9 +131,20 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
       {loadingLocal && !localServers.length ? <div className="local-server-empty"><span className="loading-pulse" /><span>Reading the local registry…</span></div> : localError ? null : localFiltered.length ? <div className="local-server-grid">{localFiltered.map((server) => {
         const runtimeStatus = server.runtimeStatus ?? 'stopped'
         const tone = runtimeStatus === 'running' ? 'good' : runtimeStatus === 'crashed' || runtimeStatus === 'error' ? 'danger' : runtimeStatus === 'external/unmanaged' ? 'warn' : 'neutral'
-        return <Link className="local-server-card-link" to={`/servers/${server.id}/overview`} key={server.id}><Card className="local-server-card"><div className="local-server-card-header"><span className="local-server-icon"><Server size={17} /></span><div><strong data-no-translate>{server.name}</strong><small>{server.source === 'imported' ? 'Imported folder' : 'Created by MMSManager'}</small></div><Badge tone={tone}>{runtimeStatus === 'external/unmanaged' ? 'Unmanaged' : runtimeStatus[0]!.toUpperCase() + runtimeStatus.slice(1)}</Badge></div><div className="local-server-facts"><div><span>Software</span><strong>{server.software === 'unknown' ? 'Unknown' : <span data-no-translate>{`${server.software[0]!.toUpperCase()}${server.software.slice(1)}${server.version ? ` ${server.version}` : ''}`}</span>}</strong></div><div><span>Game port</span><strong>{server.port ?? 'Not detected'}</strong></div><div><span>Memory</span><strong><span data-no-translate>{server.minMemoryMb}–{server.maxMemoryMb}</span> MB</strong></div><div><span>EULA</span><strong>{server.eula === 'accepted' ? 'Accepted' : server.eula === 'not-accepted' ? 'Not accepted' : 'Not found'}</strong></div></div>{server.worldFolders.length > 0 && <div className="local-server-worlds" data-no-translate>Detected folders {server.worldFolders.join(' · ')}</div>}<div className="local-server-card-footer"><span>{server.managed ? 'Process controls available' : 'Imported · read only'}</span><span>Open details <ChevronRight size={13} /></span></div></Card></Link>
+        const portText = server.portStatus === 'valid' ? String(server.port) : translateText(serverPortIssueText(server.portErrorCode) ?? 'Not detected', currentLocale())
+        return <Link className="local-server-card-link" to={`/servers/${server.id}/overview`} key={server.id}><Card className="local-server-card"><div className="local-server-card-header"><span className="local-server-icon"><Server size={17} /></span><div><strong data-no-translate>{server.name}</strong><small>{server.source === 'imported' ? 'Imported folder' : 'Created by MMSManager'}</small></div><Badge tone={tone}>{runtimeStatus === 'external/unmanaged' ? 'Unmanaged' : runtimeStatus[0]!.toUpperCase() + runtimeStatus.slice(1)}</Badge></div><div className="local-server-facts"><div><span>Software</span><strong>{server.software === 'unknown' ? 'Unknown' : <span data-no-translate>{`${server.software[0]!.toUpperCase()}${server.software.slice(1)}${server.version ? ` ${server.version}` : ''}`}</span>}</strong></div><div><span>Game port</span><strong>{portText}</strong></div><div><span>Memory</span><strong><span data-no-translate>{server.minMemoryMb}–{server.maxMemoryMb}</span> MB</strong></div><div><span>EULA</span><strong>{server.eula === 'accepted' ? 'Accepted' : server.eula === 'not-accepted' ? 'Not accepted' : 'Not found'}</strong></div></div>{server.worldFolders.length > 0 && <div className="local-server-worlds" data-no-translate>Detected folders {server.worldFolders.join(' · ')}</div>}<div className="local-server-card-footer"><span>{server.managed ? 'Process controls available' : 'Imported · read only'}</span><span>Open details <ChevronRight size={13} /></span></div></Card></Link>
       })}</div> : <Card className="local-server-empty-card"><div className="empty-list"><FolderSearch size={20} /><strong>{localServers.length ? 'No servers match this filter' : 'No local servers registered'}</strong><span>{localServers.length ? 'Try another name or state.' : isAdmin ? 'Create a managed server or import a folder inside an allowed root.' : 'An administrator has not added a local server yet.'}</span></div></Card>}
     </section>
+    {isAdmin && <section className="unregistered-servers-section" aria-labelledby="unregistered-servers-title">
+      <div className="section-heading"><div><h2 id="unregistered-servers-title">{translateText('Unregistered servers', currentLocale())}</h2><p>{translateText('Server folders kept when their registration was removed.', currentLocale())}</p></div><Badge>{unregisteredServers.length}</Badge></div>
+      {restoreError && <div className="local-backup-message is-error" role="alert"><AlertTriangle size={15} /><span>{restoreError}</span></div>}
+      {unregisteredError && <div className="local-backup-message is-error" role="alert"><AlertTriangle size={15} /><span>{unregisteredError}</span><Button icon={RefreshCw} onClick={() => void loadUnregistered()}>{translateText('Retry', currentLocale())}</Button></div>}
+      {!unregisteredError && (unregisteredServers.length === 0 ? <Card className="local-server-empty-card"><div className="empty-list"><Archive size={20} /><strong>{translateText('No unregistered servers', currentLocale())}</strong><span>{translateText('Servers unregistered with their files kept will appear here.', currentLocale())}</span></div></Card> : <div className="unregistered-server-list">{unregisteredServers.map((server) => <Card className="unregistered-server-row" key={server.id}>
+        <span className="local-server-icon"><Server size={16} /></span><div className="unregistered-server-copy"><strong data-no-translate>{server.name}</strong><span>{server.version ? <>{translateText('Minecraft', currentLocale())} <span data-no-translate>{server.version}</span></> : translateText('Version unavailable', currentLocale())}</span><small>{translateText('Unregistered', currentLocale())} · {new Date(server.removedAt).toLocaleString(currentLocale())}</small></div>
+        {!server.folderAvailable && <Badge tone="warn">{translateText('Original folder missing', currentLocale())}</Badge>}
+        <Button kind="primary" icon={restoringServerId === server.id ? RefreshCw : RotateCcw} disabled={Boolean(restoringServerId) || !server.folderAvailable} onClick={() => void restoreRegistration(server)}>{restoringServerId === server.id ? translateText('Restoring', currentLocale()) : translateText('Restore', currentLocale())}</Button>
+      </Card>)}</div>)}
+    </section>}
     {isAdmin && removalHistory.length > 0 && <section className="server-removal-history" aria-labelledby="server-removal-history-title">
       <details><summary id="server-removal-history-title">{translateText('Removed server history', currentLocale())}<Badge>{removalHistory.length}</Badge></summary>
         <div className="server-removal-history-list">{removalHistory.map((item) => <article className="server-removal-history-row" key={item.id}>

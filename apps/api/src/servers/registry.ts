@@ -5,6 +5,10 @@ import { randomUUID } from 'node:crypto'
 import { and, eq, isNull } from 'drizzle-orm'
 import type { AppDatabase } from '../db/client.js'
 import { localServerEvents, localServers } from '../db/schema.js'
+import { parseServerPort, type ServerPortConfiguration } from './java-properties.js'
+
+const PORT_REFRESH_INTERVAL_MS = 3_000
+const MAX_PROPERTIES_BYTES = 65_536
 
 export class ServerInventoryError extends Error {
   constructor(readonly code: 'invalid-path' | 'outside-allowlist' | 'not-directory' | 'unsafe-file' | 'duplicate' | 'not-found', message: string) {
@@ -56,19 +60,27 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error
 }
 
-function propertyValue(contents: string | null, key: string): string | null {
-  if (!contents) return null
-  for (const line of contents.split(/\r?\n/)) {
-    const match = line.match(/^\s*([^#!=:\s]+)\s*[=:]\s*(.*?)\s*$/)
-    if (match?.[1] === key) return match[2] ?? ''
+async function readPortConfiguration(directory: string): Promise<ServerPortConfiguration> {
+  let handle: Awaited<ReturnType<typeof open>> | null = null
+  try {
+    const directoryStat = await lstat(directory)
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+      return { port: null, status: 'unreadable', errorCode: 'PORT_FILE_UNREADABLE' }
+    }
+    handle = await open(join(directory, 'server.properties'), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    const stat = await handle.stat()
+    if (!stat.isFile() || stat.size > MAX_PROPERTIES_BYTES) return { port: null, status: 'unreadable', errorCode: 'PORT_FILE_UNREADABLE' }
+    const bytes = await handle.readFile()
+    if (bytes.byteLength > MAX_PROPERTIES_BYTES) return { port: null, status: 'unreadable', errorCode: 'PORT_FILE_UNREADABLE' }
+    return parseServerPort(bytes.toString('utf8'))
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') {
+      return { port: null, status: 'missing', errorCode: 'PORT_FILE_MISSING' }
+    }
+    return { port: null, status: 'unreadable', errorCode: 'PORT_FILE_UNREADABLE' }
+  } finally {
+    await handle?.close()
   }
-  return null
-}
-
-function validPort(value: string | null): number | null {
-  if (!value || !/^\d{1,5}$/.test(value)) return null
-  const port = Number(value)
-  return port >= 1 && port <= 65535 ? port : null
 }
 
 function detectJar(names: string[]): { jarName: string | null; software: ImportPreview['software']; version: string | null } {
@@ -89,6 +101,10 @@ export class ServerRegistry {
   readonly importRoots: string[]
   readonly dataDirectory: string
   private readonly appOwnedRoot: boolean
+  private portCache = new Map<string, ServerPortConfiguration>()
+  private portRefreshAt = Number.NEGATIVE_INFINITY
+  private portRefreshPending: Promise<void> | null = null
+  private portMonitor: NodeJS.Timeout | null = null
 
   constructor(
     private readonly db: AppDatabase,
@@ -113,34 +129,86 @@ export class ServerRegistry {
       throw new Error('The configured local server root must be a real directory, not a symbolic link.')
     }
     if (this.appOwnedRoot) await chmod(this.managedRoot, 0o700)
+    await this.refreshPortConfigurations(true)
+  }
+
+  /** Refreshes the shared configured-port snapshot at most once per interval. */
+  async refreshPortConfigurations(force = false): Promise<void> {
+    if (this.portRefreshPending) return this.portRefreshPending
+    const rows = await this.db.select().from(localServers).where(isNull(localServers.removedAt)).all()
+    const due = force || this.now() - this.portRefreshAt >= PORT_REFRESH_INTERVAL_MS || rows.some((row) => !this.portCache.has(row.id))
+    if (!due) return
+    const refresh = async () => {
+      const next = new Map<string, ServerPortConfiguration>()
+      await Promise.all(rows.map(async (row) => {
+        const configuration = await readPortConfiguration(row.directory)
+        next.set(row.id, configuration)
+        if (row.port !== configuration.port) {
+          this.db.update(localServers).set({ port: configuration.port }).where(eq(localServers.id, row.id)).run()
+        }
+      }))
+      this.portCache = next
+      this.portRefreshAt = this.now()
+    }
+    this.portRefreshPending = refresh().finally(() => { this.portRefreshPending = null })
+    return this.portRefreshPending
+  }
+
+  startPortMonitor(intervalMs = PORT_REFRESH_INTERVAL_MS): void {
+    if (this.portMonitor) return
+    this.portMonitor = setInterval(() => { void this.refreshPortConfigurations(true).catch(() => undefined) }, Math.max(1_000, intervalMs))
+    this.portMonitor.unref()
+  }
+
+  stopPortMonitor(): void {
+    if (this.portMonitor) clearInterval(this.portMonitor)
+    this.portMonitor = null
+  }
+
+  async getPortConfiguration(serverId: string): Promise<ServerPortConfiguration> {
+    await this.refreshPortConfigurations()
+    return this.portCache.get(serverId) ?? { port: null, status: 'missing', errorCode: 'PORT_FILE_MISSING' }
+  }
+
+  async findPortConflict(serverId: string, port: number): Promise<{ id: string; name: string } | null> {
+    await this.refreshPortConfigurations()
+    const rows = await this.db.select({ id: localServers.id, name: localServers.name, port: localServers.port })
+      .from(localServers).where(isNull(localServers.removedAt)).all()
+    return rows.find((row) => row.id !== serverId && this.portCache.get(row.id)?.status === 'valid' && row.port === port) ?? null
   }
 
   async list() {
+    await this.refreshPortConfigurations()
     const rows = await this.db.select().from(localServers).where(isNull(localServers.removedAt)).orderBy(localServers.createdAt)
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      directory: row.directory,
-      source: row.source,
-      software: row.software,
-      version: row.version,
-      jarName: row.jarName,
-      javaPath: row.javaPath,
-      javaMajor: row.javaMajor,
-      minMemoryMb: row.minMemoryMb,
-      maxMemoryMb: row.maxMemoryMb,
-      port: row.port,
-      eula: row.eula,
-      managed: row.managed,
-      worldFolders: parseWorldFolders(row.worldFolders),
-      createdAt: row.createdAt,
-    }))
+    return rows.map((row) => {
+      const portConfiguration = this.portCache.get(row.id) ?? { port: null, status: 'missing' as const, errorCode: 'PORT_FILE_MISSING' as const }
+      return {
+        id: row.id,
+        name: row.name,
+        directory: row.directory,
+        source: row.source,
+        software: row.software,
+        version: row.version,
+        jarName: row.jarName,
+        javaPath: row.javaPath,
+        javaMajor: row.javaMajor,
+        minMemoryMb: row.minMemoryMb,
+        maxMemoryMb: row.maxMemoryMb,
+        port: portConfiguration.port,
+        portStatus: portConfiguration.status,
+        portErrorCode: portConfiguration.errorCode,
+        eula: row.eula,
+        managed: row.managed,
+        worldFolders: parseWorldFolders(row.worldFolders),
+        createdAt: row.createdAt,
+      }
+    })
   }
 
   async listPublic() {
     const rows = await this.list()
-    return rows.map(({ id, name, source, software, version, jarName, javaMajor, minMemoryMb, maxMemoryMb, port, eula, managed, worldFolders, createdAt }) => ({
-      id, name, source, software, version, jarName, javaMajor, minMemoryMb, maxMemoryMb, port, eula, managed, worldFolders, createdAt,
+    return rows.map(({ id, name, source, software, version, jarName, javaMajor, minMemoryMb, maxMemoryMb, port, portStatus, portErrorCode, eula, managed, worldFolders, createdAt }) => ({
+      id, name, source, software, version, jarName, javaMajor, minMemoryMb, maxMemoryMb, port, portStatus, portErrorCode, eula, managed, worldFolders, createdAt,
     }))
   }
 
@@ -196,7 +264,7 @@ export class ServerRegistry {
       directoryName: canonical.split(sep).filter(Boolean).at(-1) ?? 'server',
       ...detected,
       jarName: safeJar,
-      port: validPort(propertyValue(properties, 'server-port')),
+      port: properties === null ? null : parseServerPort(properties).port,
       eula,
       worldFolders,
       alreadyRegistered: Boolean(existing),
@@ -245,6 +313,7 @@ export class ServerRegistry {
       }
       throw error
     }
+    await this.refreshPortConfigurations(true)
     return (await this.list()).find((server) => server.id === id)!
   }
 
