@@ -8,6 +8,8 @@ import { isLocalizedText } from '../src/i18n/catalog'
 const screenshotDir = resolve(process.env['MMSMANAGER_E2E_SCREENSHOT_DIR'] ?? resolve(process.cwd(), '../../reports/screenshots'))
 function screenshotPath(name: string): string { return resolve(screenshotDir, `stage-06h-${name}`) }
 mkdirSync(screenshotDir, { recursive: true })
+const captureReadme = process.env['MMSMANAGER_CAPTURE_README'] === '1'
+const captureReadmeMobile = process.env['MMSMANAGER_CAPTURE_README_MOBILE'] === '1'
 
 let adminPassword = process.env['MMSMANAGER_E2E_ADMIN_PASSWORD']!
 const memberPassword = process.env['MMSMANAGER_E2E_MEMBER_PASSWORD']!
@@ -524,7 +526,7 @@ test('About presents release identity to administrators and members', async ({ p
   expect(favicon.type).toContain('image/svg+xml')
   expect(favicon.source).toContain('<svg')
 
-  if (process.env['MMSMANAGER_CAPTURE_README'] === '1') {
+  if (captureReadme) {
     const directory = resolve(process.cwd(), '../../assets/readme')
     mkdirSync(directory, { recursive: true })
     await page.screenshot({ path: resolve(directory, 'about-desktop.png'), fullPage: true })
@@ -537,18 +539,22 @@ test('About presents release identity to administrators and members', async ({ p
   }
 
   await page.getByRole('button', { name: 'Language & appearance', exact: true }).click()
-  await page.getByLabel('Language').selectOption('ru')
-  await page.getByRole('button', { name: 'О проекте', exact: true }).click()
+  await page.getByLabel('Language').selectOption('en')
+  await page.getByRole('button', { name: 'About', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'MMSManager', level: 3 })).toBeVisible()
-  await expect(page.getByText('Версия', { exact: true })).toBeVisible()
-  await expect(page.getByText('Разработчик', { exact: true })).toBeVisible()
+  await expect(page.getByText('Version', { exact: true })).toBeVisible()
+  await expect(page.getByText('Developer', { exact: true })).toBeVisible()
+  await expect(page.getByText('GNU General Public License v3.0 only', { exact: true })).toBeVisible()
   await page.setViewportSize({ width: 390, height: 844 })
-  const closeNavigation = page.getByRole('button', { name: 'Close navigation' })
-  if (await closeNavigation.isVisible()) await closeNavigation.click()
-  await expect(closeNavigation).toBeHidden()
+  await page.getByRole('button', { name: 'Open navigation' }).click()
+  const closeNavigation = page.locator('.close-mobile')
+  await expect(closeNavigation).toBeVisible()
+  await closeNavigation.click()
+  await expect(page.locator('.sidebar')).not.toHaveClass(/mobile-open/)
+  await expect(page.locator('.mobile-scrim')).toHaveCount(0)
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
   await page.waitForTimeout(250)
-  if (process.env['MMSMANAGER_CAPTURE_README'] === '1') {
+  if (captureReadme || captureReadmeMobile) {
     const directory = resolve(process.cwd(), '../../assets/readme')
     await page.screenshot({ path: resolve(directory, 'about-mobile.png'), fullPage: true })
   }

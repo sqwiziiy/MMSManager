@@ -41,7 +41,7 @@ The captures use an isolated demonstration account and contain no real server re
 </p>
 
 <p align="center">
-  <img src="assets/readme/about-mobile.png" alt="MMSManager About page in Russian on a mobile-sized screen" width="390">
+  <img src="assets/readme/about-mobile.png" alt="MMSManager About page in the English mobile interface" width="390">
 </p>
 
 ## Features

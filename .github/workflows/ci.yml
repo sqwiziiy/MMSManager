@@ -41,7 +41,7 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Run unit and API tests
+      - name: Run API and web tests sequentially
         run: pnpm test
 
       - name: Build applications
