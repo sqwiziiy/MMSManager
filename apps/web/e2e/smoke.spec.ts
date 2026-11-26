@@ -104,6 +104,44 @@ async function expectAccessBadgeFits(page: Page, route: string): Promise<void> {
   expect(geometry.badgeRight, `Administrator badge clipped on ${route}: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(geometry.contentRight + 1)
 }
 
+async function findUnaccentedGreenUi(page: Page): Promise<string[]> {
+  return page.locator('.app-frame').evaluate((frame) => {
+    const intentionalColorAreas = '.world-blocks, .world-scene, .template-visual, .metric-delta, .timeline-change'
+    const properties = ['color', 'backgroundColor', 'borderColor', 'accentColor', 'fill', 'stroke', 'backgroundImage'] as const
+    const findings: string[] = []
+    const colorPattern = /rgba?\([^)]*\)|#[\da-f]{3,8}\b/gi
+    for (const element of frame.querySelectorAll<HTMLElement>('*')) {
+      if (!element.getClientRects().length || element.closest(intentionalColorAreas)) continue
+      const style = getComputedStyle(element)
+      if (style.visibility === 'hidden') continue
+      const label = `${element.tagName.toLowerCase()}.${String(element.className ?? '').trim().replace(/\s+/g, '.')}`
+      for (const property of properties) {
+        for (const color of style[property].match(colorPattern) ?? []) {
+          const channels = color.startsWith('#')
+            ? color.slice(1).match(/[\da-f]{2}/gi)?.map((channel) => Number.parseInt(channel, 16)) ?? []
+            : color.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? []
+          if (channels.length < 3) continue
+          const [red, green, blue] = channels.map((channel) => channel / 255)
+          const maximum = Math.max(red!, green!, blue!)
+          const minimum = Math.min(red!, green!, blue!)
+          const delta = maximum - minimum
+          const saturation = maximum === 0 ? 0 : delta / maximum
+          if (saturation < .18 || maximum < .12) continue
+          let hue = 0
+          if (delta > 0) {
+            if (maximum === red) hue = 60 * (((green! - blue!) / delta) % 6)
+            else if (maximum === green) hue = 60 * ((blue! - red!) / delta + 2)
+            else hue = 60 * ((red! - green!) / delta + 4)
+          }
+          if (hue < 0) hue += 360
+          if (hue >= 65 && hue <= 165) findings.push(`${label} ${property}=${color}`)
+        }
+      }
+    }
+    return findings.slice(0, 12)
+  })
+}
+
 async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   const serverId = 'e03c1cf8-e2a1-4a4e-9de4-4536c7796091'
   const backupId = 'c03c1cf8-e2a1-4a4e-9de4-4536c7796091'
@@ -1410,10 +1448,10 @@ test('operational notifications can be reviewed and marked read on desktop and m
   await page.goto('/settings')
   await page.getByRole('button', { name: 'Notifications' }).click()
   await expect(page.getByText('Server start failed')).toBeVisible()
-  await expect(page.getByText('1 unread')).toBeVisible()
+  await expect(page.getByText('1 unread notification')).toBeVisible()
   await page.screenshot({ path: screenshotPath('stage-06c-notifications-desktop.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('button', { name: 'Mark read' }).click()
-  await expect(page.getByText('0 unread')).toBeVisible()
+  await expect(page.getByText('0 unread notifications')).toBeVisible()
   await expect(page.getByText('Read', { exact: true })).toBeVisible()
   await page.setViewportSize({ width: 390, height: 844 })
   await expectNoHorizontalOverflow(page, 'notifications mobile')
@@ -2011,6 +2049,184 @@ test('I3 accent palettes reach dashboard, servers, access, properties, settings,
   await page.screenshot({ path: screenshotPath('i3-dashboard-clay-light-desktop.png'), fullPage: true, animations: 'disabled' })
   await page.goto(`/servers/${serverId}/danger-zone`)
   expect(await page.locator('.server-detail-title h1').evaluate((heading) => getComputedStyle(heading).color)).toBe(await tokenColor('--text'))
+})
+
+test('accent status and surface tokens cover all palettes in dark and light themes', async ({ page }) => {
+  await signIn(page)
+  await page.setViewportSize({ width: 1280, height: 960 })
+  const palettes = [
+    { name: 'moss', dark: 'rgb(186, 211, 154)', light: 'rgb(82, 107, 63)' },
+    { name: 'blue', dark: 'rgb(150, 188, 232)', light: 'rgb(65, 107, 157)' },
+    { name: 'clay', dark: 'rgb(209, 160, 139)', light: 'rgb(153, 94, 67)' },
+  ] as const
+  const tokenColor = (token: string) => page.locator('.app-frame').evaluate((frame, name) => {
+    const probe = document.createElement('span')
+    probe.style.color = `var(${name})`
+    frame.append(probe)
+    const color = getComputedStyle(probe).color
+    probe.remove()
+    return color
+  }, token)
+  const tokenBackground = (token: string) => page.locator('.app-frame').evaluate((frame, name) => {
+    const probe = document.createElement('span')
+    probe.style.backgroundColor = `var(${name})`
+    frame.append(probe)
+    const color = getComputedStyle(probe).backgroundColor
+    probe.remove()
+    return color
+  }, token)
+
+  for (const palette of palettes) {
+    for (const theme of ['dark', 'light'] as const) {
+      await page.goto('/settings')
+      await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
+      const form = page.locator('form.appearance-form')
+      await form.locator('select').nth(0).selectOption('en')
+      await form.locator('select').nth(1).selectOption(theme)
+      await form.locator('select').nth(2).selectOption(palette.name)
+      const save = form.getByRole('button', { name: 'Save preferences' })
+      await save.hover()
+      await expect.poll(() => save.evaluate((button) => getComputedStyle(button).backgroundColor)).toBe(await tokenColor('--accent-hover'))
+      await save.click()
+      await expect(page.locator('.app-frame')).toHaveClass(new RegExp(`accent-${palette.name}`))
+      if (theme === 'light') await expect(page.locator('.app-frame')).toHaveClass(/theme-light/)
+      else await expect(page.locator('.app-frame')).not.toHaveClass(/theme-light/)
+      expect(await tokenColor('--accent')).toBe(palette[theme])
+
+      const positiveBadge = await page.locator('.app-frame').evaluate((frame) => {
+        const probe = document.createElement('span')
+        probe.className = 'badge badge-good'
+        frame.append(probe)
+        const style = getComputedStyle(probe)
+        const result = { color: style.color, background: style.backgroundColor, border: style.borderColor }
+        probe.remove()
+        return result
+      })
+      expect(positiveBadge).toEqual({ color: await tokenColor('--accent-strong'), background: await tokenBackground('--accent-soft'), border: await tokenColor('--accent-border') })
+      const onlineDot = await page.locator('.app-frame').evaluate((frame) => {
+        const probe = document.createElement('span')
+        probe.className = 'status-dot status-online'
+        frame.append(probe)
+        const color = getComputedStyle(probe).backgroundColor
+        probe.remove()
+        return color
+      })
+      expect(onlineDot).toBe(palette[theme])
+
+      await page.goto('/')
+      await expect(page.locator('.page-content')).toBeVisible()
+      expect(await page.locator('.sidebar').evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(await tokenBackground('--sidebar'))
+      expect(await page.locator('.page-content .card').first().evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(await tokenBackground('--surface'))
+      await page.screenshot({ path: screenshotPath(`palette-${theme}-${palette.name}-dashboard.png`), fullPage: true, animations: 'disabled' })
+      await page.keyboard.press('Control+k')
+      await expect(page.getByRole('dialog', { name: 'Search pages' })).toBeVisible()
+      if (palette.name !== 'moss') {
+        const greenStyles = await findUnaccentedGreenUi(page)
+        expect(greenStyles, `${theme}/${palette.name} quick search retained green styling: ${greenStyles.join('; ')}`).toEqual([])
+      }
+      await page.keyboard.press('Escape')
+    }
+  }
+
+  await page.route('**/api/v1/notifications**', (route) => route.fulfill({ json: { items: [], unreadCount: 0 } }))
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Language & appearance' }).click()
+  const russianForm = page.locator('form.appearance-form')
+  await russianForm.locator('select').nth(0).selectOption('ru')
+  await russianForm.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Уведомления' }).click()
+  await expect(page.locator('.notification-toolbar .badge')).toHaveText('0 непрочитанных уведомлений')
+
+  await page.goto('/settings')
+  await page.getByRole('button', { name: 'Язык и оформление' }).click()
+  const resetForm = page.locator('form.appearance-form')
+  await resetForm.locator('select').nth(0).selectOption('en')
+  await resetForm.locator('select').nth(1).selectOption('dark')
+  await resetForm.locator('select').nth(2).selectOption('moss')
+  await resetForm.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  await expect(page.locator('.app-frame')).not.toHaveClass(/theme-light/)
+  await expect(page.locator('.app-frame')).toHaveClass(/accent-moss/)
+})
+
+test('blue and clay dark themes have no stray green on workspace and server routes', async ({ page }) => {
+  test.setTimeout(180_000)
+  await signIn(page)
+  await page.setViewportSize({ width: 1280, height: 960 })
+  const { serverId } = await mockLocalServer(page)
+  const routes = [
+    '/', '/servers', '/machine', '/machine/history', '/activity', '/backups', '/templates', '/users', '/profile', '/settings',
+    ...['overview', 'console', 'logs', 'players', 'mods', 'files', 'properties', 'worlds', 'runtime', 'backups', 'automation', 'access', 'danger-zone'].map((section) => `/servers/${serverId}/${section}`),
+  ]
+  for (const palette of ['blue', 'clay'] as const) {
+    await page.goto('/settings')
+    await page.getByRole('button', { name: 'Language & appearance' }).click()
+    const form = page.locator('form.appearance-form')
+    await form.locator('select').nth(0).selectOption('en')
+    await form.locator('select').nth(1).selectOption('dark')
+    await form.locator('select').nth(2).selectOption(palette)
+    await form.getByRole('button', { name: 'Save preferences' }).click()
+    for (const route of routes) {
+      await page.goto(route)
+      await expect(page.locator('.page-content')).toBeVisible()
+      const greenStyles = await findUnaccentedGreenUi(page)
+      expect(greenStyles, `dark/${palette} ${route} retained green styling: ${greenStyles.join('; ')}`).toEqual([])
+      if (route.endsWith('/properties')) {
+        const enabledProperty = page.locator('.property-toggle input:checked + span').first()
+        await expect(enabledProperty).toBeVisible()
+        expect(await enabledProperty.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(palette === 'blue' ? 'rgb(150, 188, 232)' : 'rgb(209, 160, 139)')
+      }
+    }
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/')
+    await expect(page.locator('.page-content')).toBeVisible()
+    await page.screenshot({ path: screenshotPath(`palette-dark-${palette}-mobile.png`), fullPage: true, animations: 'disabled' })
+    const greenStyles = await findUnaccentedGreenUi(page)
+    expect(greenStyles, `mobile dark/${palette} dashboard retained green styling: ${greenStyles.join('; ')}`).toEqual([])
+    await page.getByRole('button', { name: 'Open navigation' }).click()
+    expect(await findUnaccentedGreenUi(page)).toEqual([])
+  }
+})
+
+test('blue and clay light themes have no stray green on workspace and server routes', async ({ page }) => {
+  test.setTimeout(180_000)
+  await signIn(page)
+  await page.setViewportSize({ width: 1280, height: 960 })
+  const { serverId } = await mockLocalServer(page)
+  const routes = [
+    '/', '/servers', '/machine', '/machine/history', '/activity', '/backups', '/templates', '/users', '/profile', '/settings',
+    ...['overview', 'console', 'logs', 'players', 'mods', 'files', 'properties', 'worlds', 'runtime', 'backups', 'automation', 'access', 'danger-zone'].map((section) => `/servers/${serverId}/${section}`),
+  ]
+  for (const palette of ['blue', 'clay'] as const) {
+    await page.goto('/settings')
+    await page.getByRole('button', { name: 'Language & appearance' }).click()
+    const form = page.locator('form.appearance-form')
+    await form.locator('select').nth(0).selectOption('en')
+    await form.locator('select').nth(1).selectOption('light')
+    await form.locator('select').nth(2).selectOption(palette)
+    await form.getByRole('button', { name: 'Save preferences' }).click()
+    for (const route of routes) {
+      await page.goto(route)
+      await expect(page.locator('.page-content')).toBeVisible()
+      const greenStyles = await findUnaccentedGreenUi(page)
+      expect(greenStyles, `light/${palette} ${route} retained green styling: ${greenStyles.join('; ')}`).toEqual([])
+      if (route.endsWith('/properties')) {
+        const enabledProperty = page.locator('.property-toggle input:checked + span').first()
+        await expect(enabledProperty).toBeVisible()
+        expect(await enabledProperty.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(palette === 'blue' ? 'rgb(65, 107, 157)' : 'rgb(153, 94, 67)')
+      }
+    }
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/')
+    await expect(page.locator('.page-content')).toBeVisible()
+    await page.screenshot({ path: screenshotPath(`palette-light-${palette}-mobile.png`), fullPage: true, animations: 'disabled' })
+    const greenStyles = await findUnaccentedGreenUi(page)
+    expect(greenStyles, `mobile light/${palette} dashboard retained green styling: ${greenStyles.join('; ')}`).toEqual([])
+    await page.getByRole('button', { name: 'Open navigation' }).click()
+    expect(await findUnaccentedGreenUi(page)).toEqual([])
+  }
 })
 
 test('I3 Russian workspace routes contain no untranslated interface copy', async ({ page }) => {

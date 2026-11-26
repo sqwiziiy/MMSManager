@@ -5,7 +5,7 @@ import type { NotificationsResponse } from '@mmsmanager/shared'
 import { ApiRequestError } from '../api/client'
 import { getNotifications, markNotificationRead } from '../api/notifications'
 import { Badge, Button } from './ui'
-import { currentLocale } from '../i18n/catalog'
+import { currentLocale, pluralCount } from '../i18n/catalog'
 
 function formatTime(value: string): string {
   const date = new Date(value)
@@ -51,7 +51,7 @@ export function NotificationsPanel() {
 
   return <div className="notification-panel" aria-live="polite">
     <div className="notification-toolbar">
-      <div><Badge tone={data?.unreadCount ? 'accent' : 'neutral'}>{loading ? 'Updating' : `${data?.unreadCount ?? 0} unread`}</Badge><span>Operational events from this local workspace</span></div>
+      <div><Badge tone={data?.unreadCount ? 'accent' : 'neutral'}>{loading ? 'Updating' : pluralCount(data?.unreadCount ?? 0, currentLocale(), { en: ['unread notification', 'unread notifications'], ru: ['непрочитанное уведомление', 'непрочитанных уведомления', 'непрочитанных уведомлений'] })}</Badge><span>Operational events from this local workspace</span></div>
       <Button icon={RefreshCw} disabled={loading} onClick={() => void refresh()}>{loading ? 'Refreshing…' : 'Refresh'}</Button>
     </div>
     {error && <div className="notification-error" role="alert"><CircleAlert size={16} /><span>{error}</span><Button onClick={() => void refresh()}>Retry</Button></div>}
