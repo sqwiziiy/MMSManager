@@ -129,15 +129,15 @@ export function LocalServerBackups({ serverId, serverName, managed, canView, can
     <Card className="local-backups-card">
       <SectionHeading title="Backup history" description="Every listed archive has a private manifest and durable checksum ledger." />
       {loading ? <div className="local-backups-empty"><RefreshCw size={16} />Loading real backup inventory…</div>
-        : items.length === 0 ? <div className="local-backups-empty"><Archive size={18} /><span>No real backups yet. Create one while this server is stopped.</span></div>
+        : items.length === 0 ? <div className="local-backups-empty"><Archive size={18} /><span>No backups yet. Create one while this server is stopped.</span></div>
           : <div className="local-backup-list">
             {items.map((backup) => <article className="local-backup-row" key={backup.id}>
               <div className="local-backup-icon"><Archive size={15} /></div>
               <div className="local-backup-row-main"><strong data-no-translate>{formatDateTime(backup.createdAt)}</strong><span><span data-no-translate>{formatBytes(backup.archiveSizeBytes)}</span> archive · <span data-no-translate>{backup.fileCount.toLocaleString(currentLocale())}</span> files · <span data-no-translate>{formatBytes(backup.totalFileBytes)}</span> content</span><small><span data-no-translate>SHA-256 {backup.archiveSha256.slice(0, 16)}…</span> · {backup.excludedCount ? `${backup.excludedCount} excluded paths` : 'no excluded paths'}</small></div>
               <Badge tone={backup.kind === 'manual' ? 'good' : 'neutral'}>{backup.kind === 'manual' ? 'Manual' : 'Pre-restore safety'}</Badge>
               <div className="local-backup-row-actions">
-                <Button icon={ArrowDownToLine} disabled={busy} onClick={() => void download(backup)}>Download</Button>
-                <Button icon={RotateCcw} disabled={busy} onClick={() => void openPreview(backup.id)}>{isAdmin ? 'Preview restore' : 'Inspect archive'}</Button>
+                <Button className="local-row-icon-action" icon={ArrowDownToLine} title={translateText('Download', currentLocale())} aria-label={`${translateText('Download', currentLocale())} ${serverName}`} disabled={busy} onClick={() => void download(backup)} />
+                <Button className="local-row-icon-action" icon={RotateCcw} title={translateText(isAdmin ? 'Preview restore' : 'Inspect archive', currentLocale())} aria-label={`${translateText(isAdmin ? 'Preview restore' : 'Inspect archive', currentLocale())} ${serverName}`} disabled={busy} onClick={() => void openPreview(backup.id)} />
               </div>
             </article>)}
             {truncated && <p className="data-note">Showing the 500 most recent snapshots. Storage usage includes all retained backups.</p>}

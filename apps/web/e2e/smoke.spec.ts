@@ -907,7 +907,7 @@ test('R3 workspace and server screens fit the 390/768/1280/1920px layout matrix'
   }
 
   const { serverId } = await mockLocalServer(page)
-  const serverSections = ['overview', 'console', 'logs', 'players', 'mods', 'files', 'properties', 'worlds', 'runtime', 'backups', 'automation', 'access']
+  const serverSections = ['overview', 'console', 'logs', 'players', 'mods', 'files', 'properties', 'worlds', 'runtime', 'backups', 'automation', 'access', 'danger-zone']
   for (const width of [390, 768, 1280, 1920]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 980 })
     for (const section of serverSections) {
@@ -1230,7 +1230,7 @@ test('managed files edit with recovery, trash and restore at desktop and mobile 
   await trashToggle.click()
   await expect(page.getByText('config/server-note.txt')).toBeVisible()
   await page.once('dialog', (confirm) => void confirm.accept())
-  await page.locator('.local-file-trash-row').getByRole('button', { name: 'Restore' }).click()
+  await page.locator('.local-file-trash-row').getByRole('button', { name: /^Restore config\/server-note\.txt$/ }).click()
   await expect(page.getByRole('button', { name: 'server-note.txt', exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'New folder' }).click()
@@ -1894,6 +1894,14 @@ test('I3 accent palettes reach dashboard, servers, access, properties, settings,
     probe.remove()
     return color
   }, token)
+  const tokenBackground = async (token: string) => page.locator('.app-frame').evaluate((frame, name) => {
+    const probe = document.createElement('span')
+    probe.style.backgroundColor = `var(${name})`
+    frame.append(probe)
+    const color = getComputedStyle(probe).backgroundColor
+    probe.remove()
+    return color
+  }, token)
   const palettes = [
     { name: 'moss', rgb: 'rgb(186, 211, 154)' },
     { name: 'blue', rgb: 'rgb(150, 188, 232)' },
@@ -1913,12 +1921,20 @@ test('I3 accent palettes reach dashboard, servers, access, properties, settings,
     const accentStrong = await tokenColor('--accent-strong')
     const accentSoft = await tokenColor('--accent-soft')
     const accentBorder = await tokenColor('--accent-border')
+    const sidebarSurface = await tokenBackground('--sidebar')
+    const cardSurface = await tokenBackground('--surface')
+    const raisedSurface = await tokenBackground('--surface-raised')
+    const inputSurface = await tokenBackground('--surface-input')
 
     await page.goto('/')
     await expect(page.locator('.live-chart-line')).toHaveCount(1)
     await expect(page.locator('.overview-icon').first()).toBeVisible()
     expect(await page.locator('.live-chart-line').evaluate((line) => getComputedStyle(line).stroke)).toBe(accentColor)
     expect(await page.locator('.overview-icon').first().evaluate((icon) => getComputedStyle(icon).color)).toBe(accentStrong)
+    expect(await page.locator('.sidebar').evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(sidebarSurface)
+    expect(await page.locator('.page-content .card').first().evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(cardSurface)
+    expect(await page.locator('.nav-link.active').first().evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(accentSoft)
+    expect(await page.locator('.nav-link.active').first().evaluate((element) => getComputedStyle(element).borderColor)).toBe(accentBorder)
     await page.screenshot({ path: screenshotPath(`i3-dashboard-${palette.name}-desktop.png`), fullPage: true, animations: 'disabled' })
 
     await page.goto('/servers')
@@ -1927,14 +1943,23 @@ test('I3 accent palettes reach dashboard, servers, access, properties, settings,
     expect(await serverIcon.evaluate((icon) => getComputedStyle(icon).color)).toBe(accentStrong)
     expect(await serverIcon.evaluate((icon) => getComputedStyle(icon).backgroundColor)).toBe(accentSoft)
     expect(await serverIcon.evaluate((icon) => getComputedStyle(icon).borderColor)).toBe(accentBorder)
+    if (palette.name === 'clay') {
+      await page.goto(`/servers/${serverId}/overview`)
+      await expect(page.locator('.server-detail-tabs a.active')).toBeVisible()
+      await page.screenshot({ path: screenshotPath('focused-clay-server-desktop.png'), fullPage: true, animations: 'disabled' })
+    }
 
     await page.goto(`/servers/${serverId}/access`)
+    const activeServerTab = page.locator('.server-detail-tabs a.active')
+    expect(await activeServerTab.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(accentSoft)
+    expect(await activeServerTab.evaluate((element) => getComputedStyle(element).borderColor)).toBe(accentBorder)
     await page.getByRole('button', { name: 'Advanced' }).click()
     const permissionToggle = page.locator('.access-permission-row input[type="checkbox"]').first()
     await expect(permissionToggle).toBeVisible()
     expect(await permissionToggle.evaluate((element) => getComputedStyle(element).accentColor)).toBe(accentColor)
 
     await page.goto(`/servers/${serverId}/properties`)
+    expect(await page.locator('.properties-search').evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(inputSurface)
     const enabledProperty = page.locator('.property-toggle input:checked + span').first()
     await expect(enabledProperty).toBeVisible()
     expect(await enabledProperty.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(accentColor)
@@ -1942,9 +1967,25 @@ test('I3 accent palettes reach dashboard, servers, access, properties, settings,
 
     await page.goto('/settings')
     await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
+    expect(await page.locator('.settings-nav button.selected').evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(accentSoft)
+    expect(await page.locator('.appearance-form select').first().evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(inputSurface)
+    expect(await page.locator('.appearance-form button.button-secondary').evaluate((element) => getComputedStyle(element).backgroundColor)).toBe(raisedSurface)
+    if (palette.name === 'blue') await page.screenshot({ path: screenshotPath('focused-blue-settings-desktop.png'), fullPage: true, animations: 'disabled' })
     const save = page.locator('form.appearance-form').getByRole('button', { name: 'Save preferences' })
     await save.hover()
     await expect.poll(() => save.evaluate((button) => getComputedStyle(button).backgroundColor)).toBe(await tokenColor('--accent-hover'))
+
+    if (palette.name === 'moss' || palette.name === 'blue') {
+      await page.goto('/machine')
+      const rangeGroup = page.getByRole('group', { name: 'History range' })
+      await rangeGroup.getByRole('button', { name: '15m' }).click()
+      await expect(page.locator('.live-chart-line')).toHaveCount(1)
+      expect(await page.locator('.live-chart-line').evaluate((line) => getComputedStyle(line).stroke)).toBe(accentColor)
+      await page.screenshot({ path: screenshotPath(`focused-chart-${palette.name}-15m-desktop.png`), fullPage: true, animations: 'disabled' })
+      await rangeGroup.getByRole('button', { name: '7d' }).click()
+      await expect(page.locator('.live-chart-line')).toHaveCount(1)
+      await page.screenshot({ path: screenshotPath(`focused-chart-${palette.name}-7d-desktop.png`), fullPage: true, animations: 'disabled' })
+    }
 
     await page.goto('/')
     await page.locator('.top-create').click()
@@ -1968,6 +2009,8 @@ test('I3 accent palettes reach dashboard, servers, access, properties, settings,
   await expect(page.locator('.live-chart-line')).toHaveCount(1)
   expect(await page.locator('.live-chart-line').evaluate((line) => getComputedStyle(line).stroke)).toBe('rgb(153, 94, 67)')
   await page.screenshot({ path: screenshotPath('i3-dashboard-clay-light-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.goto(`/servers/${serverId}/danger-zone`)
+  expect(await page.locator('.server-detail-title h1').evaluate((heading) => getComputedStyle(heading).color)).toBe(await tokenColor('--text'))
 })
 
 test('I3 Russian workspace routes contain no untranslated interface copy', async ({ page }) => {
@@ -1986,7 +2029,7 @@ test('I3 Russian workspace routes contain no untranslated interface copy', async
   await page.keyboard.press('Escape')
   await expect(quickSearch).toHaveCount(0)
   const { serverId } = await mockLocalServer(page)
-  const routes = ['/', '/servers', '/machine', '/machine/history', '/activity', '/backups', '/templates', '/users', '/profile', '/settings', ...['overview', 'console', 'logs', 'players', 'mods', 'files', 'properties', 'worlds', 'runtime', 'backups', 'automation', 'access'].map((section) => `/servers/${serverId}/${section}`)]
+  const routes = ['/', '/servers', '/machine', '/machine/history', '/activity', '/backups', '/templates', '/users', '/profile', '/settings', ...['overview', 'console', 'logs', 'players', 'mods', 'files', 'properties', 'worlds', 'runtime', 'backups', 'automation', 'access', 'danger-zone'].map((section) => `/servers/${serverId}/${section}`)]
   const unmapped: Array<{ route: string; value: string; source: string }> = []
   for (const route of routes) {
     await page.goto(route)
@@ -2199,6 +2242,11 @@ test('R9 permanent server removal requires typed confirmation in Russian on mobi
   })
   await page.goto('/servers')
   await page.getByRole('link', { name: /Local Fixture/ }).click()
+  await page.getByRole('link', { name: 'Опасная зона' }).click()
+  await page.screenshot({ path: screenshotPath('focused-danger-zone-ru-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'Russian danger zone at 390px')
+  await page.screenshot({ path: screenshotPath('focused-danger-zone-ru-mobile.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('button', { name: 'Навсегда удалить сервер' }).click()
   const dialog = page.getByRole('dialog', { name: 'Навсегда удалить файлы сервера' })
   const confirmation = dialog.getByRole('textbox')
@@ -2214,4 +2262,43 @@ test('R9 permanent server removal requires typed confirmation in Russian on mobi
   await deleteButton.click()
   await expect(page).toHaveURL(/\/servers$/)
   await expect.poll(() => removalBody).toEqual({ mode: 'permanent', confirmation: 'Local Fixture' })
+})
+
+test('administrator reviews a Russian warning before streaming a stopped server ZIP export', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.locator('.profile-trigger')).toBeVisible()
+  await page.setViewportSize({ width: 1280, height: 960 })
+  await page.goto('/settings')
+  await page.getByRole('button', { name: /^(Language & appearance|Язык и оформление)$/ }).click()
+  const appearance = page.locator('form.appearance-form')
+  await appearance.locator('select').nth(0).selectOption('ru')
+  await appearance.locator('.settings-footer button').last().click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ru')
+  const { serverId } = await mockLocalServer(page, 'stopped')
+  let exportRequested = false
+  await page.route(`**/api/v1/admin/servers/${serverId}/export.zip`, async (route) => {
+    exportRequested = true
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/zip',
+      headers: { 'content-disposition': `attachment; filename="server-${serverId.slice(0, 8)}.zip"; filename*=UTF-8''Local%20Fixture-${serverId.slice(0, 8)}.zip` },
+      body: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+    })
+  })
+  await page.goto(`/servers/${serverId}/files`)
+  const exportButton = page.getByRole('button', { name: 'Скачать сервер' })
+  await expect(exportButton).toBeVisible()
+  await exportButton.click()
+  const dialog = page.getByRole('dialog', { name: 'Подготовить архив сервера' })
+  await expect(dialog.getByText(/пароли или личные данные/)).toBeVisible()
+  await expect(dialog.getByText(/База панели, сеансы, секреты приложения/)).toBeVisible()
+  await page.screenshot({ path: screenshotPath('focused-server-export-ru-desktop.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expectNoHorizontalOverflow(page, 'Russian server export warning at 390px')
+  await page.screenshot({ path: screenshotPath('focused-server-export-ru-mobile.png'), fullPage: true, animations: 'disabled' })
+  const downloadPromise = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: 'Скачать ZIP' }).click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toBe(`Local Fixture-${serverId.slice(0, 8)}.zip`)
+  expect(exportRequested).toBe(true)
 })

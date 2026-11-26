@@ -6,7 +6,7 @@ import { getInstallCatalog } from '../api/servers'
 import { apiErrorMessage } from '../api/client'
 import { createServerTemplate, deleteServerTemplate, duplicateServerTemplate, getServerTemplates, updateServerTemplate } from '../api/templates'
 import { useAuth } from '../state/use-auth'
-import { currentLocale } from '../i18n/catalog'
+import { currentLocale, translateText } from '../i18n/catalog'
 import { Badge, Button, Card, EmptyNote, PageHeading } from '../components/ui'
 
 type EditorState = 'new' | ServerTemplate | null
@@ -85,22 +85,26 @@ export function TemplatesPage({ onCreate }: { onCreate: (template: ServerTemplat
 
   return <div className="page-stack">
     <PageHeading title="Templates" description="Saved safe defaults for creating local servers. A template never installs software or starts a server." actions={isAdmin ? <Button kind="primary" icon={Plus} onClick={openCreate}>New template</Button> : undefined} />
-    <Card className="template-safety-note"><span><Layers3 size={16} /></span><div><strong>What a template remembers</strong><p>Server name, software version and memory range. Paths, Java choice, game port, EULA, online mode, credentials and world data always stay outside templates.</p><small>Version checks read provider metadata only. This screen does not download server files.</small></div></Card>
+    <Card className="template-safety-note"><span><Layers3 size={16} /></span><div><strong>What a template remembers</strong><p>Server name, software version and memory range. Paths, Java choice, game port, EULA, online mode, credentials and world data always stay outside templates.</p><small>Version checks read provider metadata only.</small></div></Card>
     {notice && <div className="notice-banner notice-success" role="status"><Check size={15} /><span>{notice}</span></div>}
     {error && <div className="monitor-offline-banner" role="alert"><span><AlertTriangle size={16} /><strong>Template action needs attention</strong><small>{error}</small></span><Button icon={RefreshCw} onClick={() => void load()}>Retry</Button></div>}
     {loading ? <Card><div className="local-server-empty"><span className="loading-pulse" />Loading saved templates…</div></Card>
       : templates.length ? <div className="template-grid">{templates.map((template) => {
         const versionUnavailable = support[template.id] === 'unsupported'
+        const checkLabel = `${translateText('Check version support', currentLocale())} · ${template.name}`
+        const duplicateLabel = `${translateText('Duplicate template', currentLocale())} · ${template.name}`
+        const editLabel = `${translateText('Edit', currentLocale())} · ${template.name}`
+        const deleteLabel = `${translateText('Delete', currentLocale())} · ${template.name}`
         return <Card className="template-card" key={template.id}>
           <div className="template-card-heading"><span className="template-icon"><Layers3 size={17} /></span><div><strong>{template.name}</strong><small>{template.software[0]!.toUpperCase() + template.software.slice(1)} · {template.version}</small></div>{supportBadge(template)}</div>
           <div className="template-specs"><div><span>Memory range</span><strong>{template.minMemoryMb.toLocaleString(currentLocale())}–{template.maxMemoryMb.toLocaleString(currentLocale())} MB</strong></div><div><span>Last updated</span><strong>{new Intl.DateTimeFormat(currentLocale(), { dateStyle: 'medium' }).format(new Date(template.updatedAt))}</strong></div></div>
           <div className="template-card-note">Java, port and EULA are chosen separately in the create wizard.</div>
           <div className="template-actions">
-            {isAdmin && <Button kind="primary" icon={Server} disabled={versionUnavailable} title={versionUnavailable ? 'This version is no longer in the available catalog.' : undefined} onClick={() => onCreate(template)}>Use template</Button>}
-            {isAdmin && <Button kind="quiet" icon={RefreshCw} disabled={support[template.id] === 'checking'} title="Read the current version catalog; no server binary is downloaded." aria-label={`Check version support for ${template.name}`} onClick={() => void checkSupport(template)} />}
-            {isAdmin && <Button kind="quiet" icon={Copy} disabled={busy} aria-label={`Duplicate ${template.name}`} onClick={() => void duplicate(template)} />}
-            {isAdmin && <Button kind="quiet" icon={Pencil} disabled={busy} aria-label={`Edit ${template.name}`} onClick={() => openEdit(template)} />}
-            {isAdmin && <Button kind="quiet" icon={Trash2} disabled={busy} aria-label={`Delete ${template.name}`} onClick={() => setRemoveTarget(template)} />}
+            {isAdmin && <Button kind="primary" icon={Server} disabled={versionUnavailable} title={versionUnavailable ? translateText('This version is no longer in the available catalog.', currentLocale()) : undefined} onClick={() => onCreate(template)}>{translateText('Use template', currentLocale())}</Button>}
+            {isAdmin && <Button kind="quiet" icon={RefreshCw} disabled={support[template.id] === 'checking'} title={checkLabel} aria-label={checkLabel} onClick={() => void checkSupport(template)} />}
+            {isAdmin && <Button kind="quiet" icon={Copy} disabled={busy} title={duplicateLabel} aria-label={duplicateLabel} onClick={() => void duplicate(template)} />}
+            {isAdmin && <Button kind="quiet" icon={Pencil} disabled={busy} title={editLabel} aria-label={editLabel} onClick={() => openEdit(template)} />}
+            {isAdmin && <Button kind="quiet" icon={Trash2} disabled={busy} title={deleteLabel} aria-label={deleteLabel} onClick={() => setRemoveTarget(template)} />}
           </div>
         </Card>
       })}</div> : <Card><EmptyNote icon={Layers3} title="No templates saved" detail={isAdmin ? 'Create a reusable preset for the safe server details you choose often.' : 'An administrator has not shared a server template yet.'} />{isAdmin && <div className="empty-state-actions"><Button kind="secondary" icon={Plus} onClick={openCreate}>Create first template</Button></div>}</Card>}

@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { eq } from 'drizzle-orm'
-import { localServerEvents, localServerFileRecoveries, localServerFileTrash, localServers, users } from '../db/schema.js'
+import yauzl from 'yauzl'
+import { localServerEvents, localServerFileRecoveries, localServerFileTrash, localServerRuntime, localServers, users } from '../db/schema.js'
 import { openDatabase } from '../db/client.js'
 import { ServerRegistry } from './registry.js'
 import { ServerProcessManager } from './processes.js'
@@ -181,6 +182,74 @@ describe('managed server file manager', () => {
     await expect(mountedService.uploadBatch(managedId, userId, '', { files: [], directories: ['mounted'] }, (async function* () {})()))
       .rejects.toMatchObject({ code: 'FILE_MOUNT_REJECTED' })
     expect(await readdir(serverDirectory)).not.toContain('mounted')
+  })
+
+  it('streams a stopped managed server as ZIP64, retaining protected Minecraft files and excluding panel-private data', async () => {
+    const now = new Date().toISOString()
+    await opened.db.insert(localServerRuntime).values({ serverId: managedId, status: 'stopped', updatedAt: now, restartRequired: false }).run()
+    await mkdir(join(serverDirectory, '.mmsmanager', 'trash'), { recursive: true })
+    await mkdir(join(serverDirectory, 'empty-folder'))
+    await writeFile(join(serverDirectory, '.mmsmanager', 'trash', 'private.bin'), 'panel private bytes')
+    await writeFile(join(serverDirectory, 'config', 'mod.json'), '{"enabled":true}')
+    await symlink(outside, join(serverDirectory, 'outside-link.txt'))
+    await link(join(serverDirectory, 'readme.txt'), join(serverDirectory, 'hard-linked.txt'))
+
+    const result = await service.exportZip(managedId, userId)
+    expect(result.fileName).toMatch(/^Files Fixture-[0-9a-f]{8}\.zip$/)
+    await expect(processes.withStoppedServerOperation(managedId, async () => true)).rejects.toMatchObject({ code: 'SERVER_FILE_BUSY' })
+    const chunks: Buffer[] = []
+    for await (const chunk of result.stream) chunks.push(Buffer.from(chunk))
+    const bytes = Buffer.concat(chunks)
+    expect(bytes.subarray(0, 4)).toEqual(Buffer.from([0x50, 0x4b, 0x03, 0x04]))
+
+    const files = new Map<string, Buffer>()
+    await new Promise<void>((resolveZip, rejectZip) => {
+      yauzl.fromBuffer(bytes, { lazyEntries: true, validateEntrySizes: true }, (error, zip) => {
+        if (error || !zip) { rejectZip(error ?? new Error('ZIP could not be opened')); return }
+        zip.on('error', rejectZip)
+        zip.on('end', () => resolveZip())
+        zip.on('entry', (entry) => {
+          if (entry.fileName.endsWith('/')) { files.set(entry.fileName, Buffer.alloc(0)); zip.readEntry(); return }
+          zip.openReadStream(entry, (streamError, stream) => {
+            if (streamError || !stream) { rejectZip(streamError ?? new Error('ZIP entry could not be read')); return }
+            const entryChunks: Buffer[] = []
+            stream.on('data', (chunk: Buffer) => entryChunks.push(Buffer.from(chunk)))
+            stream.on('error', rejectZip)
+            stream.on('end', () => { files.set(entry.fileName, Buffer.concat(entryChunks)); zip.readEntry() })
+          })
+        })
+        zip.readEntry()
+      })
+    })
+    expect(files.get('server.jar')?.toString()).toBe('protected jar placeholder')
+    expect(files.get('server.properties')?.toString()).toContain('rcon.password=do-not-show')
+    expect(files.get('world/level.dat')?.toString()).toBe('world data')
+    expect(files.get('config/mod.json')?.toString()).toBe('{"enabled":true}')
+    expect(files.has('empty-folder/')).toBe(true)
+    expect([...files.keys()].some((name) => name.includes('.mmsmanager') || name.includes('outside-link') || name.includes('hard-linked'))).toBe(false)
+    await expect(processes.withStoppedServerOperation(managedId, async () => true)).resolves.toBe(true)
+    expect((await opened.db.select().from(localServerEvents).where(eq(localServerEvents.serverId, managedId)).all()).map((event) => event.action)).toContain('server-export-created')
+    expect(await readFile(outside, 'utf8')).toBe('outside stays private')
+  })
+
+  it('refuses server exports unless the runtime is explicitly stopped', async () => {
+    const now = new Date().toISOString()
+    await opened.db.insert(localServerRuntime).values({ serverId: managedId, status: 'running', updatedAt: now, restartRequired: false }).run()
+    await expect(service.exportZip(managedId, userId)).rejects.toMatchObject({ code: 'SERVER_NOT_STOPPED' })
+    await opened.db.update(localServerRuntime).set({ status: 'stopped', updatedAt: now }).where(eq(localServerRuntime.serverId, managedId)).run()
+    await expect(service.exportZip(importedId, userId)).rejects.toMatchObject({ code: 'SERVER_NOT_PANEL_MANAGED' })
+  })
+
+  it('keeps the managed-file lock until a cancelled archive stream closes', async () => {
+    const now = new Date().toISOString()
+    await opened.db.insert(localServerRuntime).values({ serverId: managedId, status: 'stopped', updatedAt: now, restartRequired: false }).run()
+    const archive = await service.exportZip(managedId, userId)
+    let resolveClose!: () => void
+    const closed = new Promise<void>((resolveCloseEvent) => { resolveClose = resolveCloseEvent })
+    archive.stream.once('close', resolveClose)
+    archive.cancel()
+    await closed
+    await expect(processes.withStoppedServerOperation(managedId, async () => true)).resolves.toBe(true)
   })
 
   it('keeps file edits atomic, creates private recoveries, restores them and detects stale writes', async () => {

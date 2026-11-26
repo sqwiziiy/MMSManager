@@ -478,8 +478,8 @@ export async function createApiApp(options: {
     }
     if (error instanceof ServerFilesError) {
       const status = error.code.endsWith('_NOT_FOUND') ? 404
-        : error.code.includes('CONFLICT') || error.code.includes('ALREADY_EXISTS') || error.code.includes('BUSY') || error.code.includes('PROTECTED') || error.code.includes('UNSAFE') || error.code.includes('NOT_PANEL_MANAGED') ? 409
-          : error.code.includes('TOO_LARGE') ? 413
+        : error.code.includes('CONFLICT') || error.code.includes('ALREADY_EXISTS') || error.code.includes('BUSY') || error.code.includes('PROTECTED') || error.code.includes('UNSAFE') || error.code.includes('NOT_PANEL_MANAGED') || error.code.includes('NOT_STOPPED') ? 409
+          : error.code.includes('LIMIT') || error.code.includes('TOO_LARGE') ? 413
             : error.code.includes('UNAVAILABLE') ? 503 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
@@ -985,6 +985,17 @@ export async function createApiApp(options: {
     reply.header('cache-control', 'private, no-store')
     reply.header('x-content-type-options', 'nosniff')
     return reply.send(download.bytes)
+  })
+  app.get('/api/v1/admin/servers/:serverId/export.zip', { preHandler: requireAdmin }, async (request, reply) => {
+    const params = parse(localServerIdSchema, request.params)
+    const archive = await files.exportZip(params.serverId, request.principal!.userId)
+    reply.header('content-type', 'application/zip')
+    reply.header('content-disposition', `attachment; filename="server-${params.serverId.slice(0, 8)}.zip"; filename*=UTF-8''${encodeURIComponent(archive.fileName)}`)
+    reply.header('cache-control', 'private, no-store')
+    reply.header('x-content-type-options', 'nosniff')
+    reply.header('x-accel-buffering', 'no')
+    reply.raw.once('close', () => { if (!reply.raw.writableEnded) archive.cancel() })
+    return reply.send(archive.stream)
   })
   app.post('/api/v1/admin/servers/:serverId/files/upload', { preHandler: requireServerCapability('manageFiles', true) }, async (request, reply) => {
     const params = parse(localServerIdSchema, request.params)

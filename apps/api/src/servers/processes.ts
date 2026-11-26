@@ -414,6 +414,12 @@ export class ServerProcessManager {
 
   /** Holds the shared start/file-operation lock and permits archive work only for a known stopped managed server. */
   async withStoppedServerOperation<T>(serverId: string, operation: () => Promise<T>, allowPendingRestore = false): Promise<T> {
+    const release = await this.acquireStoppedServerOperation(serverId, allowPendingRestore)
+    try { return await operation() } finally { release() }
+  }
+
+  /** Holds the stopped-server lock until a streaming caller explicitly releases it. */
+  async acquireStoppedServerOperation(serverId: string, allowPendingRestore = false): Promise<() => void> {
     if (this.lifecycleOperations.has(serverId) || this.starting.has(serverId) || this.fileMutations.has(serverId)) throw new ServerProcessError('SERVER_FILE_BUSY', 'Another server lifecycle or file operation is already in progress.')
     const server = this.serverRow(serverId)
     this.requirePanelManaged(server)
@@ -431,8 +437,16 @@ export class ServerProcessManager {
           .where(and(eq(localServerBackupRestores.serverId, serverId), sql`${localServerBackupRestores.status} IN ('prepared', 'recovery-required')`)).get()
         if (unresolved) throw new ServerProcessError('SERVER_RESTORE_RECOVERY_REQUIRED', 'A previous restore needs recovery before another backup operation can run.')
       }
-      return await operation()
-    } finally { this.fileMutations.delete(serverId) }
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        this.fileMutations.delete(serverId)
+      }
+    } catch (error) {
+      this.fileMutations.delete(serverId)
+      throw error
+    }
   }
 
   /** Serializes a server removal against start, process lifecycle, file, backup, and restore operations. */

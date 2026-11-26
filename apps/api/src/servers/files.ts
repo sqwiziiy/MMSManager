@@ -1,14 +1,20 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
+import { createRequire } from 'node:module'
 import { chmod, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, unlink } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { desc, eq, isNull, and } from 'drizzle-orm'
+import { Readable } from 'node:stream'
+import type { Archiver, ArchiverOptions } from 'archiver'
+import { desc, eq, isNull, and, sql } from 'drizzle-orm'
 import type { AppDatabase } from '../db/client.js'
-import { localServerEvents, localServerFileRecoveries, localServerFileTrash, localServerRuntime, localServers } from '../db/schema.js'
+import { localServerAutomationJobs, localServerEvents, localServerFileRecoveries, localServerFileTrash, localServerRuntime, localServers, serverInstallOperations } from '../db/schema.js'
 import type { ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash } from '@mmsmanager/shared'
 import type { ServerRegistry } from './registry.js'
 import type { ServerProcessManager } from './processes.js'
 import { longestMountForPath, parseLinuxMountInfo } from '../machine/storage-volumes.js'
+
+const require = createRequire(import.meta.url)
+const createArchive = require('archiver') as (format: 'zip', options: ArchiverOptions) => Archiver
 
 export const MAX_SERVER_FILE_UPLOAD_BYTES = 64 * 1024 * 1024
 export const MAX_SERVER_FILE_UPLOAD_BATCH_BYTES = 256 * 1024 * 1024
@@ -18,6 +24,10 @@ export const MAX_SERVER_FILE_UPLOAD_PATH_DEPTH = 16
 export const MAX_SERVER_FILE_UPLOAD_MANIFEST_BYTES = 64 * 1024
 export const MAX_SERVER_FILE_DOWNLOAD_BYTES = 16 * 1024 * 1024
 export const MAX_SERVER_FILE_TEXT_BYTES = 512 * 1024
+export const MAX_SERVER_EXPORT_ENTRIES = 100_000
+export const MAX_SERVER_EXPORT_BYTES = 256 * 1024 * 1024 * 1024
+export const MAX_CONCURRENT_SERVER_EXPORTS = 2
+const MAX_SERVER_EXPORT_DEPTH = 16
 const MAX_DIRECTORY_ENTRIES = 500
 const TEXT_EXTENSIONS = new Set(['.txt', '.log', '.md', '.json', '.yaml', '.yml', '.toml', '.xml', '.csv', '.cfg', '.ini', '.conf'])
 const SCRIPT_EXTENSIONS = new Set(['.sh', '.bash', '.zsh', '.fish', '.bat', '.cmd', '.ps1', '.exe', '.dll', '.so', '.dylib', '.jar', '.class', '.py', '.js', '.ts', '.mjs', '.cjs', '.mcfunction', '.lua', '.wasm'])
@@ -104,10 +114,18 @@ function entryState(parts: string[], stat: Awaited<ReturnType<typeof lstat>>, is
 }
 
 type SafeFile = { absolute: string; stat: Awaited<ReturnType<typeof lstat>>; bytes?: Buffer }
+type ServerExportEntry = { relativePath: string; absolutePath: string; stat: Awaited<ReturnType<typeof lstat>>; directory: boolean }
+
+export type ServerExportStream = {
+  stream: Archiver
+  fileName: string
+  cancel: () => void
+}
 
 export class ServerFileService {
   private readonly recoveryRoot: string
   private readonly mutations = new Set<string>()
+  private activeExports = 0
 
   constructor(
     private readonly db: AppDatabase,
@@ -181,6 +199,120 @@ export class ServerFileService {
     const file = await this.openRegular(root, parts, MAX_SERVER_FILE_DOWNLOAD_BYTES)
     if (file.stat.size > MAX_SERVER_FILE_DOWNLOAD_BYTES) throw new ServerFilesError('FILE_TOO_LARGE', 'Downloads are limited to 16 MiB per file.')
     return { name: parts.at(-1)!, bytes: file.bytes! }
+  }
+
+  async exportZip(serverId: string, actorUserId: string): Promise<ServerExportStream> {
+    if (this.activeExports >= MAX_CONCURRENT_SERVER_EXPORTS) throw new ServerFilesError('SERVER_EXPORT_BUSY', 'Another server archive is already being prepared.')
+    this.activeExports += 1
+    let release: (() => void) | null = null
+    let finished = false
+    const finish = () => {
+      if (finished) return
+      finished = true
+      release?.()
+      this.activeExports = Math.max(0, this.activeExports - 1)
+    }
+
+    try {
+      release = await this.processes.acquireStoppedServerOperation(serverId)
+      const root = await this.serverRoot(serverId)
+      const server = this.db.select({ name: localServers.name }).from(localServers).where(eq(localServers.id, serverId)).get()
+      if (!server) throw new ServerFilesError('SERVER_NOT_FOUND', 'The registered server was not found.')
+      const runtime = this.db.select({ status: localServerRuntime.status }).from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+      if (runtime?.status !== 'stopped') throw new ServerFilesError('SERVER_NOT_STOPPED', 'A full server archive is available only while the server is stopped.')
+      const activeAutomation = this.db.select({ id: localServerAutomationJobs.id }).from(localServerAutomationJobs)
+        .where(and(eq(localServerAutomationJobs.serverId, serverId), eq(localServerAutomationJobs.status, 'running'))).get()
+      if (activeAutomation) throw new ServerFilesError('SERVER_EXPORT_BUSY', 'A scheduled backup is currently running for this server.')
+      const activeInstall = this.db.select({ id: serverInstallOperations.id }).from(serverInstallOperations)
+        .where(and(eq(serverInstallOperations.serverId, serverId), sql`${serverInstallOperations.status} IN ('pending', 'downloading', 'validating')`)).get()
+      if (activeInstall) throw new ServerFilesError('SERVER_EXPORT_BUSY', 'A server installation operation is still active.')
+
+      const mountInfo = await this.readMountInfo().catch(() => '')
+      const mounts = parseLinuxMountInfo(mountInfo)
+      const rootMount = longestMountForPath(root, mounts)
+      if (!rootMount) throw new ServerFilesError('SERVER_EXPORT_MOUNT_UNAVAILABLE', 'The managed server storage mount could not be verified.')
+      const entries: ServerExportEntry[] = []
+      let totalBytes = 0
+      let excludedEntries = 0
+      const rootStat = await lstat(root)
+
+      const scan = async (directory: string, prefix: string, depth: number): Promise<void> => {
+        if (depth > MAX_SERVER_EXPORT_DEPTH) throw new ServerFilesError('SERVER_EXPORT_LIMIT', 'The server folder exceeds the maximum archive depth.')
+        const children = await readdir(directory, { withFileTypes: true })
+        for (const child of children) {
+          const relativePath = prefix ? `${prefix}/${child.name}` : child.name
+          let parts: string[]
+          try { parts = safeParts(relativePath) } catch (error) {
+            if (error instanceof ServerFilesError && error.code === 'FILE_PATH_PROTECTED') { excludedEntries += 1; continue }
+            throw new ServerFilesError('SERVER_EXPORT_UNSAFE_PATH', 'A server folder item has a path that cannot be safely archived.')
+          }
+          const absolutePath = join(directory, child.name)
+          const stat = await lstat(absolutePath).catch(() => null)
+          if (!stat) throw new ServerFilesError('SERVER_EXPORT_CHANGED', 'The server folder changed while its archive was being prepared.')
+          const mount = longestMountForPath(absolutePath, mounts)
+          if (!mount || mount.mountPoint !== rootMount.mountPoint || stat.dev !== rootStat.dev || stat.isSymbolicLink()) { excludedEntries += 1; continue }
+          const isDirectory = stat.isDirectory()
+          const isRegularFile = stat.isFile() && stat.nlink === 1
+          if (!isDirectory && !isRegularFile) { excludedEntries += 1; continue }
+          if (entries.length >= MAX_SERVER_EXPORT_ENTRIES) throw new ServerFilesError('SERVER_EXPORT_LIMIT', 'The server folder contains too many archive entries.')
+          entries.push({ relativePath: parts.join('/'), absolutePath, stat, directory: isDirectory })
+          if (isRegularFile) {
+            totalBytes += stat.size
+            if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_SERVER_EXPORT_BYTES) throw new ServerFilesError('SERVER_EXPORT_TOO_LARGE', 'The server folder exceeds the 256 GiB archive limit.')
+          } else {
+            if (depth >= MAX_SERVER_EXPORT_DEPTH) {
+              const grandchildren = await readdir(absolutePath)
+              if (grandchildren.length) throw new ServerFilesError('SERVER_EXPORT_LIMIT', 'The server folder exceeds the maximum archive depth.')
+            } else await scan(absolutePath, parts.join('/'), depth + 1)
+          }
+        }
+      }
+      await scan(root, '', 1)
+
+      const archive = createArchive('zip', { forceZip64: true, zlib: { level: 0 } })
+      const safeName = server.name.normalize('NFKC').replace(/[^\p{L}\p{N}._ -]+/gu, '-').replace(/^\.+|\.+$/g, '').trim().slice(0, 48) || 'server'
+      const fileName = `${safeName}-${serverId.slice(0, 8)}.zip`
+      archive.on('error', () => archive.destroy())
+      archive.on('close', finish)
+      archive.on('end', finish)
+
+      for (const entry of entries) {
+        if (entry.directory) {
+          archive.append(Buffer.alloc(0), { name: `${entry.relativePath}/`, type: 'directory', date: entry.stat.mtime, mode: Number(entry.stat.mode) })
+          continue
+        }
+        const source = Readable.from((async function* () {
+          const canonical = await realpath(entry.absolutePath).catch(() => '')
+          if (!canonical || !within(root, canonical) || canonical !== entry.absolutePath) throw new ServerFilesError('SERVER_EXPORT_CHANGED', 'A server file changed while its archive was being read.')
+          const handle = await open(entry.absolutePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+          try {
+            const current = await handle.stat()
+            if (!current.isFile() || current.dev !== entry.stat.dev || current.ino !== entry.stat.ino || current.nlink !== 1 || current.size !== entry.stat.size) {
+              throw new ServerFilesError('SERVER_EXPORT_CHANGED', 'A server file changed while its archive was being read.')
+            }
+            const input = handle.createReadStream({ autoClose: false })
+            try { for await (const chunk of input) yield chunk as Buffer } finally { input.destroy() }
+          } finally { await handle.close().catch(() => undefined) }
+        })())
+        archive.append(source, { name: entry.relativePath, date: entry.stat.mtime, mode: Number(entry.stat.mode), store: true })
+      }
+
+      this.audit(serverId, actorUserId, 'server-export-created', { fileCount: entries.filter((entry) => !entry.directory).length, entryCount: entries.length, excludedCount: excludedEntries, totalBytes })
+      const cancel = () => {
+        if (finished) return
+        archive.abort()
+        archive.destroy()
+      }
+      void archive.finalize().catch(() => { archive.destroy() })
+      return { stream: archive, fileName, cancel }
+    } catch (error) {
+      finish()
+      if (error instanceof ServerFilesError) throw error
+      if (error instanceof Error && 'code' in error && typeof error.code === 'string' && error.code.startsWith('SERVER_')) {
+        throw new ServerFilesError(error.code, error.message)
+      }
+      throw new ServerFilesError('SERVER_EXPORT_FAILED', 'The server archive could not be prepared.')
+    }
   }
 
   async upload(serverId: string, actorUserId: string, directoryPath: string, name: string, stream: AsyncIterable<Buffer | string>, truncated: () => boolean): Promise<ServerFileList> {

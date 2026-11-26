@@ -29,6 +29,10 @@ describe('English and Russian interface catalog', () => {
     expect(calendarDay).toBe('понедельник, 2 ноября 2026 г.. Нет данных')
     expect(isLocalizedText(calendarDay, 'ru')).toBe(true)
     expect(isLocalizedText('25 нояб. 2026 г.. No data', 'ru')).toBe(false)
+    expect(isLocalizedText('Отключить учётную запись stage-admin', 'ru')).toBe(true)
+    expect(isLocalizedText('Карантин fixture-plugin.jar', 'ru')).toBe(true)
+    expect(isLocalizedText('Проверить архив Local Fixture', 'ru')).toBe(true)
+    expect(translateText('Unsafe', 'ru')).toBe('Небезопасно')
   })
 
   it('keeps supplemental route phrases paired, while preserving literal property values', () => {

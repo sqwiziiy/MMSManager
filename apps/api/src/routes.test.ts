@@ -366,6 +366,7 @@ describe('authenticated local API', () => {
     expect((await saveGrant(scoped({ manageFiles: true }))).statusCode).toBe(400)
     const fileManager = await saveGrant(scoped({ viewFiles: true, manageFiles: true }))
     expect(fileManager.statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/export.zip`, headers: memberHeaders })).statusCode).toBe(403)
     expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/files/create`, headers: memberHeaders, payload: { path: 'member-created.txt', kind: 'file' } })).statusCode).toBe(201)
     const properties = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/properties`, headers: adminHeaders })
     const propertyUpdate = await saveGrant(scoped({ viewSettings: true, manageSettings: true }))
@@ -1014,6 +1015,12 @@ describe('authenticated local API', () => {
       serverId, items: [], truncated: false, storageUsedBytes: 0, storageLimitBytes: expect.any(Number),
       quotaWarning: false, runtimeStatus: 'stopped',
     })
+    const serverArchive = await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/export.zip`, headers: adminHeaders })
+    expect(serverArchive.statusCode, serverArchive.body).toBe(200)
+    expect(serverArchive.headers['content-type']).toContain('application/zip')
+    expect(serverArchive.headers['content-disposition']).toContain(`Backup%20Fixture-${serverId.slice(0, 8)}.zip`)
+    expect(Buffer.from(serverArchive.rawPayload).subarray(0, 4)).toEqual(Buffer.from([0x50, 0x4b, 0x03, 0x04]))
+    expect(Buffer.from(serverArchive.rawPayload).includes(Buffer.from('level-name=world'))).toBe(true)
     const created = await app.inject({ method: 'POST', url: route, headers: adminHeaders, payload: {} })
     expect(created.statusCode, created.body).toBe(201)
     const backupId = created.json().backup.id as string
