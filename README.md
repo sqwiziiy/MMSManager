@@ -58,7 +58,7 @@ Imported server directories remain unmanaged and read-only until explicitly adop
 ## Requirements
 
 - Linux for local host monitoring and server process management.
-- Node.js 22.13 or newer.
+- Node.js 22.14 or newer.
 - pnpm 10.26 or newer.
 - A compatible Java runtime to install or run a Minecraft server.
 
