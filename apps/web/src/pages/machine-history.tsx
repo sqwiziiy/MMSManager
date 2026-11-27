@@ -244,7 +244,10 @@ function LocalMachineHistoryPage({ sourceFilter }: { sourceFilter: ReactNode }) 
       </Card>
     </div>
     <div className="history-footnote"><span className="footnote-dot" /> Machine history uses saved host readings. Server history is shown separately.</div>
-    {calendar && <span className="sr-only" aria-live="polite">{calendar.days.filter((item) => item.sampleCount > 0).length} days contain saved readings in this month.</span>}
+    {calendar && <span className="sr-only" aria-live="polite">{pluralCount(calendar.days.filter((item) => item.sampleCount > 0).length, currentLocale(), {
+      en: ['day contains saved readings in this month.', 'days contain saved readings in this month.'],
+      ru: ['день содержит сохранённые замеры в этом месяце.', 'дня содержат сохранённые замеры в этом месяце.', 'дней содержат сохранённые замеры в этом месяце.'],
+    })}</span>}
     <span className="sr-only">Showing month beginning {monthStart.toLocaleDateString(currentLocale(), { month: 'long', year: 'numeric', timeZone: 'UTC' })}.</span>
   </div>
 }
