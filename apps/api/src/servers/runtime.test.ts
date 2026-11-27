@@ -63,6 +63,7 @@ done
         listener.close((error) => error ? reject(error) : resolvePort(address.port))
       })
     })
+    await writeFile(join(serverDirectory, 'server.properties'), `server-port=${port}\n`)
     await opened.db.insert(localServers).values({
       id: serverId, name: 'Runtime Fixture', directory: serverDirectory, source: 'created', software: 'vanilla', version: '1.21.4',
       jarName: 'server.jar', javaPath, javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port,

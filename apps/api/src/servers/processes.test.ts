@@ -362,7 +362,9 @@ done
       const noEulaDirectory = join(root, 'no-eula-fixture')
       await mkdir(noEulaDirectory)
       await writeFile(join(noEulaDirectory, 'server.jar'), Buffer.from([0x50, 0x4b, 3, 4]))
-      await opened.db.insert(localServers).values({ id: noEulaId, name: 'No EULA Fixture', directory: noEulaDirectory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath, javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: await availablePort(), eula: 'not-accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).run()
+      const noEulaPort = await availablePort()
+      await writeFile(join(noEulaDirectory, 'server.properties'), `server-port=${noEulaPort}\n`)
+      await opened.db.insert(localServers).values({ id: noEulaId, name: 'No EULA Fixture', directory: noEulaDirectory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar', javaPath, javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: noEulaPort, eula: 'not-accepted', managed: true, worldFolders: '[]', createdBy: userId, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).run()
       await expect(manager.start(noEulaId, userId)).rejects.toMatchObject({ code: 'EULA_NOT_ACCEPTED' })
     } finally {
       if (fake.exitCode === null && fake.signalCode === null) fake.kill('SIGTERM')
