@@ -1,0 +1,1 @@
+ALTER TABLE `local_servers` ADD `registration_discarded_at` text;

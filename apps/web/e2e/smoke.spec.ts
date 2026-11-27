@@ -146,11 +146,19 @@ async function findUnaccentedGreenUi(page: Page): Promise<string[]> {
   })
 }
 
-async function mockLocalServer(page: Page, runtimeStatus = 'running') {
+type LocalServerFixtureOverrides = {
+  software?: 'vanilla' | 'fabric' | 'forge' | 'neoforge' | 'paper'
+  version?: string
+  jarName?: string | null
+  javaMajor?: number | null
+  eula?: 'accepted' | 'not-accepted' | 'unknown'
+}
+
+async function mockLocalServer(page: Page, runtimeStatus = 'running', overrides: LocalServerFixtureOverrides = {}) {
   const serverId = 'e03c1cf8-e2a1-4a4e-9de4-4536c7796091'
   const backupId = 'c03c1cf8-e2a1-4a4e-9de4-4536c7796091'
   const now = new Date().toISOString()
-  const server = { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, portStatus: 'valid' as const, portErrorCode: null, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus }
+  const server = { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, portStatus: 'valid' as const, portErrorCode: null, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus, ...overrides }
   let settings = { onlineMode: true, motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
   let advancedProperties: Record<string, string> = { 'server-port': '25565', 'allow-flight': 'false' }
   let propertyHash = 'c'.repeat(64)
@@ -468,7 +476,11 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
     submittedCommand = (route.request().postDataJSON() as { command?: string }).command
     return route.fulfill({ status: 202, json: { ok: true } })
   })
-  return { serverId, get submittedCommand() { return submittedCommand }, get submittedPlayerAction() { return submittedPlayerAction }, get uploadRequests() { return uploadRequests }, get renameRequests() { return renameRequests }, get moveRequests() { return moveRequests } }
+  return {
+    serverId,
+    setRuntimeStatus(status: string) { runtimeStatus = status; runtimeSettings = { ...runtimeSettings, runtimeStatus: status as typeof runtimeSettings.runtimeStatus } },
+    get submittedCommand() { return submittedCommand }, get submittedPlayerAction() { return submittedPlayerAction }, get uploadRequests() { return uploadRequests }, get renameRequests() { return renameRequests }, get moveRequests() { return moveRequests },
+  }
 }
 
 test('first-run administrator setup creates the protected local workspace', async ({ page }) => {
@@ -633,7 +645,7 @@ test('administrators can restore a retained unregistered server from the Servers
   const serverId = 'd4d927f2-bb4a-4f46-a2f5-665ac5ed4771'
   let restored = false
   await page.route('**/api/v1/admin/servers/unregistered', (route) => route.fulfill({ json: {
-    servers: restored ? [] : [{ id: serverId, name: 'Retained Fixture', version: '1.21.4', removedAt: '2026-11-25T16:00:00.000Z', folderAvailable: true }],
+    servers: restored ? [] : [{ id: serverId, name: 'Retained Fixture', version: '1.21.4', removedAt: '2026-11-25T16:00:00.000Z', folderAvailable: true, restoreBlockedReason: null }],
   } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/restore-registration`, async (route) => {
     expect(route.request().method()).toBe('POST')
@@ -652,6 +664,54 @@ test('administrators can restore a retained unregistered server from the Servers
   await retainedRow.getByRole('button', { name: 'Restore' }).click()
   await expect(page.locator('.unregistered-server-row')).toHaveCount(0)
   expect(restored).toBe(true)
+})
+
+test('administrators can delete a retained registration in English and Russian', async ({ page }) => {
+  await signIn(page)
+  const retainedId = 'd4d927f2-bb4a-4f46-a2f5-665ac5ed4772'
+  const conflictId = 'd4d927f2-bb4a-4f46-a2f5-665ac5ed4773'
+  const registrations = [
+    { id: retainedId, name: 'Discard Fixture', version: '1.21.4', removedAt: '2026-11-25T16:00:00.000Z', folderAvailable: true, restoreBlockedReason: null },
+    { id: conflictId, name: 'Conflict Fixture', version: '1.20.1', removedAt: '2026-11-24T16:00:00.000Z', folderAvailable: true, restoreBlockedReason: 'folder-conflict' },
+  ]
+  const discarded = new Set<string>()
+  let submittedConfirmation: string | undefined
+  await page.route('**/api/v1/admin/servers/unregistered', (route) => route.fulfill({ json: { servers: registrations.filter((item) => !discarded.has(item.id)) } }))
+  await page.route(`**/api/v1/admin/servers/${retainedId}/registration`, async (route) => {
+    expect(route.request().method()).toBe('DELETE')
+    submittedConfirmation = (route.request().postDataJSON() as { confirmation: string }).confirmation
+    discarded.add(retainedId)
+    return route.fulfill({ json: { ok: true, serverId: retainedId, registrationDiscardedAt: new Date().toISOString() } })
+  })
+
+  await page.goto('/servers')
+  const retainedRow = page.locator('.unregistered-server-row').filter({ hasText: 'Discard Fixture' })
+  await expect(retainedRow.getByRole('button', { name: 'Delete registration' })).toBeEnabled()
+  await retainedRow.getByRole('button', { name: 'Delete registration' }).click()
+  const englishDialog = page.getByRole('dialog', { name: 'Delete registration' })
+  await expect(englishDialog.getByText('Server files, backups, history and audit records are kept.')).toBeVisible()
+  await englishDialog.locator('input').fill('Discard Fixture')
+  await englishDialog.getByRole('button', { name: 'Delete registration' }).click()
+  await expect.poll(() => submittedConfirmation).toBe('Discard Fixture')
+  await expect(page.locator('.unregistered-server-row').filter({ hasText: 'Discard Fixture' })).toHaveCount(0)
+  await expect(page.locator('.unregistered-server-row').filter({ hasText: 'Conflict Fixture' }).getByRole('button', { name: 'Restore' })).toBeDisabled()
+
+  const languageStatus = await page.evaluate(async () => {
+    const csrf = document.cookie.split(';').map((item) => item.trim()).find((item) => item.startsWith('mmsmanager_csrf='))
+    const token = csrf ? decodeURIComponent(csrf.slice('mmsmanager_csrf='.length)) : ''
+    const response = await fetch('/api/v1/profile/preferences', { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-mms-csrf': token }, body: JSON.stringify({ language: 'ru' }) })
+    return response.status
+  })
+  expect(languageStatus).toBe(200)
+  await page.reload()
+  const russianConflict = page.locator('.unregistered-server-row').filter({ hasText: 'Conflict Fixture' })
+  await expect(page.getByRole('heading', { name: 'Отключённые серверы' })).toBeVisible()
+  await expect(russianConflict.getByRole('button', { name: 'Удалить запись' })).toBeEnabled()
+  await expect(russianConflict.getByText('Эта папка уже зарегистрирована')).toBeVisible()
+  await russianConflict.getByRole('button', { name: 'Удалить запись' }).click()
+  const russianDialog = page.getByRole('dialog', { name: 'Удалить запись' })
+  await expect(russianDialog.getByText('Файлы сервера, резервные копии, история и аудит сохранятся.')).toBeVisible()
+  await russianDialog.getByRole('button', { name: 'Отмена' }).click()
 })
 
 test('Stage 5G removes demo records from operational pages', async ({ page }) => {
@@ -935,6 +995,85 @@ test('local server overview, console and visual properties use mocked API data',
   await expect(hardcoreToggle).toBeChecked()
   await expectNoHorizontalOverflow(page, 'advanced properties mobile')
   await page.screenshot({ path: screenshotPath('stage-06hr-properties-advanced-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
+const launchControlFixtures: Array<{ software: LocalServerFixtureOverrides['software']; version: string; jarName: string | null }> = [
+  { software: 'vanilla', version: '1.21.4', jarName: 'server.jar' },
+  { software: 'fabric', version: '1.21.4', jarName: 'fabric-server-launch.jar' },
+  { software: 'forge', version: '1.20.1', jarName: null },
+  { software: 'neoforge', version: '1.21.1', jarName: null },
+  { software: 'paper', version: '1.21.4', jarName: 'server.jar' },
+]
+
+for (const launchFixture of launchControlFixtures) {
+  test(`${launchFixture.software} server can start from its detail page`, async ({ page }) => {
+    await signIn(page)
+    const fixture = await mockLocalServer(page, 'stopped', launchFixture)
+    let startRequests = 0
+    await page.route(`**/api/v1/admin/servers/${fixture.serverId}/start`, async (route) => {
+      expect(route.request().method()).toBe('POST')
+      startRequests += 1
+      fixture.setRuntimeStatus('running')
+      const now = new Date().toISOString()
+      return route.fulfill({ json: { runtime: {
+        serverId: fixture.serverId, status: 'running', startedAt: now, uptimeSeconds: 0, memoryRssBytes: null,
+        cpuPercent: null, ready: true, playersOnline: null, eula: 'accepted', configuredPort: 25565, processPort: 25565,
+        portStatus: 'valid', portErrorCode: null, restartRequired: false, lastExitCode: null, errorMessage: null,
+      } } })
+    })
+
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start server' })).toHaveCount(0)
+    await page.goto('/servers')
+    await expect(page.getByRole('heading', { name: 'Servers', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start server' })).toHaveCount(0)
+    await page.getByRole('link', { name: /Local Fixture/ }).click()
+    const start = page.getByRole('button', { name: 'Start server' })
+    await expect(start).toBeEnabled()
+    await start.click()
+    await expect.poll(() => startRequests).toBe(1)
+    await expect(page.getByRole('heading', { name: 'Local Fixture' })).toBeVisible()
+  })
+}
+
+const startBlockerFixtures = [
+  { name: 'EULA', overrides: { eula: 'not-accepted' as const }, message: 'EULA acceptance is required' },
+  { name: 'Java', overrides: { javaMajor: null }, message: 'A verified Java runtime is required to start this server.' },
+  { name: 'JAR', overrides: { software: 'vanilla' as const, jarName: null }, message: 'The registered server JAR is missing.' },
+]
+
+for (const blocker of startBlockerFixtures) {
+  test(`server start controls explain the ${blocker.name} blocker`, async ({ page }) => {
+    await signIn(page)
+    const fixture = await mockLocalServer(page, 'stopped', blocker.overrides)
+    await page.goto(`/servers/${fixture.serverId}/overview`)
+    await expect(page.getByRole('button', { name: 'Start server' })).toBeDisabled()
+    await expect(page.getByText(blocker.message)).toBeVisible()
+  })
+}
+
+test('server software settings list supported loaders and require compatibility acknowledgement', async ({ page }) => {
+  await signIn(page)
+  const fixture = await mockLocalServer(page, 'stopped')
+  await page.route(`**/api/v1/admin/servers/${fixture.serverId}/software`, (route) => route.fulfill({ json: { detection: {
+    serverId: fixture.serverId, registeredSoftware: 'paper', registeredVersion: '1.21.4', detectedSoftware: 'paper',
+    detectedVersion: '1.21.4', loaderVersion: null, launchStrategy: 'jar', jarName: 'server.jar', registrationMatches: true, rollbackAvailable: false,
+  } } }))
+  await page.route('**/api/v1/admin/server-installs/catalog**', (route) => {
+    const software = new URL(route.request().url()).searchParams.get('software') ?? 'vanilla'
+    return route.fulfill({ json: { software, versions: ['1.21.4'], loaders: [], experimentalLoaders: [], builds: software === 'paper' ? [123] : [], installerVersion: null, requiredJavaMajor: 21 } })
+  })
+  await page.goto(`/servers/${fixture.serverId}/software`)
+  await expect(page.getByRole('heading', { name: 'Installed server software' })).toBeVisible()
+  await expect(page.getByLabel('Server software').locator('option')).toHaveText(['Vanilla', 'Fabric', 'Forge', 'NeoForge', 'Paper'])
+  await expect(page.getByText(/Mods, plugins and worlds may not be compatible/)).toBeVisible()
+  const replace = page.getByRole('button', { name: 'Create backup and replace software' })
+  await expect(replace).toBeDisabled()
+  await page.getByRole('checkbox', { name: /I understand compatibility may change/ }).check()
+  await page.getByRole('textbox', { name: /Type the exact server name to confirm/ }).fill('Local Fixture')
+  await expect(replace).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Check installed software' })).toBeVisible()
 })
 
 test('R7 console follows active output and keeps stopped history read only', async ({ page }) => {

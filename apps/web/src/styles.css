@@ -2622,6 +2622,21 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 .unregistered-servers-section > .section-heading p { margin: 4px 0 0; color: var(--text-muted); font-size: 10px; }
 .unregistered-server-list { display: grid; gap: 8px; }
 .unregistered-server-row { min-width: 0; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto auto; align-items: center; gap: 11px; padding: 12px; }
+.unregistered-server-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.server-start-control { display: grid; gap: 4px; justify-items: start; }
+.server-start-block-reason { max-width: 260px; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+.server-software-stack { display: grid; gap: 12px; }
+.server-software-card { display: grid; gap: 13px; padding: 16px; }
+.server-software-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+.server-software-correction, .server-software-rollback { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.server-software-correction p, .server-software-rollback p { margin: 0; color: var(--text-muted); font-size: 10px; }
+.server-software-warning { display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; border: 1px solid var(--warn-border); border-radius: 9px; background: var(--warn-soft); color: var(--warn); font-size: 10px; line-height: 1.5; }
+.server-software-warning svg { flex: 0 0 auto; }
+.server-software-card > .field { width: min(100%, 460px); }
+@media (max-width: 620px) {
+  .server-software-form { grid-template-columns: minmax(0, 1fr); }
+  .server-software-card { padding: 12px; }
+}
 .unregistered-server-copy { min-width: 0; display: grid; gap: 3px; }
 .unregistered-server-copy strong { overflow-wrap: anywhere; color: var(--text); font-size: 11px; font-weight: 550; }
 .unregistered-server-copy span, .unregistered-server-copy small { color: var(--text-muted); font-size: 9px; }
@@ -2630,7 +2645,8 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
   .backup-settings-form .settings-footer > div { width: 100%; flex-wrap: wrap; }
   .backup-settings-form .settings-footer > div .button { flex: 1; }
   .unregistered-server-row { grid-template-columns: 30px minmax(0, 1fr); }
-  .unregistered-server-row > .badge, .unregistered-server-row > .button { grid-column: 2; justify-self: start; }
+  .unregistered-server-row > .badge, .unregistered-server-actions { grid-column: 2; justify-self: start; }
+  .unregistered-server-actions { justify-content: flex-start; }
 }
 .about-identity > div { min-width: 0; }
 .about-eyebrow { display: block; color: var(--text-muted); font-size: 10px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }

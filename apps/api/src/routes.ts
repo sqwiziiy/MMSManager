@@ -109,6 +109,14 @@ import {
   serverInventorySchema,
   unregisteredServerListSchema,
   serverRegistrationRestoreResultSchema,
+  serverRegistrationDiscardRequestSchema,
+  serverRegistrationDiscardResultSchema,
+  serverSoftwareDetectionResultSchema,
+  serverSoftwareCorrectionRequestSchema,
+  serverSoftwareCorrectionResultSchema,
+  serverSoftwareChangeRequestSchema,
+  serverSoftwareChangeResultSchema,
+  serverSoftwareRollbackResultSchema,
   serverZipImportPublishSchema,
   serverZipImportPublishResultSchema,
   serverZipImportUploadResultSchema,
@@ -162,6 +170,7 @@ import { ServerTemplateError, ServerTemplateService } from './servers/templates.
 import { NotificationError, NotificationService } from './activity/notifications.js'
 import { ServerRemovalError, ServerRemovalService } from './servers/removals.js'
 import { MAX_SERVER_ZIP_BYTES, ServerZipImportError, ServerZipImportService } from './servers/zip-import.js'
+import { ServerSoftwareError, ServerSoftwareService } from './servers/software.js'
 
 class InvalidRequestError extends Error {}
 
@@ -310,6 +319,7 @@ export async function createApiApp(options: {
   const files = new ServerFileService(options.db, options.servers, processes, options.now)
   const backups = new ServerBackupService(options.db, options.servers, processes, options.now)
   await backups.prepare()
+  const software = new ServerSoftwareService(options.db, options.servers, processes, backups, installs, options.now)
   const removals = new ServerRemovalService(options.db, options.servers, processes, options.now)
   await removals.prepare()
   const zipImports = new ServerZipImportService(options.db, options.servers, options.javaRuntimes, options.now)
@@ -427,8 +437,14 @@ export async function createApiApp(options: {
   }
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ServerSoftwareError) {
+      const status = error.code.endsWith('_NOT_FOUND') ? 404
+        : error.code.includes('BUSY') || error.code.includes('STOPPED') || error.code.includes('UNSAFE') || error.code.includes('CONFLICT') || error.code.includes('RECOVERY') || error.code.includes('MANAGED') || error.code.includes('ROLLBACK_UNAVAILABLE') || error.code.includes('FILES_CHANGED') ? 409
+          : 400
+      return reply.code(status).send({ error: { code: error.code, message: error.message } })
+    }
     if (error instanceof ServerRemovalError) {
-      const status = error.code.endsWith('_NOT_FOUND') ? 404 : error.code.includes('BUSY') || error.code.includes('STOPPED') || error.code.includes('UNSAFE') || error.code.includes('UNMANAGED') || error.code.includes('RECOVERY') || error.code.includes('COLLISION') || error.code.includes('CONFLICT') || error.code.includes('FOLDER_MISSING') || error.code === 'SERVER_NOT_UNREGISTERED' ? 409 : 400
+      const status = error.code.endsWith('_NOT_FOUND') ? 404 : error.code.includes('BUSY') || error.code.includes('STOPPED') || error.code.includes('UNSAFE') || error.code.includes('UNMANAGED') || error.code.includes('RECOVERY') || error.code.includes('COLLISION') || error.code.includes('CONFLICT') || error.code.includes('FOLDER_MISSING') || error.code.includes('ALREADY') || error.code.includes('DISCARDED') || error.code === 'SERVER_NOT_UNREGISTERED' ? 409 : 400
       return reply.code(status).send({ error: { code: error.code, message: error.message } })
     }
     if (error instanceof ServerZipImportError) {
@@ -710,6 +726,11 @@ export async function createApiApp(options: {
     const params = parse(localServerIdSchema, request.params)
     return serverRegistrationRestoreResultSchema.parse(await removals.restoreUnregistered(params.serverId, request.principal!.userId))
   })
+  app.delete('/api/v1/admin/servers/:serverId/registration', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverRegistrationDiscardRequestSchema, request.body)
+    return serverRegistrationDiscardResultSchema.parse(await removals.discardUnregisteredRegistration(params.serverId, input.confirmation, request.principal!.userId))
+  })
   app.get('/api/v1/admin/servers/:serverId/native-loader-detection', { preHandler: requireAdmin }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     const result = await options.servers.inspectManagedNativeLoader(params.serverId)
@@ -737,6 +758,25 @@ export async function createApiApp(options: {
       launch: detected.detection.launch,
     })
     return nativeLoaderCorrectionResultSchema.parse({ serverId: params.serverId, software: detected.detection.software, version })
+  })
+  app.get('/api/v1/admin/servers/:serverId/software', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    return serverSoftwareDetectionResultSchema.parse({ detection: await software.inspect(params.serverId) })
+  })
+  app.patch('/api/v1/admin/servers/:serverId/software/registration', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverSoftwareCorrectionRequestSchema, request.body)
+    return serverSoftwareCorrectionResultSchema.parse(await software.correctRegistration(params.serverId, input, request.principal!.userId))
+  })
+  app.post('/api/v1/admin/servers/:serverId/software', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverSoftwareChangeRequestSchema, request.body)
+    return serverSoftwareChangeResultSchema.parse(await software.replace(params.serverId, input, request.principal!.userId))
+  })
+  app.post('/api/v1/admin/servers/:serverId/software/rollback', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(serverRegistrationDiscardRequestSchema, request.body)
+    return serverSoftwareRollbackResultSchema.parse(await software.rollback(params.serverId, input.confirmation, request.principal!.userId))
   })
   app.get('/api/v1/servers', { preHandler: requireAuth }, async (request) => {
     const statuses = processes.listPublicStatuses()

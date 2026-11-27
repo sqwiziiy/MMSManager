@@ -6,7 +6,7 @@ import type { FormEvent } from 'react'
 import {
   Activity, AlertTriangle, Archive, ArrowRight, CalendarDays, ChevronRight, CircleHelp,
   Cpu, Database, FolderSearch, HardDrive, MemoryStick, Monitor, Plus,
-  RefreshCw, RotateCcw, Search, Server, Shield, Users, Wifi,
+  RefreshCw, RotateCcw, Search, Server, Shield, Trash2, Users, Wifi,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import type { LocalServerSummary, MachineHistory, MachineResourcePoint, ServerBackup, ServerRemovalOperation, UnregisteredServer } from '@mmsmanager/shared'
@@ -18,7 +18,7 @@ import { primaryStorageVolume, useMachineStorage } from '../state/use-machine-st
 import { LiveResourceChart } from '../components/live-chart'
 import { mergeResourcePoints } from '../lib/resource-points'
 import { formatBytes, formatPercent, formatRate, formatTimestamp } from '../lib/format'
-import { getLocalServers, getServerBackups, getServerInventory, getServerRemovalHistory, getUnregisteredServers, restoreUnregisteredServer, retryServerRemoval } from '../api/servers'
+import { discardUnregisteredRegistration, getLocalServers, getServerBackups, getServerInventory, getServerRemovalHistory, getUnregisteredServers, restoreUnregisteredServer, retryServerRemoval } from '../api/servers'
 import { getMachineHistory } from '../api/machine'
 import type { ServerInventory } from '@mmsmanager/shared'
 import { useAuth } from '../state/use-auth'
@@ -43,6 +43,10 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
   const [unregisteredError, setUnregisteredError] = useState<string | null>(null)
   const [restoringServerId, setRestoringServerId] = useState<string | null>(null)
   const [restoreError, setRestoreError] = useState<string | null>(null)
+  const [discardingRegistration, setDiscardingRegistration] = useState<UnregisteredServer | null>(null)
+  const [discardConfirmation, setDiscardConfirmation] = useState('')
+  const [discardError, setDiscardError] = useState<string | null>(null)
+  const [discardBusy, setDiscardBusy] = useState(false)
   const [retryingRemoval, setRetryingRemoval] = useState<ServerRemovalOperation | null>(null)
   const [retryConfirmation, setRetryConfirmation] = useState('')
   const [retryError, setRetryError] = useState<string | null>(null)
@@ -102,6 +106,18 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
     finally { setRestoringServerId(null) }
   }
 
+  const discardRegistration = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!discardingRegistration || discardConfirmation !== discardingRegistration.name || discardBusy) return
+    setDiscardBusy(true); setDiscardError(null)
+    try {
+      await discardUnregisteredRegistration(discardingRegistration.id, discardConfirmation)
+      await loadUnregistered()
+      setDiscardingRegistration(null); setDiscardConfirmation('')
+    } catch (error) { setDiscardError(apiErrorMessage(error, 'The registration could not be removed from the restoration list.')) }
+    finally { setDiscardBusy(false) }
+  }
+
   const retryRemoval = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!retryingRemoval || retryConfirmation !== retryingRemoval.serverName) return
@@ -138,12 +154,13 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
     </section>
     {isAdmin && <section className="unregistered-servers-section" aria-labelledby="unregistered-servers-title">
       <div className="section-heading"><div><h2 id="unregistered-servers-title">{translateText('Unregistered servers', currentLocale())}</h2><p>{translateText('Server folders kept when their registration was removed.', currentLocale())}</p></div><Badge>{unregisteredServers.length}</Badge></div>
-      {restoreError && <div className="local-backup-message is-error" role="alert"><AlertTriangle size={15} /><span>{restoreError}</span></div>}
+      {(restoreError || discardError) && <div className="local-backup-message is-error" role="alert"><AlertTriangle size={15} /><span>{restoreError ?? discardError}</span></div>}
       {unregisteredError && <div className="local-backup-message is-error" role="alert"><AlertTriangle size={15} /><span>{unregisteredError}</span><Button icon={RefreshCw} onClick={() => void loadUnregistered()}>{translateText('Retry', currentLocale())}</Button></div>}
       {!unregisteredError && (unregisteredServers.length === 0 ? <Card className="local-server-empty-card"><div className="empty-list"><Archive size={20} /><strong>{translateText('No unregistered servers', currentLocale())}</strong><span>{translateText('Servers unregistered with their files kept will appear here.', currentLocale())}</span></div></Card> : <div className="unregistered-server-list">{unregisteredServers.map((server) => <Card className="unregistered-server-row" key={server.id}>
         <span className="local-server-icon"><Server size={16} /></span><div className="unregistered-server-copy"><strong data-no-translate>{server.name}</strong><span>{server.version ? <>{translateText('Minecraft', currentLocale())} <span data-no-translate>{server.version}</span></> : translateText('Version unavailable', currentLocale())}</span><small>{translateText('Unregistered', currentLocale())} · {new Date(server.removedAt).toLocaleString(currentLocale())}</small></div>
-        {!server.folderAvailable && <Badge tone="warn">{translateText('Original folder missing', currentLocale())}</Badge>}
-        <Button kind="primary" icon={restoringServerId === server.id ? RefreshCw : RotateCcw} disabled={Boolean(restoringServerId) || !server.folderAvailable} onClick={() => void restoreRegistration(server)}>{restoringServerId === server.id ? translateText('Restoring', currentLocale()) : translateText('Restore', currentLocale())}</Button>
+        {server.restoreBlockedReason && <Badge tone="warn">{translateText(server.restoreBlockedReason === 'folder-missing' ? 'Original folder missing' : server.restoreBlockedReason === 'folder-conflict' ? 'Folder is already registered' : 'Original folder is not safe to restore', currentLocale())}</Badge>}
+        <div className="unregistered-server-actions"><Button kind="primary" icon={restoringServerId === server.id ? RefreshCw : RotateCcw} disabled={Boolean(restoringServerId || discardingRegistration) || Boolean(server.restoreBlockedReason)} title={server.restoreBlockedReason ? translateText(server.restoreBlockedReason === 'folder-missing' ? 'Original folder missing' : server.restoreBlockedReason === 'folder-conflict' ? 'Folder is already registered' : 'Original folder is not safe to restore', currentLocale()) : undefined} onClick={() => void restoreRegistration(server)}>{restoringServerId === server.id ? translateText('Restoring', currentLocale()) : translateText('Restore', currentLocale())}</Button>
+          <Button kind="danger" icon={Trash2} disabled={Boolean(restoringServerId || discardingRegistration)} onClick={() => { setDiscardingRegistration(server); setDiscardConfirmation(''); setDiscardError(null) }}>{translateText('Delete registration', currentLocale())}</Button></div>
       </Card>)}</div>)}
     </section>}
     {isAdmin && removalHistory.length > 0 && <section className="server-removal-history" aria-labelledby="server-removal-history-title">
@@ -164,6 +181,13 @@ export function ServersPage({ onCreate }: { onCreate: () => void }) {
         <div className="local-file-dialog-actions"><Button type="button" disabled={retryBusy} onClick={() => setRetryingRemoval(null)}>{translateText('Cancel', currentLocale())}</Button>
           <Button kind="danger" icon={retryBusy ? RefreshCw : Archive} disabled={retryBusy || retryConfirmation !== retryingRemoval.serverName}>{retryBusy ? translateText('Retrying', currentLocale()) : translateText('Retry cleanup', currentLocale())}</Button>
         </div>
+      </form>
+    </section></div>}
+    {discardingRegistration && <div className="overlay-scrim"><section className="local-file-dialog server-removal-dialog" role="dialog" aria-modal="true" aria-labelledby="discard-registration-title">
+      <div className="local-file-dialog-heading"><span className="server-removal-dialog-icon"><Trash2 size={17} /></span><div><h3 id="discard-registration-title">{translateText('Delete registration', currentLocale())}</h3><p>{translateText('This removes the saved registration from the restore list. Server files, backups, history and audit records are kept.', currentLocale())}</p></div></div>
+      <form onSubmit={(event) => void discardRegistration(event)}><Field label={`${translateText('Type the exact server name to confirm', currentLocale())}: ${discardingRegistration.name}`}><input autoFocus value={discardConfirmation} onChange={(event) => setDiscardConfirmation(event.target.value)} /></Field>
+        {discardError && <p className="server-import-error" role="alert">{discardError}</p>}
+        <div className="local-file-dialog-actions"><Button type="button" disabled={discardBusy} onClick={() => { setDiscardingRegistration(null); setDiscardError(null) }}>{translateText('Cancel', currentLocale())}</Button><Button kind="danger" icon={discardBusy ? RefreshCw : Trash2} disabled={discardBusy || discardConfirmation !== discardingRegistration.name}>{discardBusy ? translateText('Deleting registration…', currentLocale()) : translateText('Delete registration', currentLocale())}</Button></div>
       </form>
     </section></div>}
   </div>

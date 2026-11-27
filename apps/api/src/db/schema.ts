@@ -275,6 +275,7 @@ export const localServers = sqliteTable('local_servers', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   removedAt: text('removed_at'),
+  registrationDiscardedAt: text('registration_discarded_at'),
 }, (table) => [
   uniqueIndex('local_servers_directory_unique').on(table.directory).where(sql`${table.removedAt} IS NULL`),
   index('local_servers_created_at_idx').on(table.createdAt),

@@ -2,13 +2,13 @@ import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access, mkdir, open, lstat, realpath, statfs } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { eq, desc } from 'drizzle-orm'
 import type { AppDatabase } from '../db/client.js'
 import { localServerEvents, localServers, serverInstallOperations } from '../db/schema.js'
 import type { JavaRuntimeRegistry } from './java.js'
 import type { ServerRegistry } from './registry.js'
-import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
+import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest, ServerSoftwareChangeRequest } from '@mmsmanager/shared'
 import { forgeGameVersions, forgeLoaderVersions, neoForgeLoaderVersions, neoForgeMinecraftVersion, parseForgePromotions, parseMavenMetadata } from './loader-catalog.js'
 import { generatedStartScript } from './runtime.js'
 import { detectNativeLoader, resolveNativeLaunch, type ServerLaunchConfiguration } from './native-loader.js'
@@ -201,6 +201,8 @@ export class ServerInstallService {
     return published.has(loaderVersion) ? neoForgeMinecraftVersion(loaderVersion, releases) : null
   }
 
+  async requiredJavaForVersion(version: string): Promise<number> { return this.requiredJavaMajor(version) }
+
   async create(input: ServerInstallRequest, actorUserId: string): Promise<InstallOperation> {
     if (this.active.size >= 2) throw new ServerInstallError('INSTALL_LIMIT', 'Two installations are already running. Wait for one to finish before retrying.')
     const id = randomUUID()
@@ -222,6 +224,85 @@ export class ServerInstallService {
       this.abortControllers.delete(id)
     })
     return this.get(id)!
+  }
+
+  /** Installs and validates a new core in an empty private stage without registering a second server. */
+  async stageSoftwareChange(input: ServerSoftwareChangeRequest, server: { id: string; name: string; directory: string; javaPath: string | null; javaMajor: number | null; minMemoryMb: number; maxMemoryMb: number; port: number | null }, stageDirectory: string, actorUserId: string): Promise<{ operationId: string; software: InstallSoftware; version: string; requiredJavaMajor: number; launch: ServerLaunchConfiguration; jarName: string | null }> {
+    if (this.active.size >= 2) throw new ServerInstallError('INSTALL_LIMIT', 'Two installations are already running. Wait for one to finish before retrying.')
+    if (!server.javaPath) throw new ServerInstallError('JAVA_NOT_VERIFIED', 'Choose and verify a Java runtime for this server before changing its software.')
+    const id = randomUUID()
+    const at = new Date(this.now()).toISOString()
+    const request: ServerInstallRequest = {
+      name: server.name, directoryName: basename(server.directory), software: input.software, version: input.version,
+      ...(input.loaderVersion ? { loaderVersion: input.loaderVersion } : {}),
+      ...(input.installerVersion ? { installerVersion: input.installerVersion } : {}),
+      ...(input.paperBuild ? { paperBuild: input.paperBuild } : {}),
+      javaPath: server.javaPath, minMemoryMb: server.minMemoryMb, maxMemoryMb: server.maxMemoryMb,
+      port: server.port ?? 25565, eulaAccepted: true,
+    }
+    this.db.insert(serverInstallOperations).values({
+      id, actorUserId, serverId: server.id, name: server.name, directoryName: basename(server.directory),
+      software: input.software === 'forge' || input.software === 'neoforge' ? 'vanilla' : input.software,
+      loader: input.software === 'forge' || input.software === 'neoforge' ? input.software : null,
+      version: input.version, requestJson: JSON.stringify({ ...input, purpose: 'existing-server-software-change' }),
+      status: 'pending', progress: 1, phase: 'preparing-private-stage', installerLog: '', artifactUrl: null, artifactSize: null,
+      artifactSha1: null, artifactSha256: null, artifactChecksumType: null, errorCode: null, errorMessage: null,
+      partialDirectory: stageDirectory, createdAt: at, updatedAt: at,
+    }).run()
+    this.active.add(id)
+    try {
+      const runtime = this.javaRuntimes.list().find((candidate) => candidate.path === server.javaPath)
+      if (!runtime) throw new ServerInstallError('JAVA_NOT_VERIFIED', 'Scan or probe this Java runtime before changing server software.')
+      const artifact = await this.resolveArtifact(request)
+      if (runtime.major < artifact.javaMajor) throw new ServerInstallError('JAVA_VERSION_UNSUPPORTED', `Minecraft ${input.version} requires Java ${artifact.javaMajor} or newer; this server is configured for Java ${runtime.major}.`)
+      const javaStat = await lstat(runtime.path)
+      if (!javaStat.isFile() && !javaStat.isSymbolicLink()) throw new ServerInstallError('JAVA_NOT_EXECUTABLE', 'The configured Java runtime is no longer a regular executable.')
+      await access(runtime.path, constants.X_OK)
+
+      let launch: ServerLaunchConfiguration = { kind: 'jar', jarName: 'server.jar' }
+      let jarName: string | null = 'server.jar'
+      if (artifact.loaderInstaller) {
+        if (input.software !== 'forge' && input.software !== 'neoforge') throw new ServerInstallError('INSTALL_STRUCTURE_INVALID', 'The loader installer selection is invalid.')
+        const loaderWorkDirectory = join(stageDirectory, loaderInstallerWorkName(id))
+        await mkdir(loaderWorkDirectory, { mode: 0o700 })
+        await this.update(id, { status: 'downloading', progress: 10, phase: 'downloading', artifactUrl: artifact.url, artifactSize: artifact.expectedSize })
+        const artifactPath = join(loaderWorkDirectory, 'loader-installer.jar.part')
+        const download = await this.downloadArtifact(id, artifact, artifactPath)
+        const installerPath = join(loaderWorkDirectory, 'loader-installer.jar')
+        await (await import('node:fs/promises')).rename(artifactPath, installerPath)
+        await this.update(id, { status: 'validating', progress: 88, phase: 'running-official-installer', artifactSha1: download.sha1, artifactSha256: download.sha256, artifactChecksumType: artifact.checksumType })
+        try {
+          await this.runLoaderInstaller({ javaPath: runtime.path, installerPath, workDirectory: loaderWorkDirectory, signal: new AbortController().signal, onOutput: (text) => this.appendInstallerLog(id, text) })
+        } catch (error) {
+          if (error instanceof Error && 'code' in error && typeof error.code === 'string') throw new ServerInstallError(error.code, error.message)
+          throw error
+        }
+        await (await import('node:fs/promises')).unlink(installerPath)
+        const detected = await detectNativeLoader(loaderWorkDirectory, input.software)
+        if (!detected) throw new ServerInstallError('INSTALL_STRUCTURE_INVALID', 'The official loader installer did not produce a verified native launch configuration.')
+        launch = detected.launch
+        await publishLoaderInstallerOutput(loaderWorkDirectory, stageDirectory)
+        jarName = launch.kind === 'jar' ? launch.jarName : null
+        const publishedLaunch = await resolveNativeLaunch(stageDirectory, input.software, jarName)
+        if (JSON.stringify(publishedLaunch) !== JSON.stringify(launch)) throw new ServerInstallError('INSTALL_STRUCTURE_INVALID', 'The staged loader launch configuration failed final verification.')
+      } else {
+        await this.update(id, { status: 'downloading', progress: 10, phase: 'downloading', artifactUrl: artifact.url, artifactSize: artifact.expectedSize })
+        const artifactPath = join(stageDirectory, 'server.jar.part')
+        const download = await this.downloadArtifact(id, artifact, artifactPath)
+        const { rename } = await import('node:fs/promises')
+        await rename(artifactPath, join(stageDirectory, 'server.jar'))
+        await this.update(id, { status: 'validating', progress: 94, phase: 'checking-server-jar', artifactSha1: download.sha1, artifactSha256: download.sha256, artifactChecksumType: artifact.checksumType })
+      }
+      const completedAt = new Date(this.now()).toISOString()
+      this.db.update(serverInstallOperations).set({ status: 'completed', progress: 100, phase: 'core-staged', partialDirectory: null, updatedAt: completedAt }).where(eq(serverInstallOperations.id, id)).run()
+      return { operationId: id, software: input.software, version: input.version, requiredJavaMajor: artifact.javaMajor, launch, jarName }
+    } catch (error) {
+      const failure = error instanceof ServerInstallError ? error : new ServerInstallError('INSTALL_FAILED', error instanceof Error ? error.message.slice(0, 500) : 'The software installation failed.')
+      this.db.update(serverInstallOperations).set({ status: 'failed', phase: 'failed', errorCode: failure.code, errorMessage: failure.message, updatedAt: new Date(this.now()).toISOString() }).where(eq(serverInstallOperations.id, id)).run()
+      throw failure
+    } finally {
+      this.active.delete(id)
+    }
   }
 
   private async run(id: string, input: ServerInstallRequest, actorUserId: string, signal: AbortSignal): Promise<void> {

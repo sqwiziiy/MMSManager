@@ -183,6 +183,13 @@
       "when": 1795800704161,
       "tag": "0025_native_forge_loaders",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1795809074831,
+      "tag": "0026_discard_unregistered_registration",
+      "breakpoints": true
     }
   ]
 }

@@ -67,21 +67,64 @@ export class ServerRemovalService {
   }
 
   async listUnregistered(limit = 100) {
-    const rows = this.db.select({ id: localServers.id, name: localServers.name, version: localServers.version, directory: localServers.directory, removedAt: localServers.removedAt })
-      .from(localServers).where(and(isNotNull(localServers.removedAt), sql`EXISTS (
+    const rows = this.db.select({ id: localServers.id, name: localServers.name, version: localServers.version, directory: localServers.directory, source: localServers.source, managed: localServers.managed, removedAt: localServers.removedAt })
+      .from(localServers).where(and(isNotNull(localServers.removedAt), isNull(localServers.registrationDiscardedAt), sql`EXISTS (
         SELECT 1 FROM local_server_removal_operations AS removal
         WHERE removal.server_id = ${localServers.id} AND removal.mode = 'unregister' AND removal.state = 'unregistered'
       )`, sql`NOT EXISTS (
         SELECT 1 FROM local_server_removal_operations AS permanent
         WHERE permanent.server_id = ${localServers.id} AND permanent.mode = 'permanent'
       )`)).orderBy(desc(localServers.removedAt)).limit(limit).all()
-    return await Promise.all(rows.map(async (server) => ({
-      id: server.id, name: server.name, version: server.version, removedAt: server.removedAt!,
-      folderAvailable: await lstat(server.directory).then((stat) => stat.isDirectory() && !stat.isSymbolicLink(), (error: unknown) => {
-        if (isFsError(error) && error.code === 'ENOENT') return false
-        return false
-      }),
-    })))
+    return await Promise.all(rows.map(async (server) => {
+      const directory = resolve(server.directory)
+      let folder: Awaited<ReturnType<typeof lstat>> | null = null
+      let folderError: unknown = null
+      try { folder = await lstat(directory) } catch (error) { folderError = error }
+      const folderAvailable = Boolean(folder?.isDirectory() && !folder.isSymbolicLink())
+      let restoreBlockedReason: 'folder-missing' | 'folder-conflict' | 'folder-unsafe' | null = null
+      if (!folderAvailable) restoreBlockedReason = !folder && isFsError(folderError) && folderError.code === 'ENOENT' ? 'folder-missing' : 'folder-unsafe'
+      else {
+        const canonical = await realpath(directory).catch(() => '')
+        if (!canonical || canonical !== directory) restoreBlockedReason = 'folder-unsafe'
+        else if (server.source === 'created' && server.managed) {
+          const root = await realpath(this.servers.managedRoot).catch(() => '')
+          const rootStat = root ? await lstat(root).catch(() => null) : null
+          if (!root || !isDirectChild(root, canonical) || !rootStat?.isDirectory() || folder!.dev !== rootStat.dev) restoreBlockedReason = 'folder-unsafe'
+        } else {
+          const roots = await Promise.all(this.servers.importRoots.map((path) => realpath(path).catch(() => null)))
+          if (!roots.some((root) => root !== null && isWithin(root, canonical))) restoreBlockedReason = 'folder-unsafe'
+        }
+        if (!restoreBlockedReason) {
+          const active = this.db.select({ directory: localServers.directory }).from(localServers).where(isNull(localServers.removedAt)).all()
+          for (const candidate of active) if (await realpath(candidate.directory).catch(() => resolve(candidate.directory)) === canonical) {
+            restoreBlockedReason = 'folder-conflict'; break
+          }
+        }
+      }
+      return { id: server.id, name: server.name, version: server.version, removedAt: server.removedAt!, folderAvailable, restoreBlockedReason }
+    }))
+  }
+
+  async discardUnregisteredRegistration(serverId: string, confirmation: string, actorUserId: string): Promise<{ ok: true; serverId: string; registrationDiscardedAt: string }> {
+    return this.processes.withUnregisteredServerRestore(serverId, async (server) => {
+      if (server.name !== confirmation) throw new ServerRemovalError('SERVER_NAME_CONFIRMATION_MISMATCH', 'Type the exact server name to confirm this action.')
+      if (server.registrationDiscardedAt) throw new ServerRemovalError('SERVER_REGISTRATION_ALREADY_DISCARDED', 'This retained registration was already removed from the restoration list.')
+      const priorRemoval = this.db.select({ id: localServerRemovalOperations.id }).from(localServerRemovalOperations)
+        .where(and(eq(localServerRemovalOperations.serverId, serverId), eq(localServerRemovalOperations.mode, 'unregister'), eq(localServerRemovalOperations.state, 'unregistered')))
+        .orderBy(desc(localServerRemovalOperations.createdAt)).limit(1).get()
+      const permanentRemoval = this.db.select({ id: localServerRemovalOperations.id }).from(localServerRemovalOperations)
+        .where(and(eq(localServerRemovalOperations.serverId, serverId), eq(localServerRemovalOperations.mode, 'permanent'))).limit(1).get()
+      if (!server.removedAt || !priorRemoval || permanentRemoval) throw new ServerRemovalError('SERVER_NOT_UNREGISTERED', 'Only a retained, non-permanently-removed registration can be removed from this list.')
+      const at = new Date(this.now()).toISOString()
+      this.db.transaction((tx) => {
+        const changed = tx.update(localServers).set({ registrationDiscardedAt: at, updatedAt: at })
+          .where(and(eq(localServers.id, serverId), isNotNull(localServers.removedAt), isNull(localServers.registrationDiscardedAt))).run()
+        if (changed.changes !== 1) throw new ServerRemovalError('SERVER_REGISTRATION_ALREADY_DISCARDED', 'This retained registration was already removed from the restoration list.')
+        tx.insert(localServerEvents).values({ serverId, actorUserId, action: 'server-registration-discarded', outcome: 'success', occurredAt: at,
+          detail: JSON.stringify({ removalId: priorRemoval.id, filesKept: true, backupsKept: true, historyKept: true }) }).run()
+      })
+      return { ok: true as const, serverId, registrationDiscardedAt: at }
+    })
   }
 
   async restoreUnregistered(serverId: string, actorUserId: string): Promise<{ ok: true; serverId: string }> {
@@ -91,7 +134,7 @@ export class ServerRemovalService {
       const priorRemoval = this.db.select({ id: localServerRemovalOperations.id }).from(localServerRemovalOperations)
         .where(and(eq(localServerRemovalOperations.serverId, serverId), eq(localServerRemovalOperations.mode, 'unregister'), eq(localServerRemovalOperations.state, 'unregistered')))
         .orderBy(desc(localServerRemovalOperations.createdAt)).limit(1).get()
-      if (permanentRemoval || !priorRemoval) throw new ServerRemovalError('SERVER_NOT_UNREGISTERED', 'Only a retained server registration can be restored. Permanently removed servers cannot be restored here.')
+      if (permanentRemoval || !priorRemoval || server.registrationDiscardedAt) throw new ServerRemovalError('SERVER_NOT_UNREGISTERED', 'Only a retained server registration can be restored. Permanently removed or discarded registrations cannot be restored here.')
       const directory = resolve(server.directory)
       const folder = await lstat(directory).catch((error: unknown) => {
         if (isFsError(error) && error.code === 'ENOENT') throw new ServerRemovalError('SERVER_RESTORE_FOLDER_MISSING', 'The original server folder is missing. Its registration was not changed.')

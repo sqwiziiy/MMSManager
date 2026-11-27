@@ -14,6 +14,14 @@ import {
   serverInventorySchema,
   unregisteredServerListSchema,
   serverRegistrationRestoreResultSchema,
+  serverRegistrationDiscardRequestSchema,
+  serverRegistrationDiscardResultSchema,
+  serverSoftwareDetectionResultSchema,
+  serverSoftwareCorrectionRequestSchema,
+  serverSoftwareChangeRequestSchema,
+  serverSoftwareChangeResultSchema,
+  serverSoftwareCorrectionResultSchema,
+  serverSoftwareRollbackResultSchema,
   serverConsoleResponseSchema,
   serverConsoleSessionsResponseSchema,
   serverRuntimeResultSchema,
@@ -51,7 +59,7 @@ import {
   nativeLoaderCorrectionResultSchema,
 } from '@mmsmanager/shared'
 import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, UnregisteredServer, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerRestartScheduleUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate, ServerAccessPermissions, ServerAccessGrantUser, ServerZipImportPreview, ServerRemovalOperation, NativeLoaderCorrectionPreview } from '@mmsmanager/shared'
-import type { DashboardPlayerSummary, InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
+import type { DashboardPlayerSummary, InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest, ServerSoftwareChangeRequest, ServerSoftwareCorrectionRequest, ServerSoftwareDetection } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestHeaders, apiRequestResponse, reportSessionExpiry } from './client'
 
@@ -167,6 +175,31 @@ export async function getUnregisteredServers(signal?: AbortSignal): Promise<Unre
 
 export function restoreUnregisteredServer(serverId: string): Promise<{ ok: true; serverId: string }> {
   return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/restore-registration`, serverRegistrationRestoreResultSchema, { method: 'POST', body: JSON.stringify({}) })
+}
+
+export function discardUnregisteredRegistration(serverId: string, confirmation: string): Promise<{ ok: true; serverId: string; registrationDiscardedAt: string }> {
+  const body = serverRegistrationDiscardRequestSchema.parse({ confirmation })
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/registration`, serverRegistrationDiscardResultSchema, { method: 'DELETE', body: JSON.stringify(body) })
+}
+
+export async function getServerSoftwareDetection(serverId: string, signal?: AbortSignal): Promise<ServerSoftwareDetection> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/software`, serverSoftwareDetectionResultSchema, { signal })
+  return response.detection
+}
+
+export function correctServerSoftwareRegistration(serverId: string, input: ServerSoftwareCorrectionRequest) {
+  const body = serverSoftwareCorrectionRequestSchema.parse(input)
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/software/registration`, serverSoftwareCorrectionResultSchema, { method: 'PATCH', body: JSON.stringify(body) })
+}
+
+export function replaceServerSoftware(serverId: string, input: ServerSoftwareChangeRequest) {
+  const body = serverSoftwareChangeRequestSchema.parse(input)
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/software`, serverSoftwareChangeResultSchema, { method: 'POST', body: JSON.stringify(body) })
+}
+
+export function rollbackServerSoftware(serverId: string, confirmation: string) {
+  const body = serverRegistrationDiscardRequestSchema.parse({ confirmation })
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/software/rollback`, serverSoftwareRollbackResultSchema, { method: 'POST', body: JSON.stringify(body) })
 }
 
 export function inspectServerImport(path: string): Promise<ServerImportPreview> {

@@ -401,9 +401,43 @@ export const unregisteredServerSchema = z.object({
   version: z.string().nullable(),
   removedAt: z.string().datetime({ offset: true }),
   folderAvailable: z.boolean(),
+  restoreBlockedReason: z.enum(['folder-missing', 'folder-conflict', 'folder-unsafe', 'registration-discarded']).nullable(),
 }).strict()
 export const unregisteredServerListSchema = z.object({ servers: z.array(unregisteredServerSchema).max(100) }).strict()
 export const serverRegistrationRestoreResultSchema = z.object({ ok: z.literal(true), serverId: z.string().uuid() }).strict()
+export const serverRegistrationDiscardRequestSchema = z.object({ confirmation: z.string().trim().min(1).max(60) }).strict()
+export const serverRegistrationDiscardResultSchema = z.object({ ok: z.literal(true), serverId: z.string().uuid(), registrationDiscardedAt: z.string().datetime({ offset: true }) }).strict()
+export const serverSoftwareChangeRequestSchema = z.object({
+  software: z.enum(['vanilla', 'fabric', 'paper', 'forge', 'neoforge']),
+  version: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){1,3}$/),
+  loaderVersion: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,79}$/).optional(),
+  installerVersion: z.string().regex(/^\d+(?:\.\d+){1,3}$/).optional(),
+  paperBuild: z.number().int().positive().optional(),
+  confirmation: z.string().trim().min(1).max(60),
+  compatibilityAcknowledged: z.literal(true),
+}).strict().refine((value) => value.software !== 'fabric' || Boolean(value.loaderVersion && value.installerVersion), {
+  path: ['loaderVersion'], message: 'Choose Fabric loader and installer versions.',
+}).refine((value) => !['forge', 'neoforge'].includes(value.software) || Boolean(value.loaderVersion), {
+  path: ['loaderVersion'], message: 'Choose an official Forge or NeoForge loader version.',
+})
+export const serverSoftwareDetectionSchema = z.object({
+  serverId: z.string().uuid(), registeredSoftware: serverSoftwareSchema, registeredVersion: z.string().nullable(),
+  detectedSoftware: serverSoftwareSchema.nullable(), detectedVersion: z.string().nullable(), loaderVersion: z.string().nullable(),
+  launchStrategy: z.enum(['jar', 'argfile']).nullable(), jarName: z.string().nullable(), registrationMatches: z.boolean(), rollbackAvailable: z.boolean(),
+}).strict()
+export const serverSoftwareDetectionResultSchema = z.object({ detection: serverSoftwareDetectionSchema }).strict()
+export const serverSoftwareCorrectionRequestSchema = z.object({
+  software: z.enum(['vanilla', 'fabric', 'paper', 'forge', 'neoforge']),
+  version: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){1,3}$/),
+  loaderVersion: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,79}$/).nullable(),
+  confirmation: z.string().trim().min(1).max(60),
+}).strict()
+export const serverSoftwareCorrectionResultSchema = z.object({ serverId: z.string().uuid(), software: z.enum(['vanilla', 'fabric', 'paper', 'forge', 'neoforge']), version: z.string() }).strict()
+export const serverSoftwareChangeResultSchema = z.object({
+  serverId: z.string().uuid(), software: z.enum(['vanilla', 'fabric', 'paper', 'forge', 'neoforge']), version: z.string(),
+  backupId: z.string().uuid(), operationId: z.string().uuid(),
+}).strict()
+export const serverSoftwareRollbackResultSchema = z.object({ serverId: z.string().uuid(), rolledBackTo: z.enum(['vanilla', 'fabric', 'paper', 'forge', 'neoforge', 'unknown']), version: z.string().nullable() }).strict()
 export const localServerSummarySchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
@@ -1246,6 +1280,9 @@ export type ServerInstallRequest = z.infer<typeof serverInstallRequestSchema>
 export type InstallOperation = z.infer<typeof installOperationSchema>
 export type NativeLoaderCorrectionPreview = z.infer<typeof nativeLoaderCorrectionPreviewSchema>
 export type NativeLoaderCorrectionRequest = z.infer<typeof nativeLoaderCorrectionRequestSchema>
+export type ServerSoftwareChangeRequest = z.infer<typeof serverSoftwareChangeRequestSchema>
+export type ServerSoftwareCorrectionRequest = z.infer<typeof serverSoftwareCorrectionRequestSchema>
+export type ServerSoftwareDetection = z.infer<typeof serverSoftwareDetectionSchema>
 export type ServerRuntime = z.infer<typeof serverRuntimeSchema>
 export type JvmOptions = z.infer<typeof jvmOptionsSchema>
 export type ServerRuntimeSettings = z.infer<typeof serverRuntimeSettingsSchema>

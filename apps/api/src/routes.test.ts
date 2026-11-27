@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -1605,6 +1605,18 @@ describe('authenticated local API', () => {
     const member = await signInCreatedAccount('restore-list-member', memberPassword)
     expect((await app.inject({ method: 'GET', url: listUrl, headers: member.headers })).statusCode).toBe(403)
     expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restore-registration`, headers: member.headers, payload: {} })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/servers/${serverId}/software`, headers: member.headers })).statusCode).toBe(403)
+
+    const retainedDirectory = join(servers.managedRoot, 'retained-server-fixture-original')
+    await rename(directory, retainedDirectory)
+    await symlink(dataDirectory, directory)
+    expect((await app.inject({ method: 'GET', url: listUrl, headers: adminHeaders })).json().servers)
+      .toContainEqual(expect.objectContaining({ id: serverId, folderAvailable: false, restoreBlockedReason: 'folder-unsafe' }))
+    const unsafeRestore = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restore-registration`, headers: adminHeaders, payload: {} })
+    expect(unsafeRestore.statusCode).toBe(409)
+    expect(unsafeRestore.json()).toMatchObject({ error: { code: 'SERVER_RESTORE_FOLDER_UNSAFE' } })
+    await unlink(directory)
+    await rename(retainedDirectory, directory)
 
     const conflictId = randomUUID()
     await opened.db.insert(localServers).values({
@@ -1615,6 +1627,7 @@ describe('authenticated local API', () => {
     const conflicted = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restore-registration`, headers: adminHeaders, payload: {} })
     expect(conflicted.statusCode).toBe(409)
     expect(conflicted.json()).toMatchObject({ error: { code: 'SERVER_RESTORE_CONFLICT' } })
+    expect((await app.inject({ method: 'GET', url: listUrl, headers: adminHeaders })).json().servers).toContainEqual(expect.objectContaining({ id: serverId, restoreBlockedReason: 'folder-conflict' }))
     expect((await opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get())?.removedAt).not.toBeNull()
     await opened.db.delete(localServers).where(eq(localServers.id, conflictId)).run()
 
@@ -1650,6 +1663,45 @@ describe('authenticated local API', () => {
     const permanentRestore = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${permanentId}/restore-registration`, headers: adminHeaders, payload: {} })
     expect(permanentRestore.statusCode).toBe(409)
     expect(permanentRestore.json()).toMatchObject({ error: { code: 'SERVER_NOT_UNREGISTERED' } })
+  })
+
+  it('removes only a retained registration while keeping its files, history and unregister audit', async () => {
+    const admin = await bootstrapAdmin()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
+    const owner = auth.authenticate(admin.cookieHeader.match(/mmsmanager_session=([^;]+)/)?.[1] ?? '')!
+    const at = '2026-11-23T13:00:00.000Z'
+    const serverId = randomUUID()
+    const directory = join(servers.managedRoot, 'discarded-registration-fixture')
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'keep.txt'), 'filesystem stays untouched')
+    await opened.db.insert(localServers).values({
+      id: serverId, name: 'Discard Registration Fixture', directory, source: 'created', software: 'vanilla', version: '1.21.4', jarName: 'server.jar',
+      javaPath: '/fixture/java', javaMajor: 21, requiredJavaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024, port: null,
+      eula: 'accepted', managed: true, worldFolders: '[]', createdBy: owner.userId, createdAt: at, updatedAt: at,
+    }).run()
+    await opened.db.insert(localServerRuntime).values({ serverId, status: 'stopped', processPid: null, processStartMarker: null, processBootId: null, startedAt: null, updatedAt: at, lastExitCode: null, errorMessage: null, restartRequired: false }).run()
+    await opened.db.insert(localServerEvents).values({ serverId, actorUserId: owner.userId, action: 'kept-history-fixture', outcome: 'success', occurredAt: at, detail: 'history remains' }).run()
+    const unregistered = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/remove`, headers: adminHeaders, payload: { mode: 'unregister', confirmation: 'Discard Registration Fixture' } })
+    expect(unregistered.statusCode, unregistered.body).toBe(200)
+
+    const memberPassword = 'synthetic discard registration member 3f!Kx9Bd'
+    await auth.createUser(owner, { username: 'discard-registration-member', displayName: 'Discard Registration Member', password: memberPassword, role: 'member' })
+    const member = await signInCreatedAccount('discard-registration-member', memberPassword)
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/servers/${serverId}/registration`, headers: member.headers, payload: { confirmation: 'Discard Registration Fixture' } })).statusCode).toBe(403)
+
+    const wrongConfirmation = await app.inject({ method: 'DELETE', url: `/api/v1/admin/servers/${serverId}/registration`, headers: adminHeaders, payload: { confirmation: 'wrong name' } })
+    expect(wrongConfirmation.statusCode).toBe(400)
+    const discarded = await app.inject({ method: 'DELETE', url: `/api/v1/admin/servers/${serverId}/registration`, headers: adminHeaders, payload: { confirmation: 'Discard Registration Fixture' } })
+    expect(discarded.statusCode, discarded.body).toBe(200)
+    expect(await opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()).toMatchObject({ removedAt: expect.any(String), registrationDiscardedAt: expect.any(String) })
+    expect(await readFile(join(directory, 'keep.txt'), 'utf8')).toBe('filesystem stays untouched')
+    expect((await app.inject({ method: 'GET', url: '/api/v1/admin/servers/unregistered', headers: adminHeaders })).json().servers).not.toContainEqual(expect.objectContaining({ id: serverId }))
+    const events = await opened.db.select().from(localServerEvents).where(eq(localServerEvents.serverId, serverId)).all()
+    expect(events.map((event) => event.action)).toEqual(expect.arrayContaining(['kept-history-fixture', 'server-unregistered', 'server-registration-discarded']))
+    const history = await app.inject({ method: 'GET', url: '/api/v1/admin/server-removals', headers: adminHeaders })
+    expect(history.json().operations).toContainEqual(expect.objectContaining({ serverId, mode: 'unregister', state: 'unregistered' }))
+    const restore = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/restore-registration`, headers: adminHeaders, payload: {} })
+    expect(restore.statusCode).toBe(409)
   })
 
 })

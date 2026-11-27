@@ -71,6 +71,8 @@ function backupPath(value: string): boolean {
 }
 function exclusion(path: string): ExclusionReason | null {
   const parts = path.split('/')
+  if (parts.length === 1 && /^\.mmsmanager-software-stage-[0-9a-f-]{36}$/i.test(parts[0]!)) return 'private-system-data'
+  if (parts[0] === '.mmsmanager' && parts[1] === 'software-rollback') return 'private-system-data'
   if (parts.some((part) => PRIVATE_SEGMENTS.has(part))) return 'private-system-data'
   const name = (parts.at(-1) ?? '').toLowerCase()
   if (/^mmsmanager\.sqlite(?:-(?:wal|shm))?$/.test(name)) return 'private-system-data'

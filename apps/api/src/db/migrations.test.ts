@@ -52,6 +52,7 @@ describe('additive database migrations', () => {
     expect(opened.db.select().from(backupSettings).get()).toMatchObject({ id: 1, maxArchiveBytes: 20 * 1024 ** 3, storageQuotaBytes: 100 * 1024 ** 3, maxEntries: 100_000, maxDurationMinutes: 30 })
     expect(opened.db.select().from(users).where(eq(users.id, userId)).get()?.passwordHash).toBe('fixture-only-preserved-hash')
     expect((opened.native.pragma('table_info(local_servers)') as Array<{ name: string }>).map((column) => column.name)).toContain('loader')
+    expect((opened.native.pragma('table_info(local_servers)') as Array<{ name: string }>).map((column) => column.name)).toContain('registration_discarded_at')
     expect((opened.native.pragma('table_info(server_install_operations)') as Array<{ name: string }>).map((column) => column.name)).toEqual(expect.arrayContaining(['loader', 'installer_log', 'artifact_checksum_type']))
     expect(opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()).toMatchObject({ id: serverId, name: 'Legacy console fixture', software: 'vanilla', loader: null })
     expect(opened.native.prepare('SELECT compact_navigation AS compactNavigation, default_landing AS defaultLanding, language, theme, accent, density, reduced_motion AS reducedMotion FROM user_preferences WHERE user_id = ?').get(userId)).toEqual({ compactNavigation: 1, defaultLanding: 'machine', language: 'en', theme: 'dark', accent: 'moss', density: 'comfortable', reducedMotion: 0 })

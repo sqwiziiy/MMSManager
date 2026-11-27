@@ -99,6 +99,19 @@ describe('managed server backup and restore', () => {
     expect(inventory.storageUsedBytes).toBe(archiveStat.size + manifestStat.size)
   })
 
+  it('excludes abandoned software staging data while keeping file recovery data', async () => {
+    const stageDirectory = join(serverDirectory, `.mmsmanager-software-stage-${randomUUID()}`)
+    await mkdir(stageDirectory)
+    await writeFile(join(stageDirectory, 'server.jar'), 'partial staged core')
+
+    const backup = await service.create(serverId, actorId)
+    const preview = await service.preview(serverId, backup.id)
+
+    expect(preview.entries.some((entry) => entry.path.startsWith('.mmsmanager-software-stage-'))).toBe(false)
+    expect(preview.excludedPaths.some((entry) => entry.path.startsWith('.mmsmanager-software-stage-') && entry.reason === 'private-system-data')).toBe(true)
+    expect(preview.entries.map((entry) => entry.path)).toContain('.mmsmanager/trash/file-manager/recoverable.bin')
+  })
+
   it('removes only private interrupted backup staging folders during API startup recovery', async () => {
     const parent = join(temp, 'server-backups', serverId)
     await mkdir(parent, { recursive: true, mode: 0o700 })

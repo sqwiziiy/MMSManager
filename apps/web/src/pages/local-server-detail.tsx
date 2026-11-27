@@ -7,11 +7,12 @@ import {
   Search, Send, Server, Settings2, Shield, Square, Terminal, Trash2, Upload, Users, Wifi,
 } from 'lucide-react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
-import type { LocalServerSummary, ServerConsoleEntry, ServerConsoleSession, ServerModEntry, ServerModsInventory, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerAccessPermissions, ServerAccessGrantUser, NativeLoaderCorrectionPreview } from '@mmsmanager/shared'
+import type { InstallCatalog, InstallSoftware, LocalServerSummary, ServerConsoleEntry, ServerConsoleSession, ServerModEntry, ServerModsInventory, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerAccessPermissions, ServerAccessGrantUser, NativeLoaderCorrectionPreview, ServerSoftwareDetection } from '@mmsmanager/shared'
 import {
   confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getMyServerAccess, getServerAccessUsers, getServerConsole, getServerConsoleSessions, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, restoreServerFileRecovery, restoreTrashedServerFile, sendPlayerAction, updateServerAccess, inspectManagedNativeLoader, correctManagedNativeLoader,
   sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer, removeLocalServer,
   getServerMods, uploadServerMod, uploadServerFiles, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, renameServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
+  getInstallCatalog, getServerSoftwareDetection, correctServerSoftwareRegistration, replaceServerSoftware, rollbackServerSoftware,
 } from '../api/servers'
 import type { ServerFileUploadRequest } from '../api/servers'
 import { ApiRequestError } from '../api/client'
@@ -35,6 +36,7 @@ const tabs = [
   { id: 'properties', label: 'Properties', icon: Settings2 },
   { id: 'worlds', label: 'Worlds', icon: Globe },
   { id: 'runtime', label: 'Runtime', icon: Cpu },
+  { id: 'software', label: 'Server software', icon: Package },
   { id: 'backups', label: 'Backups', icon: HardDrive },
   { id: 'automation', label: 'Automation', icon: Clock3 },
   { id: 'access', label: 'Access', icon: Shield },
@@ -144,7 +146,13 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   const isManaged = server.source === 'created' && server.managed
   const hasPermission = (capability: keyof ServerAccessPermissions) => isAdmin || permissions?.[capability] === true
   const canStartState = isManaged && ['stopped', 'crashed', 'error'].includes(status)
-  const canStart = hasPermission('startServer') && canStartState && server.eula === 'accepted' && Boolean(server.jarName && server.javaMajor)
+  const nativeLoader = server.software === 'forge' || server.software === 'neoforge'
+  const startBlockReason = !hasPermission('startServer') ? 'Start permission has not been granted.'
+    : server.eula !== 'accepted' ? 'EULA acceptance is required'
+      : !server.javaMajor ? 'A verified Java runtime is required to start this server.'
+        : !nativeLoader && !server.jarName ? 'The registered server JAR is missing.'
+          : null
+  const canStart = canStartState && startBlockReason === null
   const canStopState = isManaged && ['running', 'starting'].includes(status)
   const canStop = hasPermission('stopServer') && canStopState
   const canRestart = hasPermission('restartServer') && isManaged && status === 'running'
@@ -161,7 +169,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
       <div className="server-detail-identity"><span className="local-server-icon detail-server-icon"><Server size={19} /></span><div><div className="server-detail-title"><h1 data-no-translate>{displayName}</h1><Badge tone={statusTone}>{statusLabel(status)}</Badge></div><p>{server.software === 'unknown' ? translateText('Unknown', currentLocale()) : <SoftwareIdentity software={server.software} version={server.version} />} <span>·</span> {server.portStatus === 'valid' ? <>{translateText('Game port', currentLocale())} <span data-no-translate>{server.port}</span></> : translateText(serverPortIssueText(server.portErrorCode) ?? 'No game port detected', currentLocale())}</p></div></div>
       <div className="server-actions">
         {isAdmin && <Button kind="quiet" icon={PencilLine} onClick={() => { setNameDraft(displayName); setNameError(null); setNameDialogOpen(true) }}>Edit name</Button>}
-        {isManaged && canStartState && <Button kind="primary" icon={Play} disabled={!canStart || busy} title={!hasPermission('startServer') ? 'Start permission has not been granted.' : server.eula !== 'accepted' ? 'EULA acceptance is required' : 'The server runtime is unavailable.'} onClick={() => void runAction('start')}>Start server</Button>}
+        {isManaged && canStartState && <div className="server-start-control"><Button kind="primary" icon={Play} disabled={!canStart || busy} title={startBlockReason ? translateText(startBlockReason, currentLocale()) : undefined} onClick={() => void runAction('start')}>{translateText('Start server', currentLocale())}</Button>{startBlockReason && <small className="server-start-block-reason" role="status">{translateText(startBlockReason, currentLocale())}</small>}</div>}
         {canStopState && <Button kind="danger" icon={Square} disabled={!canStop || busy} title={!hasPermission('stopServer') ? 'Stop permission has not been granted.' : undefined} onClick={() => void runAction('stop')}>Stop server</Button>}
         {canConfirmStopped && <Button icon={CircleCheck} disabled={busy} onClick={() => void runAction('confirm')}>Confirm it has stopped</Button>}
         {isManaged && <Button icon={RefreshCw} disabled={!canRestart || busy} title={status === 'running' && !hasPermission('restartServer') ? 'Restart permission has not been granted.' : undefined} onClick={() => void runAction('restart')}>{busy && status === 'running' ? 'Restarting…' : 'Restart'}</Button>}
@@ -170,7 +178,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     <div className="server-detail-tabs" role="navigation" aria-label={translateText(`${displayName} pages`, currentLocale())}>
       {tabs.map(({ id, label, icon: Icon }) => {
         const missingPermission = sectionCapability[id] !== undefined && !hasPermission(sectionCapability[id]!)
-        const disabled = missingPermission || (id === 'console' && !canReadConsole) || (id === 'players' && !canReadPlayers) || ((id === 'runtime' || id === 'automation' || id === 'danger-zone') && !isAdmin)
+        const disabled = missingPermission || (id === 'console' && !canReadConsole) || (id === 'players' && !canReadPlayers) || ((id === 'runtime' || id === 'automation' || id === 'danger-zone' || id === 'software') && !isAdmin)
         const content = <><Icon size={15} />{translateText(label, currentLocale())}</>
         return disabled
           ? <span key={id} className={`server-detail-tab-disabled ${section === id ? 'active' : ''}`} aria-disabled="true" title={missingPermission ? 'This server permission has not been granted.' : id === 'console' ? 'Available during a panel-owned process session.' : id === 'players' ? 'Available while a panel-owned server is ready.' : translateText('Administrator access required', currentLocale())}>{content}</span>
@@ -199,13 +207,14 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     {section === 'worlds' && hasPermission('viewWorlds') && <LocalWorlds serverId={server.id} managed={isManaged} />}
     {section === 'backups' && hasPermission('viewBackups') && <LocalServerBackups serverId={server.id} serverName={server.name} managed={isManaged} canView={hasPermission('viewBackups')} canCreate={hasPermission('createBackups')} isAdmin={isAdmin} runtimeStatus={status} />}
     {section === 'runtime' && <LocalServerRuntime serverId={server.id} managed={isManaged} isAdmin={isAdmin} />}
+    {section === 'software' && (isAdmin ? <LocalServerSoftware server={server} stopped={status === 'stopped'} managed={isManaged} /> : <LockedDetail title="Administrator access required" text="Server software management is available only to Administrators." />)}
     {section === 'automation' && <LocalServerAutomation serverId={server.id} managed={isManaged} isAdmin={isAdmin} />}
     {section === 'access' && <LocalAccessPolicy server={{ ...server, name: displayName }} isAdmin={isAdmin} selfPermissions={permissions} accessError={accessError} />}
     {section === 'danger-zone' && (isAdmin
       ? <div className="danger-zone-stack"><p className="danger-zone-note">{translateText('Server file export and removal controls are available only to workspace administrators.', currentLocale())}</p><LocalServerRemovalCard server={{ ...server, name: displayName }} /></div>
       : <LockedDetail title="Administrator access required" text="Server file export and removal are available only to Administrators." />)}
     {sectionCapability[section] && !hasPermission(sectionCapability[section]!) && <LockedDetail title={accessText('Access not granted')} text={accessText('Ask an Administrator to grant this server permission.')} />}
-    {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups', 'runtime', 'automation', 'access', 'danger-zone'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
+    {!['overview', 'console', 'logs', 'properties', 'players', 'mods', 'files', 'worlds', 'backups', 'runtime', 'software', 'automation', 'access', 'danger-zone'].includes(section) && <ComingSoonDetail section={section} serverName={server.name} />}
     {nameDialogOpen && <div className="local-file-dialog-backdrop"><section className="local-file-dialog server-name-dialog" role="dialog" aria-modal="true" aria-labelledby="server-name-dialog-title"><div className="local-file-dialog-heading"><span className="local-backup-icon"><PencilLine size={16} /></span><div><h3 id="server-name-dialog-title">{translateText('Edit server name', currentLocale())}</h3><p>{translateText('Only the display name changes.', currentLocale())}</p></div></div><form onSubmit={(event) => void saveName(event)}><label className="server-name-field">{translateText('Server name', currentLocale())}<input autoFocus required maxLength={60} value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} /></label>{nameError && <div className="local-inline-error" role="alert">{nameError}</div>}<div className="local-file-dialog-actions"><Button type="button" disabled={nameSaving} onClick={() => setNameDialogOpen(false)}>{translateText('Cancel', currentLocale())}</Button><Button kind="primary" icon={nameSaving ? RefreshCw : Check} disabled={nameSaving || !nameDraft.trim() || nameDraft.trim() === displayName}>{nameSaving ? translateText('Saving…', currentLocale()) : translateText('Save name', currentLocale())}</Button></div></form></section></div>}
   </div>
 }
@@ -216,7 +225,7 @@ function statusLabel(status: string) {
 }
 
 function sectionTitle(section: string) {
-  const labels: Record<string, string> = { overview: 'Server overview', console: 'Live console', logs: 'Process output', properties: 'Server properties', players: 'Player directory', mods: 'Installed mods', files: 'File browser', worlds: 'World manager', runtime: 'Runtime profile', backups: 'Backup history', automation: 'Scheduled tasks', access: 'Access policy', 'danger-zone': 'Danger zone' }
+  const labels: Record<string, string> = { overview: 'Server overview', console: 'Live console', logs: 'Process output', properties: 'Server properties', players: 'Player directory', mods: 'Installed mods', files: 'File browser', worlds: 'World manager', runtime: 'Runtime profile', software: 'Server software', backups: 'Backup history', automation: 'Scheduled tasks', access: 'Access policy', 'danger-zone': 'Danger zone' }
   return labels[section] ?? 'Server overview'
 }
 
@@ -275,6 +284,121 @@ function NativeLoaderCorrectionCard({ server, stopped }: { server: LocalServerSu
       </div>
     </div>
   </Card>
+}
+
+function LocalServerSoftware({ server, stopped, managed }: { server: LocalServerSummary; stopped: boolean; managed: boolean }) {
+  const [detection, setDetection] = useState<ServerSoftwareDetection | null>(null)
+  const [selectedSoftware, setSelectedSoftware] = useState<InstallSoftware>(['vanilla', 'fabric', 'paper', 'forge', 'neoforge'].includes(server.software) ? server.software as InstallSoftware : 'vanilla')
+  const [version, setVersion] = useState(server.version ?? '')
+  const [loaderVersion, setLoaderVersion] = useState('')
+  const [installerVersion, setInstallerVersion] = useState('')
+  const [paperBuild, setPaperBuild] = useState<number | null>(null)
+  const [catalog, setCatalog] = useState<InstallCatalog | null>(null)
+  const [confirmation, setConfirmation] = useState('')
+  const [compatibilityAcknowledged, setCompatibilityAcknowledged] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+
+  const refresh = useCallback(async () => {
+    try { setDetection(await getServerSoftwareDetection(server.id)); setError('') }
+    catch (issue) { setError(issue instanceof Error ? issue.message : translateText('Installed server software could not be checked.', currentLocale())) }
+  }, [server.id])
+  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    const controller = new AbortController()
+    void getInstallCatalog(selectedSoftware, version || undefined, controller.signal).then((result) => {
+      setCatalog(result)
+      if (!version || !result.versions.includes(version)) {
+        setVersion(result.versions.includes(server.version ?? '') ? server.version! : result.versions[0] ?? '')
+      }
+      if (result.loaders.length && !result.loaders.includes(loaderVersion)) setLoaderVersion(result.loaders[0]!)
+      if (result.installerVersion && result.installerVersion !== installerVersion) setInstallerVersion(result.installerVersion)
+      if (result.builds.length && (paperBuild === null || !result.builds.includes(paperBuild))) setPaperBuild(result.builds[0]!)
+    }).catch((issue: unknown) => {
+      if (!(issue instanceof DOMException && issue.name === 'AbortError')) setCatalog(null)
+    })
+    return () => controller.abort()
+  }, [selectedSoftware, version, server.id, server.version, loaderVersion, installerVersion, paperBuild])
+
+  const correctRegistration = async () => {
+    if (!detection?.detectedSoftware || !detection.detectedVersion || confirmation !== server.name || busy) return
+    setBusy(true); setError(''); setMessage('')
+    try {
+      await correctServerSoftwareRegistration(server.id, { software: detection.detectedSoftware as InstallSoftware, version: detection.detectedVersion, loaderVersion: detection.loaderVersion, confirmation })
+      await refresh(); setMessage(translateText('Server software registration was corrected.', currentLocale()))
+    } catch (issue) { setError(issue instanceof Error ? issue.message : translateText('The server software registration could not be corrected.', currentLocale())) }
+    finally { setBusy(false) }
+  }
+
+  const replaceSoftware = async () => {
+    if (!version || !catalog || confirmation !== server.name || !compatibilityAcknowledged || !stopped || !managed || busy) return
+    setBusy(true); setError(''); setMessage('')
+    try {
+      const result = await replaceServerSoftware(server.id, {
+        software: selectedSoftware, version,
+        ...(selectedSoftware === 'fabric' || selectedSoftware === 'forge' || selectedSoftware === 'neoforge' ? { loaderVersion } : {}),
+        ...(selectedSoftware === 'fabric' ? { installerVersion } : {}),
+        ...(selectedSoftware === 'paper' && paperBuild ? { paperBuild } : {}),
+        confirmation, compatibilityAcknowledged: true,
+      })
+      setMessage(`${translateText('Server software changed. A verified pre-change backup was created.', currentLocale())} ${translateText('Backup', currentLocale())} ${result.backupId}`)
+      await refresh()
+      window.setTimeout(() => window.location.reload(), 500)
+    } catch (issue) { setError(issue instanceof Error ? issue.message : translateText('The server software could not be changed. The previous core was restored.', currentLocale())) }
+    finally { setBusy(false) }
+  }
+
+  const rollback = async () => {
+    if (!confirmation || confirmation !== server.name || !detection?.rollbackAvailable || !stopped || busy) return
+    setBusy(true); setError(''); setMessage('')
+    try {
+      const result = await rollbackServerSoftware(server.id, confirmation)
+      setMessage(`${translateText('Previous server software was restored.', currentLocale())} ${translateText('Installed software', currentLocale())}: ${result.rolledBackTo} ${result.version ?? ''}`)
+      await refresh(); window.setTimeout(() => window.location.reload(), 500)
+    } catch (issue) { setError(issue instanceof Error ? issue.message : translateText('The previous server software could not be restored.', currentLocale())) }
+    finally { setBusy(false) }
+  }
+
+  const softwareNames: InstallSoftware[] = ['vanilla', 'fabric', 'forge', 'neoforge', 'paper']
+  return <div className="server-software-stack">
+    <Card className="server-software-card">
+      <SectionHeading title={translateText('Installed server software', currentLocale())} description={translateText('Detect the installed loader and correct its saved registration when the files do not match.', currentLocale())} />
+      {!managed && <div className="install-info-row"><Shield size={15} /><span>{translateText('Software installation is available only for folders created by MMSManager.', currentLocale())}</span></div>}
+      {!stopped && <div className="install-info-row"><Shield size={15} /><span>{translateText('Stop this server before checking, correcting or replacing its software.', currentLocale())}</span></div>}
+      {detection && <div className="native-loader-detection">
+        <div><span>{translateText('Registered software', currentLocale())}</span><strong>{detection.registeredSoftware} {detection.registeredVersion ?? ''}</strong></div>
+        <div><span>{translateText('Detected software', currentLocale())}</span><strong>{detection.detectedSoftware ?? translateText('Not detected', currentLocale())} {detection.detectedVersion ?? ''}</strong></div>
+        {detection.loaderVersion && <div><span>{translateText('Loader build', currentLocale())}</span><strong data-no-translate>{detection.loaderVersion}</strong></div>}
+        {detection.launchStrategy && <div><span>{translateText('Launch strategy', currentLocale())}</span><strong>{translateText(detection.launchStrategy === 'argfile' ? 'Java argument file' : 'Executable JAR', currentLocale())}</strong></div>}
+        <Badge tone={detection.registrationMatches ? 'good' : 'warn'}>{translateText(detection.registrationMatches ? 'Registration matches files' : 'Registration needs review', currentLocale())}</Badge>
+      </div>}
+      {detection && detection.detectedSoftware && !detection.registrationMatches && <div className="server-software-correction">
+        <p>{translateText('Correcting registration updates SQLite only; server files remain unchanged.', currentLocale())}</p>
+        <Button icon={Check} disabled={!stopped || busy || confirmation !== server.name || !detection.detectedVersion} onClick={() => void correctRegistration()}>{translateText('Correct registration', currentLocale())}</Button>
+      </div>}
+      <Button icon={Search} disabled={busy} onClick={() => void refresh()}>{translateText('Check installed software', currentLocale())}</Button>
+      {detection?.rollbackAvailable && <div className="server-software-rollback"><p>{translateText('The previous server core is available for rollback.', currentLocale())}</p><Button kind="secondary" icon={RotateCcw} disabled={!stopped || busy || confirmation !== server.name} onClick={() => void rollback()}>{translateText('Restore previous software', currentLocale())}</Button></div>}
+    </Card>
+
+    <Card className="server-software-card">
+      <SectionHeading title={translateText('Install different server software', currentLocale())} description={translateText('A verified backup is created before the server core is replaced. The server remains stopped.', currentLocale())} />
+      <div className="server-software-form">
+        <Field label={translateText('Server software', currentLocale())}><select value={selectedSoftware} onChange={(event) => { setSelectedSoftware(event.target.value as InstallSoftware); setLoaderVersion(''); setInstallerVersion(''); setPaperBuild(null); setCompatibilityAcknowledged(false) }}>{softwareNames.map((item) => <option value={item} key={item}>{item === 'neoforge' ? 'NeoForge' : item[0]!.toUpperCase() + item.slice(1)}</option>)}</select></Field>
+        <Field label={translateText('Minecraft version', currentLocale())}><select value={version} onChange={(event) => setVersion(event.target.value)} disabled={!catalog?.versions.length}>{catalog?.versions.map((item) => <option key={item} value={item}>{item}</option>)}</select></Field>
+        {(selectedSoftware === 'fabric' || selectedSoftware === 'forge' || selectedSoftware === 'neoforge') && <Field label={translateText(selectedSoftware === 'fabric' ? 'Fabric loader version' : 'Loader version', currentLocale())}><select value={loaderVersion} onChange={(event) => setLoaderVersion(event.target.value)} disabled={!catalog?.loaders.length}>{catalog?.loaders.map((item) => <option key={item} value={item}>{item}</option>)}</select></Field>}
+        {selectedSoftware === 'fabric' && <Field label={translateText('Fabric installer version', currentLocale())}><select value={installerVersion} onChange={(event) => setInstallerVersion(event.target.value)}>{catalog?.installerVersion && <option value={catalog.installerVersion}>{catalog.installerVersion}</option>}</select></Field>}
+        {selectedSoftware === 'paper' && <Field label={translateText('Stable Paper build', currentLocale())}><select value={paperBuild ?? ''} onChange={(event) => setPaperBuild(Number(event.target.value) || null)} disabled={!catalog?.builds.length}>{catalog?.builds.map((item) => <option key={item} value={item}>{item}</option>)}</select></Field>}
+      </div>
+      <div className="server-software-warning"><AlertTriangle size={16} /><span>{translateText('Mods, plugins and worlds may not be compatible with the selected software or Minecraft version. MMSManager keeps these files and does not remove them automatically.', currentLocale())}</span></div>
+      <label className="install-eula-check"><input type="checkbox" checked={compatibilityAcknowledged} onChange={(event) => setCompatibilityAcknowledged(event.target.checked)} disabled={!managed || !stopped || busy} /><span>{translateText('I understand compatibility may change and confirm this software replacement.', currentLocale())}</span></label>
+      <Field label={`${translateText('Type the exact server name to confirm', currentLocale())}: ${server.name}`}><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} disabled={!managed || !stopped || busy} /></Field>
+      {error && <div className="install-error-inline" role="alert"><AlertTriangle size={15} /><span>{translateText(error, currentLocale())}</span></div>}
+      {message && <div className="install-info-row" role="status"><Check size={15} /><span>{message}</span></div>}
+      {!catalog && <div className="install-info-row"><RefreshCw size={15} /><span>{translateText('Loading official version information…', currentLocale())}</span></div>}
+      <Button kind="primary" icon={busy ? RefreshCw : ArrowDownToLine} disabled={!managed || !stopped || busy || !catalog || !version || !compatibilityAcknowledged || confirmation !== server.name || ((selectedSoftware === 'fabric' || selectedSoftware === 'forge' || selectedSoftware === 'neoforge') && !loaderVersion)} onClick={() => void replaceSoftware()}>{busy ? translateText('Creating backup and installing…', currentLocale()) : translateText('Create backup and replace software', currentLocale())}</Button>
+    </Card>
+  </div>
 }
 
 function LocalOverview({ server, runtime, statusSample }: { server: LocalServerSummary; runtime: ServerRuntime | null; statusSample: ServerStatus | null }) {
