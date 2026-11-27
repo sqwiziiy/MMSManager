@@ -7,9 +7,9 @@ import {
   Search, Send, Server, Settings2, Shield, Square, Terminal, Trash2, Upload, Users, Wifi,
 } from 'lucide-react'
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
-import type { LocalServerSummary, ServerConsoleEntry, ServerConsoleSession, ServerModEntry, ServerModsInventory, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerAccessPermissions, ServerAccessGrantUser } from '@mmsmanager/shared'
+import type { LocalServerSummary, ServerConsoleEntry, ServerConsoleSession, ServerModEntry, ServerModsInventory, ServerRuntime, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerFileEntry, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerAccessPermissions, ServerAccessGrantUser, NativeLoaderCorrectionPreview } from '@mmsmanager/shared'
 import {
-  confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getMyServerAccess, getServerAccessUsers, getServerConsole, getServerConsoleSessions, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, restoreServerFileRecovery, restoreTrashedServerFile, sendPlayerAction, updateServerAccess,
+  confirmLocalServerStopped, createServerFile, downloadServerFile, getAuthoritativePlayers, getMyServerAccess, getServerAccessUsers, getServerConsole, getServerConsoleSessions, getServerRuntime, getServerStatus, getServerFiles, getServerFileRecoveries, getServerFileTrash, getServerWorlds, restoreServerFileRecovery, restoreTrashedServerFile, sendPlayerAction, updateServerAccess, inspectManagedNativeLoader, correctManagedNativeLoader,
   sendLocalServerCommand, startLocalServer, stopLocalServer, restartLocalServer, removeLocalServer,
   getServerMods, uploadServerMod, uploadServerFiles, setServerModEnabled, quarantineServerMod, restoreQuarantinedMod, moveServerFile, renameServerFile, readServerFile, saveServerFileText, trashServerFile, updateServerMetadata,
 } from '../api/servers'
@@ -23,6 +23,7 @@ import { LocalServerBackups } from './local-server-backups'
 import { LocalServerRuntime } from './local-server-runtime'
 import { LocalServerAutomation } from './local-server-automation'
 import { ServerPropertiesEditor } from './server-properties-editor'
+import { SoftwareIdentity } from '../components/software-identity'
 
 const tabs = [
   { id: 'overview', label: 'Overview', icon: Activity },
@@ -157,7 +158,7 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
   if (accessDenied) return <div className="page-stack"><Card className="section-unavailable"><div className="local-console-empty"><Shield size={20} /><strong>{accessText('Server access was removed')}</strong><span>{accessText('This server is no longer available to your account.')}</span><Link to="/servers" className="text-link">{accessText('Return to servers')}</Link></div></Card></div>
   return <div className="page-stack server-detail-page local-detail-page">
     <div className="server-detail-heading">
-      <div className="server-detail-identity"><span className="local-server-icon detail-server-icon"><Server size={19} /></span><div><div className="server-detail-title"><h1 data-no-translate>{displayName}</h1><Badge tone={statusTone}>{statusLabel(status)}</Badge></div><p><span data-no-translate>{server.software === 'unknown' ? server.software : `${capitalize(server.software)}${server.version ? ` ${server.version}` : ''}`}</span> <span>·</span> {server.portStatus === 'valid' ? <>{translateText('Game port', currentLocale())} <span data-no-translate>{server.port}</span></> : translateText(serverPortIssueText(server.portErrorCode) ?? 'No game port detected', currentLocale())}</p></div></div>
+      <div className="server-detail-identity"><span className="local-server-icon detail-server-icon"><Server size={19} /></span><div><div className="server-detail-title"><h1 data-no-translate>{displayName}</h1><Badge tone={statusTone}>{statusLabel(status)}</Badge></div><p>{server.software === 'unknown' ? translateText('Unknown', currentLocale()) : <SoftwareIdentity software={server.software} version={server.version} />} <span>·</span> {server.portStatus === 'valid' ? <>{translateText('Game port', currentLocale())} <span data-no-translate>{server.port}</span></> : translateText(serverPortIssueText(server.portErrorCode) ?? 'No game port detected', currentLocale())}</p></div></div>
       <div className="server-actions">
         {isAdmin && <Button kind="quiet" icon={PencilLine} onClick={() => { setNameDraft(displayName); setNameError(null); setNameDialogOpen(true) }}>Edit name</Button>}
         {isManaged && canStartState && <Button kind="primary" icon={Play} disabled={!canStart || busy} title={!hasPermission('startServer') ? 'Start permission has not been granted.' : server.eula !== 'accepted' ? 'EULA acceptance is required' : 'The server runtime is unavailable.'} onClick={() => void runAction('start')}>Start server</Button>}
@@ -181,7 +182,10 @@ export function LocalServerDetail({ server }: { server: LocalServerSummary }) {
     {runtime?.errorMessage && <div className="local-runtime-alert" role="status"><AlertTriangle size={16} /><span>{runtime.errorMessage}</span></div>}
     {server.portStatus !== 'valid' && <div className="local-runtime-alert" role="alert"><AlertTriangle size={16} /><span>{translateText(serverPortIssueText(server.portErrorCode) ?? 'The configured game port is unavailable', currentLocale())}</span></div>}
     {runtime?.restartRequired && <div className="local-restart-banner" role="status"><RefreshCw size={16} /><span><strong>Restart required</strong><small>{runtime.processPort !== null && runtime.processPort !== runtime.configuredPort ? translateText('Configured port differs from the port used by the running process.', currentLocale()) : runtime.processPort === null ? translateText('The active process port is unknown. Restart the server so MMSManager can track the port it uses.', currentLocale()) : translateText('Server properties changed while this process was running. The new values take effect after the next start.', currentLocale())}</small>{runtime.processPort !== null && <small>{translateText('Configured port', currentLocale())}: <span data-no-translate>{runtime.configuredPort ?? '—'}</span> · {translateText('Process port', currentLocale())}: <span data-no-translate>{runtime.processPort}</span></small>}</span></div>}
-    {section === 'overview' && hasPermission('viewServer') && <LocalOverview server={server} runtime={runtime} statusSample={statusSample} />}
+    {section === 'overview' && hasPermission('viewServer') && <>
+      <LocalOverview server={server} runtime={runtime} statusSample={statusSample} />
+      {isAdmin && isManaged && server.software !== 'forge' && server.software !== 'neoforge' && <NativeLoaderCorrectionCard server={server} stopped={status === 'stopped'} />}
+    </>}
     {section === 'players' && (canReadPlayers
       ? <LocalPlayers serverId={server.id} canView={hasPermission('viewPlayers')} canAct={hasPermission('moderatePlayers') && canReadPlayers} statusSample={statusSample} error={statusError} />
       : <SectionUnavailable title={isAdmin ? 'Players unavailable' : 'Administrator access required'} text={isAdmin ? 'Player names and moderation actions are available while a panel-owned server is ready.' : 'Player names and moderation actions require an administrator.'} />)}
@@ -216,7 +220,6 @@ function sectionTitle(section: string) {
   return labels[section] ?? 'Server overview'
 }
 
-function capitalize(value: string) { return `${value[0]!.toUpperCase()}${value.slice(1)}` }
 function duration(seconds: number | null) {
   if (seconds === null) return '—'
   const value = Math.floor(seconds)
@@ -226,6 +229,52 @@ function bytes(value: number | null) {
   if (value === null) return 'Unavailable'
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(0)} KB`
   return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+function NativeLoaderCorrectionCard({ server, stopped }: { server: LocalServerSummary; stopped: boolean }) {
+  const [detection, setDetection] = useState<NativeLoaderCorrectionPreview | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState(false)
+
+  const scan = async () => {
+    setBusy(true); setError(''); setDetection(null); setConfirmed(false)
+    try { setDetection(await inspectManagedNativeLoader(server.id)) }
+    catch (issue) { setError(issue instanceof Error ? issue.message : translateText('The installed loader could not be detected.', currentLocale())) }
+    finally { setBusy(false) }
+  }
+
+  const correct = async () => {
+    if (!detection || !confirmed || busy) return
+    setBusy(true); setError('')
+    try {
+      await correctManagedNativeLoader(server.id, detection)
+      setSuccess(true)
+      window.setTimeout(() => window.location.reload(), 450)
+    } catch (issue) { setError(issue instanceof Error ? issue.message : translateText('The server software could not be corrected.', currentLocale())) }
+    finally { setBusy(false) }
+  }
+
+  return <Card className="native-loader-correction-card">
+    <SectionHeading title={translateText('Detected server software', currentLocale())} description={translateText('Check a stopped panel-managed folder when its registered loader is incorrect. This updates registry details only.', currentLocale())} />
+    <div className="native-loader-correction-content">
+      {!stopped && <div className="install-info-row"><Shield size={15} /><span>{translateText('Stop this server before checking or correcting its detected loader.', currentLocale())}</span></div>}
+      {detection && <div className="native-loader-detection">
+        <div><span>{translateText('Installed software', currentLocale())}</span><strong><SoftwareIdentity software={detection.software} version={detection.version} /></strong></div>
+        <div><span>{translateText('Loader build', currentLocale())}</span><strong data-no-translate>{detection.loaderVersion}</strong></div>
+        <div><span>{translateText('Launch strategy', currentLocale())}</span><strong>{translateText(detection.launchStrategy === 'argfile' ? 'Java argument file' : 'Executable JAR', currentLocale())}</strong></div>
+        {detection.argsFile && <div className="native-loader-args-file"><span>{translateText('Verified argument file', currentLocale())}</span><code data-no-translate>{detection.argsFile}</code></div>}
+      </div>}
+      {detection && <label className="install-eula-check native-loader-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!stopped || busy} /><span>{translateText('I reviewed these installed files and confirm the software correction.', currentLocale())}</span></label>}
+      {error && <div className="install-error-inline" role="alert"><AlertTriangle size={15} /><span>{translateText(error, currentLocale())}</span></div>}
+      {success && <div className="install-info-row" role="status"><Check size={15} /><span>{translateText('Server software was corrected. Refreshing the current server details…', currentLocale())}</span></div>}
+      <div className="native-loader-correction-actions">
+        <Button icon={Search} disabled={!stopped || busy} onClick={() => void scan()}>{busy && !detection ? translateText('Checking installed files…', currentLocale()) : translateText('Detect installed loader', currentLocale())}</Button>
+        {detection && <Button kind="primary" icon={Check} disabled={!confirmed || !stopped || busy} onClick={() => void correct()}>{translateText('Apply detected software', currentLocale())}</Button>}
+      </div>
+    </div>
+  </Card>
 }
 
 function LocalOverview({ server, runtime, statusSample }: { server: LocalServerSummary; runtime: ServerRuntime | null; statusSample: ServerStatus | null }) {
@@ -238,7 +287,7 @@ function LocalOverview({ server, runtime, statusSample }: { server: LocalServerS
     </div>
     <div className="local-detail-grid">
       <Card><SectionHeading title="Instance configuration" description="Registered local server information." /><div className="local-detail-facts">
-        <div><span>Software</span><strong>{server.software === 'unknown' ? 'Unknown' : <span data-no-translate>{`${capitalize(server.software)}${server.version ? ` ${server.version}` : ''}`}</span>}</strong></div>
+        <div><span>Software</span><strong>{server.software === 'unknown' ? 'Unknown' : <SoftwareIdentity software={server.software} version={server.version} />}</strong></div>
         <div><span>{translateText('Configured port', currentLocale())}</span><strong>{server.portStatus === 'valid' ? server.port : translateText(serverPortIssueText(server.portErrorCode) ?? 'Not detected', currentLocale())}</strong></div>
         {runtime && ['starting', 'running', 'stopping', 'external/unmanaged'].includes(runtime.status) && <div><span>{translateText('Process port', currentLocale())}</span><strong>{runtime.processPort ?? translateText('Unavailable', currentLocale())}</strong></div>}
         <div><span>Memory allocation</span><strong><span data-no-translate>{server.minMemoryMb}–{server.maxMemoryMb}</span> MB</strong></div>

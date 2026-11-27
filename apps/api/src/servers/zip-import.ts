@@ -13,6 +13,7 @@ import { localServerEvents, localServers, serverZipImports } from '../db/schema.
 import type { JavaRuntimeRegistry } from './java.js'
 import type { ServerRegistry } from './registry.js'
 import { parseServerPort } from './java-properties.js'
+import { detectNativeLoader, detectNativeLoaderFromArchivePaths, nativeLoaderMinecraftVersion } from './native-loader.js'
 
 export const MAX_SERVER_ZIP_BYTES = 128 * 1024 * 1024
 const MAX_ARCHIVE_ENTRIES = 20_000
@@ -79,16 +80,19 @@ function parseEula(contents: string | null): 'accepted' | 'not-accepted' | 'unkn
   if (!line) return 'unknown'
   return /^\s*eula\s*=\s*true\s*$/i.test(line) ? 'accepted' : 'not-accepted'
 }
+function javaMajorForVersion(version: string | null): number | null {
+  const match = version?.match(/^(?:1\.)?(\d{1,2})(?:\.(\d{1,2}))?/) ?? null
+  const major = match?.[1] ? Number(match[1]) : null
+  const minor = match?.[2] ? Number(match[2]) : null
+  return major === null ? null : major >= 26 ? 25 : major >= 21 || major === 20 && (minor ?? 0) >= 5 ? 21 : major >= 18 || major === 20 ? 17 : major === 17 ? 16 : 8
+}
 function detectJar(paths: string[]): { jarName: string | null; software: 'vanilla' | 'fabric' | 'paper' | 'unknown'; version: string | null; requiredJavaMajor: number | null } {
   const candidates = paths.filter((name) => !name.includes('/') && name.toLowerCase().endsWith('.jar')).sort((a, b) => a.localeCompare(b))
   const jarName = candidates.find((name) => /^(?:server(?:[-_.].+)?|minecraft[-_.].+|paper[-_.].+|fabric.*server.*)\.jar$/i.test(name)) ?? null
   if (!jarName) return { jarName: null, software: 'unknown', version: null, requiredJavaMajor: null }
   const software = /fabric/i.test(jarName) ? 'fabric' : /paper/i.test(jarName) ? 'paper' : /^(?:server|minecraft)[-_.]/i.test(jarName) || /^server\.jar$/i.test(jarName) ? 'vanilla' : 'unknown'
   const version = jarName.match(/(?:^|[-_])((?:1\.)?\d{1,2}(?:\.\d{1,2}){0,2})(?=[-_.])/i)?.[1] ?? null
-  const match = version?.match(/^(?:1\.)?(\d{1,2})(?:\.(\d{1,2}))?/) ?? null
-  const major = match?.[1] ? Number(match[1]) : null
-  const minor = match?.[2] ? Number(match[2]) : null
-  const requiredJavaMajor = major === null ? null : major > 21 ? 21 : major >= 21 || major === 20 && (minor ?? 0) >= 5 ? 21 : major >= 18 || major === 20 ? 17 : major === 17 ? 16 : 8
+  const requiredJavaMajor = javaMajorForVersion(version)
   return { jarName, software, version, requiredJavaMajor }
 }
 function openZip(path: string): Promise<ZipFile> {
@@ -268,7 +272,8 @@ export class ServerZipImportService {
     if (Date.parse(row.expiresAt) <= this.now()) throw new ServerZipImportError('ZIP_IMPORT_EXPIRED', 'The staged ZIP expired. Upload it again to continue.')
     const staged = parseStored(row)
     const preview = staged.preview
-    if (!preview.supported || !preview.jarName || preview.software === 'unknown') throw new ServerZipImportError('ZIP_LOADER_UNSUPPORTED', preview.unsupportedReason ?? 'This archive does not contain a supported server loader JAR.')
+    const nativeLoader = preview.software === 'forge' || preview.software === 'neoforge'
+    if (!preview.supported || (!preview.jarName && !nativeLoader) || preview.software === 'unknown') throw new ServerZipImportError('ZIP_LOADER_UNSUPPORTED', preview.unsupportedReason ?? 'This archive does not contain a supported server loader.')
     if (preview.port !== null) {
       await this.servers.refreshPortConfigurations(true)
       const portConflict = await this.servers.findPortConflict('', preview.port)
@@ -359,17 +364,26 @@ export class ServerZipImportService {
       ? entry.relativeName === rootFolder ? '' : entry.relativeName.startsWith(`${rootFolder}/`) ? entry.relativeName.slice(rootFolder.length + 1) : entry.relativeName
       : entry.relativeName
     const files = visible.filter((entry) => !entry.directory && entry.relativeName)
-    const jar = detectJar(files.map((entry) => entry.relativeName))
+    const archivePaths = files.map((entry) => entry.relativeName)
+    const jar = detectJar(archivePaths)
+    const nativeLoader = detectNativeLoaderFromArchivePaths(archivePaths)
+    const nativeVersion = nativeLoader ? nativeLoaderMinecraftVersion(nativeLoader.software, nativeLoader.loaderVersion) : null
+    const detected = nativeLoader ? {
+      ...jar,
+      software: nativeLoader.software,
+      version: nativeVersion,
+      requiredJavaMajor: javaMajorForVersion(nativeVersion),
+    } : jar
     const property = entries.find((entry) => !entry.directory && !entry.excluded && entry.relativeName === 'server.properties')
     const eula = entries.find((entry) => !entry.directory && !entry.excluded && entry.relativeName === 'eula.txt')
     const propertyText = property ? await readEntryText(path, property.originalName, MAX_METADATA_BYTES) : null
     const eulaText = eula ? await readEntryText(path, eula.originalName, 8_192) : null
     const worldFolders = [...new Set(visible.map((entry) => entry.relativeName.split('/')[0]!).filter((name) => ['world', 'world_nether', 'world_the_end'].includes(name)))].sort()
-    const supported = jar.software !== 'unknown' && jar.jarName !== null
+    const supported = detected.software !== 'unknown' && (detected.jarName !== null || nativeLoader !== null)
     const excludedPaths = entries.filter((entry) => entry.excluded).slice(0, 50).map((entry) => entry.relativeName || entry.originalName)
     const warnings = [
       'This archive can contain server JARs and mods. Import only files you trust; MMSManager will not execute them during import.',
-      ...(jar.software === 'unknown' ? ['The server loader could not be identified. This archive cannot be launched as a managed server.'] : []),
+      ...(detected.software === 'unknown' ? ['The server loader could not be identified. This archive cannot be launched as a managed server.'] : []),
       ...(excludedCount > excludedPaths.length ? [`${excludedCount - excludedPaths.length} additional macOS metadata entries will be excluded.`] : []),
     ]
     return {
@@ -379,12 +393,12 @@ export class ServerZipImportService {
         entryCount: entries.length,
         fileCount: entries.filter((entry) => !entry.directory && !entry.excluded).length,
         rootFolder,
-        ...jar,
+        ...detected,
         port: parsePort(propertyText),
         eula: parseEula(eulaText),
         worldFolders,
         supported,
-        unsupportedReason: supported ? null : 'A supported vanilla, Fabric, or Paper server JAR was not found at the archive root.',
+        unsupportedReason: supported ? null : 'A supported vanilla, Fabric, Paper, Forge or NeoForge server layout was not found.',
         excludedPaths,
         excludedPathsTruncated: excludedCount > excludedPaths.length,
         warnings,
@@ -398,11 +412,16 @@ export class ServerZipImportService {
     const finalPath = join(this.servers.managedRoot, `zip-${id}`)
     await mkdir(extraction, { recursive: false, mode: 0o700 })
     await this.extract(zipPath, extraction)
-    await mkdir(partial, { recursive: false, mode: 0o700 })
-    await this.copyTree(extraction, partial)
     const row = this.db.select().from(serverZipImports).where(eq(serverZipImports.id, id)).get()
     if (!row) throw new ServerZipImportError('ZIP_IMPORT_NOT_FOUND', 'The import request disappeared before publication.')
     const stored = parseStored(row)
+    const archiveLoader = stored.preview.software
+    if (archiveLoader === 'forge' || archiveLoader === 'neoforge') {
+      const verifiedLoader = await detectNativeLoader(extraction, archiveLoader)
+      if (!verifiedLoader) throw new ServerZipImportError('ZIP_LOADER_INVALID', 'The archive loader argument file is missing or unsafe after extraction.')
+    }
+    await mkdir(partial, { recursive: false, mode: 0o700 })
+    await this.copyTree(extraction, partial)
     const options = stored.options
     if (!options) throw new ServerZipImportError('ZIP_IMPORT_JOURNAL_INVALID', 'The import choices are missing from the journal.')
     const eulaText = `# By changing the setting below to TRUE you indicate your agreement to the Minecraft EULA (https://aka.ms/MinecraftEULA).\neula=${options.acceptEula ? 'true' : 'false'}\n`
@@ -487,7 +506,8 @@ export class ServerZipImportService {
     const serverId = randomUUID()
     this.db.transaction((tx) => {
       tx.insert(localServers).values({
-        id: serverId, name: options.name, directory, source: 'created', software: preview.software as 'vanilla' | 'fabric' | 'paper',
+        id: serverId, name: options.name, directory, source: 'created', software: preview.software === 'forge' || preview.software === 'neoforge' ? 'unknown' : preview.software as 'vanilla' | 'fabric' | 'paper',
+        loader: preview.software === 'forge' || preview.software === 'neoforge' ? preview.software : null,
         version: preview.version, jarName: preview.jarName, javaPath: options.javaPath, javaMajor: options.javaMajor, javaSelectionMode: 'auto',
         requiredJavaMajor: preview.requiredJavaMajor, minMemoryMb: options.minMemoryMb, maxMemoryMb: options.maxMemoryMb,
         port: preview.port, eula: options.acceptEula ? 'accepted' : 'not-accepted', managed: true,

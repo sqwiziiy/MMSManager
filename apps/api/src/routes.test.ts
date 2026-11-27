@@ -168,6 +168,13 @@ describe('authenticated local API', () => {
       webOrigin: WEB_ORIGIN,
       apiPort: 4174,
       now: () => Date.parse('2026-11-23T12:00:00.000Z'),
+      installFetch: async (input) => {
+        const url = String(input)
+        if (url === 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json') return Response.json({ versions: [{ id: '1.21.1', type: 'release', url: 'https://piston-meta.mojang.com/mc/version-1.21.1.json' }] })
+        if (url === 'https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml') return new Response('<metadata><versioning><versions><version>21.1.184</version></versions></versioning></metadata>')
+        if (url === 'https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml') return new Response('<metadata><versioning><versions></versions></versioning></metadata>')
+        return new Response(null, { status: 404 })
+      },
     })
   })
 
@@ -1014,6 +1021,47 @@ describe('authenticated local API', () => {
     const multipartResponse = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${id}/mods`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': `multipart/form-data; boundary=${boundary}` }, payload: multipartBody })
     expect(multipartResponse.statusCode).toBe(409)
     expect(multipartResponse.json()).toMatchObject({ error: { code: 'MODS_UNSUPPORTED' } })
+  })
+
+  it('restricts native-loader correction to administrators and verifies detected details before updating a managed server', async () => {
+    const admin = await bootstrapAdmin()
+    const adminToken = /mmsmanager_session=([^;]+)/.exec(admin.cookieHeader)?.[1] ?? ''
+    const owner = auth.authenticate(adminToken)
+    expect(owner?.role).toBe('administrator')
+    const memberPassword = 'native loader member password 84!'
+    const member = await auth.createUser(owner!, { username: 'native-loader-member', displayName: 'Native Loader Member', password: memberPassword, role: 'member' })
+    const memberSession = await signInCreatedAccount(member.username, memberPassword)
+
+    const directory = join(servers.managedRoot, 'native-loader-route-fixture')
+    const argsFile = 'libraries/net/neoforged/neoforge/21.1.184/unix_args.txt'
+    await mkdir(join(directory, argsFile, '..'), { recursive: true })
+    await mkdir(join(directory, 'world'), { recursive: true })
+    await writeFile(join(directory, 'server.properties'), 'server-port=25581\n')
+    await writeFile(join(directory, argsFile), '-m cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher.Bootstrap --launchTarget neoforgeserver\n')
+    await writeFile(join(directory, 'world', 'level.dat'), 'preserved native loader fixture world')
+    const serverId = randomUUID()
+    const createdAt = new Date().toISOString()
+    await opened.db.insert(localServers).values({
+      id: serverId, name: 'Native Loader Route Fixture', directory, source: 'created', software: 'fabric', version: '1.20.1',
+      jarName: 'server.jar', javaPath: '/test/java-21/bin/java', javaMajor: 21, minMemoryMb: 512, maxMemoryMb: 1024,
+      port: 25581, eula: 'accepted', managed: true, worldFolders: '["world"]', createdBy: owner!.userId, createdAt, updatedAt: createdAt,
+    }).run()
+    const adminHeaders = { ...requestHeaders, cookie: admin.cookieHeader, 'x-mms-csrf': admin.csrfToken, 'content-type': 'application/json' }
+    const previewUrl = `/api/v1/admin/servers/${serverId}/native-loader-detection`
+    expect((await app.inject({ method: 'GET', url: previewUrl, headers: { ...requestHeaders, cookie: memberSession.cookieHeader } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/native-loader-correction`, headers: memberSession.headers, payload: { software: 'neoforge', version: '1.21.1', loaderVersion: '21.1.184' } })).statusCode).toBe(403)
+    const preview = await app.inject({ method: 'GET', url: previewUrl, headers: adminHeaders })
+    expect(preview.statusCode, preview.body).toBe(200)
+    expect(preview.json().detection).toMatchObject({ currentSoftware: 'fabric', software: 'neoforge', version: '1.21.1', loaderVersion: '21.1.184', launchStrategy: 'argfile', argsFile })
+    const invalidConfirmation = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/native-loader-correction`, headers: adminHeaders, payload: { software: 'neoforge', version: '1.20.1', loaderVersion: '21.1.184' } })
+    expect(invalidConfirmation.statusCode).toBe(409)
+    expect(opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()?.software).toBe('fabric')
+    expect((await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/native-loader-correction`, headers: { ...requestHeaders, cookie: admin.cookieHeader, 'content-type': 'application/json' }, payload: preview.json().detection })).statusCode).toBe(403)
+    const changed = await app.inject({ method: 'POST', url: `/api/v1/admin/servers/${serverId}/native-loader-correction`, headers: adminHeaders, payload: { software: 'neoforge', version: '1.21.1', loaderVersion: '21.1.184' } })
+    expect(changed.statusCode, changed.body).toBe(200)
+    expect(changed.json()).toMatchObject({ serverId, software: 'neoforge', version: '1.21.1' })
+    expect(opened.db.select().from(localServers).where(eq(localServers.id, serverId)).get()).toMatchObject({ id: serverId, directory, software: 'unknown', loader: 'neoforge', version: '1.21.1', source: 'created', managed: true })
+    expect(await readFile(join(directory, 'world', 'level.dat'), 'utf8')).toBe('preserved native loader fixture world')
   })
 
   it('protects server backup inventory, download and typed restore with stopped managed-server gates', async () => {

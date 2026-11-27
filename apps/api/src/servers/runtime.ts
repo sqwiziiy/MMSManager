@@ -11,13 +11,14 @@ import type { JavaRuntimeRegistry } from './java.js'
 import type { ServerProcessManager } from './processes.js'
 import type { ServerRegistry } from './registry.js'
 import { classifyJavaMinimum, manualJavaOverrideFingerprint, selectAutomaticJavaRuntime } from './java-selection.js'
+import { isNativeLoader, resolveNativeLaunch, type ServerLaunchConfiguration } from './native-loader.js'
 
 export class ServerRuntimeSettingsError extends Error {
   constructor(readonly code: string, message: string) { super(message) }
 }
 function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'` }
 
-export function jvmArguments(settings: Pick<ServerRuntimeSettingsUpdate, 'minMemoryMb' | 'maxMemoryMb' | 'jvmOptions'>, jarName: string): string[] {
+export function jvmArguments(settings: Pick<ServerRuntimeSettingsUpdate, 'minMemoryMb' | 'maxMemoryMb' | 'jvmOptions'>, jarName: string, nativeLaunch?: ServerLaunchConfiguration): string[] {
   const args = [`-Xms${settings.minMemoryMb}M`, `-Xmx${settings.maxMemoryMb}M`]
   if (settings.jvmOptions.collector === 'g1') args.push('-XX:+UseG1GC')
   if (settings.jvmOptions.collector === 'zgc') args.push('-XX:+UseZGC')
@@ -25,12 +26,13 @@ export function jvmArguments(settings: Pick<ServerRuntimeSettingsUpdate, 'minMem
   if (settings.jvmOptions.parallelGcThreads !== null) args.push(`-XX:ParallelGCThreads=${settings.jvmOptions.parallelGcThreads}`)
   if (settings.jvmOptions.alwaysPreTouch) args.push('-XX:+AlwaysPreTouch')
   if (settings.jvmOptions.disableExplicitGc) args.push('-XX:+DisableExplicitGC')
-  args.push('-jar', jarName, 'nogui')
+  if (nativeLaunch?.kind === 'argfile') args.push(`@${nativeLaunch.argsFile}`, 'nogui')
+  else args.push('-jar', nativeLaunch?.kind === 'jar' ? nativeLaunch.jarName : jarName, 'nogui')
   return args
 }
 
-export function generatedStartScript(javaPath: string, settings: Pick<ServerRuntimeSettingsUpdate, 'minMemoryMb' | 'maxMemoryMb' | 'jvmOptions'>, jarName: string): string {
-  const args = jvmArguments(settings, jarName).map(shellQuote).join(' ')
+export function generatedStartScript(javaPath: string, settings: Pick<ServerRuntimeSettingsUpdate, 'minMemoryMb' | 'maxMemoryMb' | 'jvmOptions'>, jarName: string, nativeLaunch?: ServerLaunchConfiguration): string {
+  const args = jvmArguments(settings, jarName, nativeLaunch).map(shellQuote).join(' ')
   return `#!/bin/sh\nset -eu\ncd -- "$(dirname -- "$0")"\nexec ${shellQuote(javaPath)} ${args}\n`
 }
 
@@ -51,6 +53,7 @@ export async function updateGeneratedStartScript(
   javaPath: string,
   input: Pick<ServerRuntimeSettingsUpdate, 'minMemoryMb' | 'maxMemoryMb' | 'jvmOptions'>,
   jarName: string,
+  nativeLaunch?: ServerLaunchConfiguration,
 ): Promise<{ sha256: string | null; state: ServerRuntimeSettings['startScript'] }> {
   if (expectedSha256 === null) return { sha256: null, state: 'untracked' }
   const root = await realpath(managedRoot)
@@ -68,7 +71,7 @@ export async function updateGeneratedStartScript(
   const original = await readFile(path)
   if (createHash('sha256').update(original).digest('hex') !== expectedSha256) return { sha256: expectedSha256, state: 'customized' }
 
-  const contents = generatedStartScript(javaPath, input, jarName)
+  const contents = generatedStartScript(javaPath, input, jarName, nativeLaunch)
   const nextHash = createHash('sha256').update(contents).digest('hex')
   const tempPath = join(canonicalDirectory, `.start-${randomUUID()}.part`)
   let handle: Awaited<ReturnType<typeof open>> | null = null
@@ -127,7 +130,7 @@ export class ServerRuntimeSettingsService {
         javaMajor = checked.major
         if (server.javaCompatibilityOverrideHash !== null && classifyJavaMinimum(server.requiredJavaMajor, checked.major) !== 'meets-minimum') {
           javaCompatibilityOverrideConfirmed = server.javaCompatibilityOverrideHash === manualJavaOverrideFingerprint({
-            serverId: server.id, software: server.software, serverVersion: server.version,
+            serverId: server.id, software: server.loader ?? server.software, serverVersion: server.version,
             declaredMinimumMajor: server.requiredJavaMajor, runtime: checked,
           })
         }
@@ -178,7 +181,7 @@ export class ServerRuntimeSettingsService {
               : `This Java version is below the declared minimum ${server.requiredJavaMajor}. Confirm the manual override explicitly before saving.`)
           }
           overrideHash = manualJavaOverrideFingerprint({
-            serverId, software: server.software, serverVersion: server.version,
+            serverId, software: server.loader ?? server.software, serverVersion: server.version,
             declaredMinimumMajor: server.requiredJavaMajor, runtime: selectedRuntime,
           })
         }
@@ -196,7 +199,8 @@ export class ServerRuntimeSettingsService {
         || JSON.stringify(oldOptions) !== JSON.stringify(input.jvmOptions)
       const processState = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
       const script = selectedRuntime
-        ? await updateGeneratedStartScript(this.servers.managedRoot, server.directory, server.startScriptSha256, selectedRuntime.path, input, server.jarName ?? 'server.jar')
+      ? await updateGeneratedStartScript(this.servers.managedRoot, server.directory, server.startScriptSha256, selectedRuntime.path, input, server.jarName ?? 'server.jar',
+        isNativeLoader(server.loader) ? await resolveNativeLaunch(server.directory, server.loader, server.jarName) : undefined)
         : { sha256: server.startScriptSha256, state: await this.startScriptState(server.directory, server.startScriptSha256) }
       const at = new Date(this.now()).toISOString()
       this.db.transaction((tx) => {

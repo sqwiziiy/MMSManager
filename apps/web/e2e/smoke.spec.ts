@@ -735,6 +735,42 @@ test('admin creates a server through mocked provider responses', async ({ page }
   await expectNoHorizontalOverflow(page, 'mobile install wizard software')
 })
 
+test('Forge and NeoForge choices show official builds and fit the mobile setup wizard', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await signIn(page)
+  await page.route('**/api/v1/admin/java', (route) => route.fulfill({ json: { runtimes: [{ path: '/tmp/mmsmanager-e2e-java', version: '21.0.4', major: 21, vendor: 'OpenJDK', source: 'discovered' }] } }))
+  await page.route('**/api/v1/admin/server-installs/catalog?*', (route) => {
+    const query = new URL(route.request().url()).searchParams
+    const software = query.get('software') ?? 'vanilla'
+    const version = query.get('version')
+    const versions = software === 'neoforge' ? ['1.21.1'] : software === 'forge' ? ['1.20.1'] : ['1.21.4']
+    const loaders = software === 'forge' && version ? ['47.4.28'] : software === 'neoforge' && version ? ['21.1.268'] : []
+    return route.fulfill({ json: { software, versions, loaders, experimentalLoaders: [], builds: [], installerVersion: null, requiredJavaMajor: version ? (version === '1.20.1' ? 17 : 21) : null } })
+  })
+  await page.getByRole('button', { name: 'Create server', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Create server' })
+  await dialog.getByLabel('New directory name').fill('forge-preview')
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await expect(dialog.getByRole('heading', { name: 'Mod loaders' })).toBeVisible()
+  await expect(dialog.locator('.software-option.unsupported[aria-disabled="true"]')).toHaveCount(3)
+  await dialog.getByRole('button', { name: /Forge Official Forge mod loader/ }).click()
+  await expect(dialog.getByLabel('Minecraft release')).toHaveValue('1.20.1')
+  await expect(dialog.getByLabel('Forge version')).toHaveValue('47.4.28')
+  await expect(dialog.locator('.software-option.selected img')).toBeVisible()
+  await expect(dialog.getByText('The installer runs from its official provider in a private, resource-limited folder.', { exact: false })).toBeVisible()
+  await page.screenshot({ path: screenshotPath('forge-loader-wizard-desktop.png'), fullPage: true, animations: 'disabled' })
+
+  await dialog.getByRole('button', { name: /NeoForge Community-led Forge successor/ }).click()
+  await expect(dialog.getByLabel('Minecraft release')).toHaveValue('1.21.1')
+  await expect(dialog.getByLabel('NeoForge version')).toHaveValue('21.1.268')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await dialog.getByLabel('NeoForge version').scrollIntoViewIfNeeded()
+  await expect(dialog.getByLabel('NeoForge version')).toBeVisible()
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+  expect(overflow).toBeLessThanOrEqual(1)
+  await page.screenshot({ path: screenshotPath('forge-loader-wizard-mobile.png'), fullPage: true, animations: 'disabled' })
+})
+
 test('failed installs preserve partial files and retry into a new directory', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 })
   await signIn(page)

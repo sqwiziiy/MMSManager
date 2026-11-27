@@ -6,6 +6,7 @@ import { getInstallCatalog } from '../api/servers'
 import { apiErrorMessage } from '../api/client'
 import { createServerTemplate, deleteServerTemplate, duplicateServerTemplate, getServerTemplates, updateServerTemplate } from '../api/templates'
 import { useAuth } from '../state/use-auth'
+import { SoftwareIdentity } from '../components/software-identity'
 import { currentLocale, translateText } from '../i18n/catalog'
 import { Badge, Button, Card, EmptyNote, PageHeading } from '../components/ui'
 
@@ -96,7 +97,7 @@ export function TemplatesPage({ onCreate }: { onCreate: (template: ServerTemplat
         const editLabel = `${translateText('Edit', currentLocale())} · ${template.name}`
         const deleteLabel = `${translateText('Delete', currentLocale())} · ${template.name}`
         return <Card className="template-card" key={template.id}>
-          <div className="template-card-heading"><span className="template-icon"><Layers3 size={17} /></span><div><strong>{template.name}</strong><small>{template.software[0]!.toUpperCase() + template.software.slice(1)} · {template.version}</small></div>{supportBadge(template)}</div>
+          <div className="template-card-heading"><span className="template-icon"><Layers3 size={17} /></span><div><strong>{template.name}</strong><small><SoftwareIdentity software={template.software} version={template.version} /></small></div>{supportBadge(template)}</div>
           <div className="template-specs"><div><span>Memory range</span><strong>{template.minMemoryMb.toLocaleString(currentLocale())}–{template.maxMemoryMb.toLocaleString(currentLocale())} MB</strong></div><div><span>Last updated</span><strong>{new Intl.DateTimeFormat(currentLocale(), { dateStyle: 'medium' }).format(new Date(template.updatedAt))}</strong></div></div>
           <div className="template-card-note">Java, port and EULA are chosen separately in the create wizard.</div>
           <div className="template-actions">
@@ -113,7 +114,7 @@ export function TemplatesPage({ onCreate }: { onCreate: (template: ServerTemplat
       <div className="template-dialog-heading"><span className="template-icon"><Layers3 size={18} /></span><div><h2 id="template-dialog-title">{editor === 'new' ? 'New server template' : 'Edit template'}</h2><p>Safe creation defaults only. You can review them before installation.</p></div></div>
       <form onSubmit={(event) => void save(event)} className="template-form">
         <label>Template name<input required minLength={1} maxLength={60} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
-        <div className="template-form-row"><label>Software<select value={draft.software} onChange={(event) => setDraft({ ...draft, software: event.target.value as InstallSoftware })}><option value="vanilla">Vanilla</option><option value="fabric">Fabric</option><option value="paper">Paper</option></select></label><label>Game version<input required inputMode="decimal" pattern="[0-9]{1,3}(\.[0-9]{1,3}){1,3}" placeholder="1.21.4" value={draft.version} onChange={(event) => setDraft({ ...draft, version: event.target.value })} /></label></div>
+        <div className="template-form-row"><label>Software<select value={draft.software} onChange={(event) => setDraft({ ...draft, software: event.target.value as InstallSoftware })}><option value="vanilla">Vanilla</option><option value="fabric">Fabric</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option><option value="paper">Paper</option></select></label><label>Game version<input required inputMode="decimal" pattern="[0-9]{1,3}(\.[0-9]{1,3}){1,3}" placeholder="1.21.4" value={draft.version} onChange={(event) => setDraft({ ...draft, version: event.target.value })} /></label></div>
         <div className="template-form-row"><label>Minimum memory (MB)<input required type="number" min={512} max={131072} step={256} value={draft.minMemoryMb} onChange={(event) => setDraft({ ...draft, minMemoryMb: Number(event.target.value) })} /></label><label>Maximum memory (MB)<input required type="number" min={512} max={131072} step={256} value={draft.maxMemoryMb} onChange={(event) => setDraft({ ...draft, maxMemoryMb: Number(event.target.value) })} /></label></div>
         <div className="template-form-footnote"><AlertTriangle size={14} /><span>Saving a template does not create files, accept the EULA, download a provider artifact or start a Minecraft process.</span></div>
         {error && <p className="field-error" role="alert">{error}</p>}

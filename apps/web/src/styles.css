@@ -782,11 +782,31 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 .wizard-field { max-width: 450px; }
 .wizard-info-row { display: flex; align-items: center; gap: 7px; padding: 10px 11px; color: var(--text-muted); border: 1px solid var(--line-quiet); border-radius: 7px; background: var(--surface-subtle); font-size: 9px; }
 .wizard-info-row svg { color: var(--accent-strong); }
-.software-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.software-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .software-option { min-height: 67px; display: flex; align-items: center; gap: 9px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); cursor: pointer; text-align: left; transition: background-color .15s ease, border-color .15s ease; }
 .software-option:hover { border-color: var(--line-strong); background: var(--surface-hover); }
 .software-option.selected { border-color: var(--accent-border); background: var(--accent-soft); }
 .software-mark { width: 31px; height: 31px; display: grid; place-items: center; color: var(--accent-strong); border: 1px solid var(--accent-border); border-radius: 8px; background: var(--accent-soft); font: 11px 'DM Mono', monospace; }
+.software-category { display: grid; gap: 7px; }
+.software-category > h4 { margin: 0; color: var(--text-secondary); font: 600 10px 'DM Sans', sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+.software-logo { width: 40px; height: 36px; display: inline-grid; flex: 0 0 auto; place-items: center; overflow: hidden; color: var(--accent-strong); }
+.software-logo img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.software-logo-forge img { width: 38px; height: 30px; }
+.software-logo-neoforge img { width: 70px; height: auto; max-width: none; }
+.software-logo-fabric img { width: 28px; height: 28px; image-rendering: pixelated; }
+.software-logo-paper img { width: 29px; height: 29px; }
+.software-identity { display: inline-flex; align-items: center; gap: 7px; }
+.software-identity .software-logo { width: 30px; height: 25px; }
+.software-identity .software-logo-forge img { width: 28px; height: 22px; }
+.software-identity .software-logo-neoforge img { width: 46px; }
+.software-identity .software-logo-fabric img { width: 21px; height: 21px; }
+.software-identity .software-logo-paper img { width: 23px; height: 23px; }
+.fleet-row-main .software-identity { display: inline-flex; align-items: center; gap: 3px; vertical-align: middle; }
+.fleet-row-main .software-identity .software-logo { width: 12px; height: 12px; }
+.fleet-row-main .software-identity .software-logo-forge img { width: 12px; height: auto; }
+.fleet-row-main .software-identity .software-logo-neoforge img { width: 15px; height: auto; }
+.fleet-row-main .software-identity .software-logo-fabric img,
+.fleet-row-main .software-identity .software-logo-paper img { width: 11px; height: 11px; }
 .software-paper { color: #bfc7bc; border-color: #464d45; background: #292e29; }
 .software-vanilla { color: #d1c9ae; border-color: #554d39; background: #322e23; }
 .software-neoforge { color: #c9b49d; border-color: #594535; background: #33291f; }
@@ -1174,6 +1194,7 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
   .preview-section-footer { align-items: flex-start; flex-direction: column; }
   .software-options { grid-template-columns: 1fr; }
   .software-option { min-height: 57px; }
+  .native-loader-detection { grid-template-columns: minmax(0, 1fr); }
   .wizard-step > small { display: none; }
   .wizard-step > span { width: 21px; height: 21px; }
   .wizard-body { min-height: 270px; }
@@ -2223,6 +2244,7 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 .install-error-inline { display: flex; align-items: flex-start; gap: 8px; padding: 10px 11px; color: var(--danger); border: 1px solid var(--danger-border); border-radius: 8px; background: var(--danger-soft); font-size: 10px; line-height: 1.45; }
 .install-error-inline svg { flex: 0 0 auto; margin-top: 1px; }
 .software-option.unsupported { opacity: .58; cursor: not-allowed; }
+.software-option.unsupported:hover { border-color: var(--line); background: var(--surface); }
 .software-unsupported { color: var(--text-muted); background: var(--surface-subtle); }
 .install-eula-check { display: flex; align-items: flex-start; gap: 9px; color: var(--text-secondary); font-size: 10px; line-height: 1.45; }
 .install-eula-check input { accent-color: var(--accent); margin-top: 2px; }
@@ -2245,6 +2267,17 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 .install-summary-list > div:last-child { border: 0; }
 .install-summary-list span { color: var(--text-muted); font-size: 9px; }
 .install-summary-list strong { color: var(--text-secondary); font-size: 9px; font-weight: 500; text-align: right; }
+.install-summary-list .software-identity { justify-content: flex-end; }
+.native-loader-correction-card { display: grid; gap: 12px; }
+.native-loader-correction-content { display: grid; gap: 10px; }
+.native-loader-detection { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-subtle); }
+.native-loader-detection > div { min-width: 0; display: grid; align-content: start; gap: 6px; }
+.native-loader-detection > div > span:first-child { color: var(--text-muted); font-size: 8px; }
+.native-loader-detection > div > strong { min-width: 0; color: var(--text-secondary); font-size: 9px; font-weight: 500; overflow-wrap: anywhere; }
+.native-loader-detection > .native-loader-args-file { grid-column: 1 / -1; }
+.native-loader-detection code { color: var(--text-secondary); font: 8px 'DM Mono', monospace; overflow-wrap: anywhere; }
+.native-loader-correction-confirm { margin: 0; }
+.native-loader-correction-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .install-progress-actions { display: flex; justify-content: center; gap: 9px; margin-top: 20px; }
 .install-locked { display: flex; flex-direction: column; align-items: center; gap: 9px; padding: 48px 25px; color: var(--text-secondary); text-align: center; }
 .install-locked strong { color: var(--text); font-size: 14px; font-weight: 500; }

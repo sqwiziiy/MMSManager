@@ -1,21 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Check, ChevronLeft, ChevronRight, CircleAlert, Cpu, Download, Folder, HardDrive, LoaderCircle, MemoryStick, Server, ShieldCheck, X } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, CircleAlert, Cpu, Download, Folder, HardDrive, Layers3, LoaderCircle, MemoryStick, Server, ShieldCheck, X } from 'lucide-react'
 import type { InstallCatalog, InstallOperation, InstallSoftware, JavaRuntime, ServerInstallRequest, ServerTemplate } from '@mmsmanager/shared'
 import { cancelServerInstall, createServerInstall, getInstallCatalog, getServerInstall, getJavaRuntimes, scanJavaRuntimes } from '../api/servers'
 import { useAuth } from '../state/use-auth'
 import { Button, IconButton } from './ui'
 import { javaRuntimeLabel } from '../lib/java-runtime'
+import { SoftwareIdentity, SoftwareLogo } from './software-identity'
+import { currentLocale, translateApiError } from '../i18n/catalog'
 
 type WizardStep = 'details' | 'software' | 'resources' | 'review'
 const steps: { id: WizardStep; label: string }[] = [
   { id: 'details', label: 'Details' }, { id: 'software', label: 'Software' },
   { id: 'resources', label: 'Resources' }, { id: 'review', label: 'Review' },
 ]
-const softwareOptions: { id: InstallSoftware; title: string; description: string; mark: string }[] = [
-  { id: 'vanilla', title: 'Vanilla', description: 'Official Minecraft Java server', mark: 'V' },
-  { id: 'fabric', title: 'Fabric', description: 'Lightweight modding platform', mark: 'F' },
-  { id: 'paper', title: 'Paper', description: 'Plugin-ready server software', mark: 'P' },
+const softwareOptions: { id: InstallSoftware; title: string; description: string }[] = [
+  { id: 'vanilla', title: 'Vanilla', description: 'Official Minecraft Java server' },
+  { id: 'fabric', title: 'Fabric', description: 'Lightweight modding platform' },
+  { id: 'forge', title: 'Forge', description: 'Official Forge mod loader' },
+  { id: 'neoforge', title: 'NeoForge', description: 'Community-led Forge successor' },
+  { id: 'paper', title: 'Paper', description: 'Plugin-ready server software' },
 ]
 
 export function CreateServerWizard({ onClose, preset }: { onClose: () => void; preset?: ServerTemplate }) {
@@ -57,7 +61,8 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
   const selectedArtifactBuild = software === 'paper' ? paperBuild : undefined
   const presetSoftware = preset?.software
   const presetVersion = preset?.version
-  const canContinue = step !== 'software' || Boolean(catalog && version && !catalogLoading && !catalogError && (software !== 'fabric' || loaderVersion) && (software !== 'paper' || paperBuild))
+  const needsLoader = software === 'fabric' || software === 'forge' || software === 'neoforge'
+  const canContinue = step !== 'software' || Boolean(catalog && version && !catalogLoading && !catalogError && (!needsLoader || loaderVersion) && (software !== 'paper' || paperBuild))
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => event.key === 'Escape' && !operation && onClose()
@@ -102,8 +107,11 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
     setVersionCatalog(null)
     void getInstallCatalog(software, version, controller.signal).then((next) => {
       setVersionCatalog(next)
+      if (software === 'fabric' || software === 'forge' || software === 'neoforge') {
+        const availableLoaders = [...next.loaders, ...next.experimentalLoaders]
+        setLoaderVersion((current) => availableLoaders.includes(current) ? current : next.loaders[0] ?? next.experimentalLoaders[0] ?? '')
+      }
       if (software === 'fabric') {
-        setLoaderVersion((current) => next.loaders.includes(current) ? current : next.loaders[0] ?? '')
         setInstallerVersion(next.installerVersion ?? '')
       }
       if (software === 'paper') setPaperBuild((current) => current && next.builds.includes(current) ? current : next.builds[0])
@@ -161,7 +169,7 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
     const input: ServerInstallRequest = {
       name: name.trim(), directoryName: normalizedDirectory, software, version,
       javaPath, minMemoryMb, maxMemoryMb, port, eulaAccepted,
-      ...(software === 'fabric' ? { loaderVersion, installerVersion } : {}),
+      ...(software === 'fabric' ? { loaderVersion, installerVersion } : software === 'forge' || software === 'neoforge' ? { loaderVersion } : {}),
       ...(selectedArtifactBuild ? { paperBuild: selectedArtifactBuild } : {}),
     }
     try {
@@ -192,11 +200,12 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
         <div className={`install-result-icon ${installDone ? 'success' : operation.status === 'failed' ? 'failure' : ''}`}>{operation.status === 'failed' ? <CircleAlert size={23} /> : installDone ? <Check size={24} /> : <LoaderCircle className="spin" size={22} />}</div>
         <p className="eyebrow">{installDone ? 'Installation complete' : installCancelled ? 'Installation cancelled' : operation.status === 'failed' ? 'Installation stopped' : 'Installation in progress'}</p>
         <h3>{installDone ? `${operation.name} is installed` : installCancelled ? 'Setup was cancelled' : operation.status === 'failed' ? 'Could not finish setup' : operation.phase.replaceAll('-', ' ')}</h3>
-        <p>{installDone ? 'The server is registered locally and is currently stopped.' : operation.error?.message ?? `Installing ${operation.software} ${operation.version} into a new managed folder.`}</p>
+        <p>{installDone ? 'The server is registered locally and is currently stopped.' : operation.error ? translateApiError(operation.error.message, operation.error.code, currentLocale()) : `Installing ${operation.software} ${operation.version} into a new managed folder.`}</p>
         {installing && <div className="install-progress-track" role="progressbar" aria-label="Installation progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={operation.progress}><span style={{ width: `${operation.progress}%` }} /></div>}
         <div className="install-progress-meta"><span>{operation.status === 'completed' ? 'Complete' : `${operation.progress}%`}</span><span>{operation.directoryName}</span></div>
-        {operation.error && <div className="install-error-card"><strong>{operation.error.code.replaceAll('_', ' ')}</strong>{operation.partialDirectory && <span>Partial files were preserved for review under the managed root.</span>}</div>}
-        {installDone && <div className="install-summary-list"><div><span>Software</span><strong>{softwareTitle} · {operation.version}</strong></div><div><span>Java</span><strong>{selectedRuntime ? `Java ${selectedRuntime.major}` : 'Selected runtime'}</strong></div><div><span>Memory</span><strong>{minMemoryMb}–{maxMemoryMb} MB</strong></div><div><span>EULA</span><strong>{eulaAccepted ? 'Accepted explicitly' : 'Not accepted'}</strong></div></div>}
+        {operation.error && <div className="install-error-card">{operation.partialDirectory && <span>Partial files were preserved for review under the managed root.</span>}</div>}
+        {operation.installerLog && <details className="install-log-panel"><summary>Installer output</summary><pre>{operation.installerLog}</pre></details>}
+        {installDone && <div className="install-summary-list"><div><span>Software</span><strong><SoftwareIdentity software={operation.software} version={operation.version} /></strong></div>{operation.loaderVersion && <div><span>Loader build</span><strong data-no-translate>{operation.loaderVersion}</strong></div>}<div><span>Java</span><strong>{selectedRuntime ? `Java ${selectedRuntime.major}` : 'Selected runtime'}</strong></div><div><span>Memory</span><strong>{minMemoryMb}–{maxMemoryMb} MB</strong></div><div><span>EULA</span><strong>{eulaAccepted ? 'Accepted explicitly' : 'Not accepted'}</strong></div>{operation.checksumType && <div><span>Provider checksum</span><strong>{operation.checksumType.toUpperCase()} verified</strong></div>}</div>}
         <div className="install-progress-actions">
           {installing && <Button kind="danger" icon={CircleAlert} disabled={cancelling} onClick={() => void cancelInstallation()}>{cancelling ? 'Cancelling…' : 'Cancel installation'}</Button>}
           {operation.status === 'failed' && <Button kind="secondary" onClick={() => {
@@ -219,15 +228,16 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
               <FieldWizard label="New directory name" hint="Created in a new managed server folder."><input value={directoryName} maxLength={64} onChange={(event) => setDirectoryName(event.target.value)} placeholder="alder-community" /></FieldWizard>
               <div className="install-info-row"><HardDrive size={15} /><span>Existing files and worlds are never overwritten. Failed partial installs are preserved for review.</span></div>
             </div>}
-            {step === 'software' && <div className="wizard-step-content"><div className="wizard-step-intro"><span className="wizard-content-icon"><Download size={18} /></span><div><h3>Select official server software</h3><p>Only stable official releases are offered.</p></div></div>
-              <div className="software-options">{softwareOptions.map((option) => <button type="button" className={`software-option ${software === option.id ? 'selected' : ''}`} key={option.id} onClick={() => chooseSoftware(option.id)}><span className={`software-mark software-${option.id}`}>{option.mark}</span><span><strong>{option.title}</strong><small>{option.description}</small></span><span className="software-radio" /></button>)}
-                <div className="software-option unsupported" aria-disabled="true"><span className="software-mark software-unsupported">F</span><span><strong>Forge / NeoForge</strong><small>Install provider is not implemented</small></span><span className="coming-soon">Coming soon</span></div>
-              </div>
+            {step === 'software' && <div className="wizard-step-content"><div className="wizard-step-intro"><span className="wizard-content-icon"><Download size={18} /></span><div><h3>Select official server software</h3><p>Stable releases are recommended; experimental builds are labeled.</p></div></div>
+              <section className="software-category"><h4>Vanilla</h4><div className="software-options">{softwareOptions.filter((option) => option.id === 'vanilla').map((option) => <SoftwareOption key={option.id} option={option} selected={software === option.id} onSelect={chooseSoftware} />)}</div></section>
+              <section className="software-category"><h4>Mod loaders</h4><div className="software-options">{softwareOptions.filter((option) => ['fabric', 'forge', 'neoforge'].includes(option.id)).map((option) => <SoftwareOption key={option.id} option={option} selected={software === option.id} onSelect={chooseSoftware} />)}</div></section>
+              <section className="software-category"><h4>Plugin loaders</h4><div className="software-options">{softwareOptions.filter((option) => option.id === 'paper').map((option) => <SoftwareOption key={option.id} option={option} selected={software === option.id} onSelect={chooseSoftware} />)}{(['Purpur', 'Spigot', 'Bukkit'] as const).map((name) => <div key={name} className="software-option unsupported" aria-disabled="true"><span className="software-logo software-logo-unsupported"><Layers3 size={18} /></span><span><strong>{name}</strong><small>Plugin-ready server software</small></span><span className="coming-soon">Coming soon</span></div>)}</div></section>
               <div className="install-select-grid"><FieldWizard label="Minecraft release"><select aria-label="Minecraft release" value={version} onChange={(event) => setVersion(event.target.value)} disabled={catalogLoading || !catalog?.versions.length}><option value="">{catalogLoading ? 'Loading official versions…' : 'Choose a version'}</option>{catalog?.versions.map((item) => <option key={item} value={item}>{item}</option>)}</select></FieldWizard>
-                {software === 'fabric' && <FieldWizard label="Fabric loader"><select aria-label="Fabric loader" value={loaderVersion} onChange={(event) => setLoaderVersion(event.target.value)} disabled={catalogLoading || !versionCatalog?.loaders.length}><option value="">Choose loader</option>{versionCatalog?.loaders.map((item) => <option key={item} value={item}>{item}</option>)}</select></FieldWizard>}
+                {needsLoader && <FieldWizard label={`${softwareTitle} version`}><select aria-label={`${softwareTitle} version`} value={loaderVersion} onChange={(event) => setLoaderVersion(event.target.value)} disabled={catalogLoading || !(versionCatalog?.loaders.length || versionCatalog?.experimentalLoaders.length)}><option value="">Choose loader version</option>{versionCatalog?.loaders.length ? <optgroup label={software === 'forge' ? 'Recommended' : 'Stable'}>{versionCatalog.loaders.map((item) => <option key={item} value={item}>{item}</option>)}</optgroup> : null}{versionCatalog?.experimentalLoaders.length ? <optgroup label="Latest / experimental">{versionCatalog.experimentalLoaders.map((item) => <option key={item} value={item}>{item}</option>)}</optgroup> : null}</select></FieldWizard>}
                 {software === 'fabric' && <FieldWizard label="Fabric installer"><input value={installerVersion} readOnly aria-label="Fabric installer version" /></FieldWizard>}
                 {software === 'paper' && <FieldWizard label="Paper stable build"><select aria-label="Paper stable build" value={paperBuild ?? ''} onChange={(event) => setPaperBuild(Number(event.target.value))} disabled={catalogLoading || !versionCatalog?.builds.length}><option value="">Choose stable build</option>{versionCatalog?.builds.map((item) => <option key={item} value={item}>{item}</option>)}</select></FieldWizard>}
               </div>
+              {(software === 'forge' || software === 'neoforge') && <div className="install-info-row"><ShieldCheck size={15} /><span>The installer runs from its official provider in a private, resource-limited folder. The provider-published SHA-256 is checked; SHA-1 is used only when it is the strongest checksum the official source publishes.</span></div>}
               {requiredJavaMajor && <div className="install-info-row"><Cpu size={15} /><span>Mojang metadata requires Java {requiredJavaMajor} or newer for this Minecraft release.</span></div>}
               {catalogLoading && <div className="install-inline-status"><LoaderCircle className="spin" size={14} /> Contacting official version metadata…</div>}
               {catalogError && <div className="install-error-inline"><CircleAlert size={15} /><span>{catalogError}</span></div>}
@@ -242,7 +252,7 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
               <div className="install-info-row"><ShieldCheck size={15} /><span>New servers bind to loopback initially. A local port check runs before download.</span></div>
             </div>}
             {step === 'review' && <div className="wizard-step-content"><div className="wizard-step-intro"><span className="wizard-content-icon"><Check size={18} /></span><div><h3>Review installation</h3><p>Confirm the provider, directory and startup settings.</p></div></div>
-              <div className="wizard-review-card"><div className="wizard-review-banner"><span className="wizard-review-mark"><Server size={18} /></span><div><strong>{name || 'Untitled server'}</strong><small>New server · stopped after install</small></div></div><div className="wizard-review-grid"><div><span>Software</span><strong>{softwareTitle} {version}{software === 'paper' && paperBuild ? ` · build ${paperBuild}` : ''}</strong></div><div><span>Java</span><strong>{selectedRuntime ? `${selectedRuntime.vendor ?? 'Java'} ${selectedRuntime.major}` : 'Not selected'}</strong></div><div><span>Memory</span><strong>{minMemoryMb}–{maxMemoryMb} MB</strong></div><div><span>Port</span><strong>{port}</strong></div><div><span>Folder</span><strong>{normalizedDirectory || 'Not selected'}</strong></div><div><span>Network</span><strong>Loopback only</strong></div></div></div>
+              <div className="wizard-review-card"><div className="wizard-review-banner"><span className="wizard-review-mark"><Server size={18} /></span><div><strong>{name || 'Untitled server'}</strong><small>New server · stopped after install</small></div></div><div className="wizard-review-grid"><div><span>Software</span><strong>{softwareTitle} {version}{needsLoader && loaderVersion ? ` · ${loaderVersion}` : software === 'paper' && paperBuild ? ` · build ${paperBuild}` : ''}</strong></div><div><span>Java</span><strong>{selectedRuntime ? `${selectedRuntime.vendor ?? 'Java'} ${selectedRuntime.major}` : 'Not selected'}</strong></div><div><span>Memory</span><strong>{minMemoryMb}–{maxMemoryMb} MB</strong></div><div><span>Port</span><strong>{port}</strong></div><div><span>Folder</span><strong>{normalizedDirectory || 'Not selected'}</strong></div><div><span>Network</span><strong>Loopback only</strong></div></div></div>
               <label className="install-eula-check"><input type="checkbox" checked={eulaAccepted} onChange={(event) => setEulaAccepted(event.target.checked)} /><span>I have read and accept the <a href="https://www.minecraft.net/en-us/eula" target="_blank" rel="noreferrer">Minecraft EULA</a>.</span></label>
               <div className="install-info-row"><ShieldCheck size={15} /><span>The install records <code>eula=true</code> only if you check this box. Otherwise it writes <code>eula=false</code> and the server cannot start.</span></div>
               {actionError && <div className="install-error-inline"><CircleAlert size={15} /><span>{actionError}</span></div>}
@@ -257,6 +267,16 @@ export function CreateServerWizard({ onClose, preset }: { onClose: () => void; p
 
 function FieldWizard({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return <label className="field wizard-field"><span className="field-label">{label}</span>{children}{hint && <span className="field-hint">{hint}</span>}</label>
+}
+
+function SoftwareOption({
+  option, selected, onSelect,
+}: { option: (typeof softwareOptions)[number]; selected: boolean; onSelect: (software: InstallSoftware) => void }) {
+  return <button type="button" className={`software-option ${selected ? 'selected' : ''}`} onClick={() => onSelect(option.id)}>
+    <SoftwareLogo software={option.id} />
+    <span><strong>{option.title}</strong><small>{option.description}</small></span>
+    <span className="software-radio" />
+  </button>
 }
 
 function message(error: unknown): string { return error instanceof Error ? error.message : 'The local server request could not be completed.' }

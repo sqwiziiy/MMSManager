@@ -124,12 +124,18 @@ describe('managed server mod files', () => {
   it('reads bounded Fabric/Paper metadata and leaves archives without metadata unknown', async () => {
     const fabricPath = join(temp, 'fabric.jar')
     const paperPath = join(temp, 'paper.jar')
+    const forgePath = join(temp, 'forge.jar')
+    const neoForgePath = join(temp, 'neoforge.jar')
     const unknownPath = join(temp, 'unknown.jar')
     await writeFile(fabricPath, makeJar({ 'META-INF/': '', 'fabric.mod.json': JSON.stringify({ id: 'map_markers', name: 'Map Markers', version: '2.4.1', depends: { minecraft: '>=1.21', fabricloader: '>=0.16', cloth_config: '*' } }) }))
     await writeFile(paperPath, makeJar({ 'plugin.yml': 'name: FixturePlugin\nversion: 1.3.0\nmain: example.Plugin\napi-version: "1.21"\ndepend:\n  - LuckPerms\nsoftdepend: [PlaceholderAPI]\n' }))
+    await writeFile(forgePath, makeJar({ 'META-INF/mods.toml': '[[mods]]\nmodId="forge_fixture"\ndisplayName="Forge Fixture"\nversion="1.2.3"\n' }))
+    await writeFile(neoForgePath, makeJar({ 'META-INF/neoforge.mods.toml': '[[mods]]\nmodId="neoforge_fixture"\ndisplayName="NeoForge Fixture"\nversion="2.3.4"\n' }))
     await writeFile(unknownPath, makeJar({ 'META-INF/MANIFEST.MF': 'Manifest-Version: 1.0\n' }))
     await expect(inspectModJar(fabricPath)).resolves.toMatchObject({ metadataKind: 'fabric', metadataState: 'known', modId: 'map_markers', artifactVersion: '2.4.1', minecraftConstraint: '>=1.21', loaderConstraint: '>=0.16', dependencies: ['minecraft', 'fabricloader', 'cloth_config'] })
     await expect(inspectModJar(paperPath)).resolves.toMatchObject({ metadataKind: 'paper', metadataState: 'known', modId: 'FixturePlugin', artifactVersion: '1.3.0', minecraftConstraint: '1.21', dependencies: ['LuckPerms', 'PlaceholderAPI'] })
+    await expect(inspectModJar(forgePath)).resolves.toMatchObject({ metadataKind: 'forge', metadataState: 'known', modId: 'forge_fixture', artifactVersion: '1.2.3' })
+    await expect(inspectModJar(neoForgePath)).resolves.toMatchObject({ metadataKind: 'neoforge', metadataState: 'known', modId: 'neoforge_fixture', artifactVersion: '2.3.4' })
     await expect(inspectModJar(unknownPath)).resolves.toMatchObject({ metadataKind: 'unknown', metadataState: 'unknown', modId: null })
   })
 

@@ -9,10 +9,17 @@ import { localServerEvents, localServers, serverInstallOperations } from '../db/
 import type { JavaRuntimeRegistry } from './java.js'
 import type { ServerRegistry } from './registry.js'
 import type { InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
+import { forgeGameVersions, forgeLoaderVersions, neoForgeLoaderVersions, neoForgeMinecraftVersion, parseForgePromotions, parseMavenMetadata } from './loader-catalog.js'
+import { generatedStartScript } from './runtime.js'
+import { detectNativeLoader, resolveNativeLaunch, type ServerLaunchConfiguration } from './native-loader.js'
+import { loaderInstallerWorkName, publishLoaderInstallerOutput, runOfficialLoaderInstaller, type LoaderInstallRunner } from './loader-installer.js'
 
 const MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
 const FABRIC_META = 'https://meta.fabricmc.net/v2'
 const PAPER_API = 'https://fill.papermc.io/v3'
+const FORGE_PROMOTIONS = 'https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json'
+const FORGE_MAVEN = 'https://maven.minecraftforge.net/net/minecraftforge/forge'
+const NEOFORGE_MAVEN = 'https://maven.neoforged.net/releases/net/neoforged'
 const MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
 const MIN_FREE_BYTES = 64 * 1024 * 1024
 const REDIRECT_LIMIT = 3
@@ -25,6 +32,7 @@ type Artifact = {
   checksumType: 'sha1' | 'sha256' | null
   checksum: string | null
   javaMajor: number
+  loaderInstaller: boolean
 }
 
 export class ServerInstallError extends Error {
@@ -46,8 +54,6 @@ function checkDomain(url: string, allowed: string[]): URL {
   return parsed
 }
 
-function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'` }
-
 export async function isLoopbackPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolvePort) => {
     const server = createServer()
@@ -62,16 +68,18 @@ export class ServerInstallService {
   private readonly fetchImpl: FetchLike
   private readonly now: () => number
   private readonly env: NodeJS.ProcessEnv
+  private readonly runLoaderInstaller: LoaderInstallRunner
 
   constructor(
     private readonly db: AppDatabase,
     private readonly servers: ServerRegistry,
     private readonly javaRuntimes: JavaRuntimeRegistry,
-    options: { fetch?: FetchLike; now?: () => number; env?: NodeJS.ProcessEnv } = {},
+    options: { fetch?: FetchLike; now?: () => number; env?: NodeJS.ProcessEnv; runLoaderInstaller?: LoaderInstallRunner } = {},
   ) {
     this.fetchImpl = options.fetch ?? fetch
     this.now = options.now ?? Date.now
     this.env = options.env ?? process.env
+    this.runLoaderInstaller = options.runLoaderInstaller ?? runOfficialLoaderInstaller
   }
 
   async prepare(): Promise<void> {
@@ -116,7 +124,7 @@ export class ServerInstallService {
       const manifest = await this.getJson(MANIFEST_URL, ['piston-meta.mojang.com'])
       const versions = this.releaseVersions(manifest)
       const requiredJavaMajor = version ? await this.requiredJavaMajor(version) : null
-      return { software, versions, loaders: [], builds: [], installerVersion: null, requiredJavaMajor }
+      return { software, versions, loaders: [], experimentalLoaders: [], builds: [], installerVersion: null, requiredJavaMajor }
     }
     if (software === 'fabric') {
       const [games, installers] = await Promise.all([
@@ -132,7 +140,37 @@ export class ServerInstallService {
         loaders = Array.isArray(loaderData) ? loaderData.filter((entry) => isRecord(entry) && isRecord(entry['loader']) && entry['loader']['stable'] === true).map((entry) => isRecord(entry) && isRecord(entry['loader']) ? stringValue(entry['loader']['version']) : null).filter((entry): entry is string => Boolean(entry)).slice(0, 100) : []
       }
       const requiredJavaMajor = version ? await this.requiredJavaMajor(version) : null
-      return { software, versions, loaders, builds: [], installerVersion, requiredJavaMajor }
+      return { software, versions, loaders, experimentalLoaders: [], builds: [], installerVersion, requiredJavaMajor }
+    }
+    if (software === 'forge' || software === 'neoforge') {
+      const manifest = await this.getJson(MANIFEST_URL, ['piston-meta.mojang.com'])
+      const releases = this.releaseVersions(manifest)
+      if (software === 'forge') {
+        const [promotionsJson, metadata] = await Promise.all([
+          this.getJson(FORGE_PROMOTIONS, ['files.minecraftforge.net']),
+          this.getText(`${FORGE_MAVEN}/maven-metadata.xml`, ['maven.minecraftforge.net']),
+        ])
+        const promotions = parseForgePromotions(promotionsJson)
+        const mavenVersions = parseMavenMetadata(metadata)
+        const versions = forgeGameVersions(releases, promotions)
+        const selected = version ? forgeLoaderVersions(version, promotions, mavenVersions) : { stable: [], experimental: [] }
+        const requiredJavaMajor = version ? await this.requiredJavaMajor(version) : null
+        return { software, versions, loaders: selected.stable, experimentalLoaders: selected.experimental, builds: [], installerVersion: null, requiredJavaMajor }
+      }
+      const [modernMetadata, legacyMetadata] = await Promise.all([
+        this.getText(`${NEOFORGE_MAVEN}/neoforge/maven-metadata.xml`, ['maven.neoforged.net']),
+        this.getText(`${NEOFORGE_MAVEN}/forge/maven-metadata.xml`, ['maven.neoforged.net']),
+      ])
+      const modernVersions = parseMavenMetadata(modernMetadata)
+      const legacyVersions = parseMavenMetadata(legacyMetadata)
+      const neoVersions = new Set([...modernVersions, ...legacyVersions].flatMap((loaderVersion) => {
+        const matched = neoForgeMinecraftVersion(loaderVersion, releases)
+        return matched ? [matched] : []
+      }))
+      const versions = releases.filter((release) => neoVersions.has(release))
+      const selected = version ? neoForgeLoaderVersions(version, modernVersions, legacyVersions, releases) : { stable: [], experimental: [] }
+      const requiredJavaMajor = version ? await this.requiredJavaMajor(version) : null
+      return { software, versions, loaders: selected.stable, experimentalLoaders: selected.experimental, builds: [], installerVersion: null, requiredJavaMajor }
     }
     const paperAgent = this.paperUserAgent()
     const project = await this.getJson(`${PAPER_API}/projects/paper`, ['fill.papermc.io'], paperAgent)
@@ -144,7 +182,23 @@ export class ServerInstallService {
       builds = Array.isArray(buildData) ? buildData.filter((entry) => isRecord(entry) && entry['channel'] === 'STABLE').map((entry) => isRecord(entry) ? positiveInteger(entry['id']) : null).filter((entry): entry is number => entry !== null).slice(0, 100) : []
     }
     const requiredJavaMajor = version ? await this.requiredJavaMajor(version) : null
-    return { software, versions, loaders: [], builds, installerVersion: null, requiredJavaMajor }
+    return { software, versions, loaders: [], experimentalLoaders: [], builds, installerVersion: null, requiredJavaMajor }
+  }
+
+  async minecraftVersionForLoader(software: 'forge' | 'neoforge', loaderVersion: string): Promise<string | null> {
+    const manifest = await this.getJson(MANIFEST_URL, ['piston-meta.mojang.com'])
+    const releases = this.releaseVersions(manifest)
+    if (software === 'forge') {
+      const metadata = parseMavenMetadata(await this.getText(`${FORGE_MAVEN}/maven-metadata.xml`, ['maven.minecraftforge.net']))
+      const matches = releases.filter((version) => metadata.includes(`${version}-${loaderVersion}`))
+      return matches.length === 1 ? matches[0]! : null
+    }
+    const [modern, legacy] = await Promise.all([
+      this.getText(`${NEOFORGE_MAVEN}/neoforge/maven-metadata.xml`, ['maven.neoforged.net']),
+      this.getText(`${NEOFORGE_MAVEN}/forge/maven-metadata.xml`, ['maven.neoforged.net']),
+    ])
+    const published = new Set([...parseMavenMetadata(modern), ...parseMavenMetadata(legacy)])
+    return published.has(loaderVersion) ? neoForgeMinecraftVersion(loaderVersion, releases) : null
   }
 
   async create(input: ServerInstallRequest, actorUserId: string): Promise<InstallOperation> {
@@ -153,7 +207,9 @@ export class ServerInstallService {
     const at = new Date(this.now()).toISOString()
     this.db.insert(serverInstallOperations).values({
       id, actorUserId, serverId: null, name: input.name, directoryName: input.directoryName,
-      software: input.software, version: input.version, requestJson: JSON.stringify(input),
+      software: input.software === 'forge' || input.software === 'neoforge' ? 'vanilla' : input.software,
+      loader: input.software === 'forge' || input.software === 'neoforge' ? input.software : null,
+      version: input.version, requestJson: JSON.stringify(input),
       status: 'pending', progress: 1, phase: 'queued', artifactUrl: null, artifactSize: null,
       artifactSha1: null, artifactSha256: null, errorCode: null, errorMessage: null,
       partialDirectory: null, createdAt: at, updatedAt: at,
@@ -197,7 +253,8 @@ export class ServerInstallService {
       }
       const available = await statfs(root)
       const availableBytes = Number(available.bavail) * Number(available.bsize)
-      if (availableBytes < (artifact.expectedSize ?? MAX_ARTIFACT_BYTES) + MIN_FREE_BYTES) {
+      const requiredReserve = artifact.loaderInstaller ? 2 * 1024 * 1024 * 1024 : MIN_FREE_BYTES
+      if (availableBytes < (artifact.expectedSize ?? MAX_ARTIFACT_BYTES) + requiredReserve) {
         throw new ServerInstallError('DISK_SPACE_LOW', 'There is not enough available space under the managed server root for this installation.')
       }
       await mkdir(finalDirectory, { mode: 0o700 })
@@ -206,16 +263,72 @@ export class ServerInstallService {
       if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink() || await realpath(finalDirectory) !== finalDirectory) {
         throw new ServerInstallError('DIRECTORY_REJECTED', 'The new server directory did not remain a safe direct child of the managed root.')
       }
+      const loaderWorkDirectory = artifact.loaderInstaller ? join(finalDirectory, loaderInstallerWorkName(id)) : null
+      if (loaderWorkDirectory) await mkdir(loaderWorkDirectory, { mode: 0o700 })
       await this.update(id, {
         status: 'downloading', progress: 10, phase: 'downloading', artifactUrl: artifact.url,
         artifactSize: artifact.expectedSize,
       })
-      const download = await this.downloadArtifact(id, artifact, join(finalDirectory, 'server.jar.part'), signal)
+      const artifactPath = loaderWorkDirectory ? join(loaderWorkDirectory, 'loader-installer.jar.part') : join(finalDirectory, 'server.jar.part')
+      const download = await this.downloadArtifact(id, artifact, artifactPath, signal)
       if (signal.aborted) throw new ServerInstallError('INSTALL_CANCELLED', 'The installation was cancelled. Created files were preserved for review.')
       await this.update(id, { status: 'validating', progress: 86, phase: 'validating-artifact', artifactSha1: download.sha1, artifactSha256: download.sha256 })
-      const jarPartial = join(finalDirectory, 'server.jar.part')
-      const jarFinal = join(finalDirectory, 'server.jar')
-      await (await import('node:fs/promises')).rename(jarPartial, jarFinal)
+      let launch: ServerLaunchConfiguration
+      let jarName: string | null
+      if (loaderWorkDirectory) {
+        const { rename, unlink } = await import('node:fs/promises')
+        const installerPath = join(loaderWorkDirectory, 'loader-installer.jar')
+        await rename(artifactPath, installerPath)
+        await this.update(id, { status: 'validating', progress: 88, phase: 'running-official-installer' })
+        try {
+          await this.runLoaderInstaller({
+            javaPath: runtime.path, installerPath, workDirectory: loaderWorkDirectory, signal,
+            onOutput: (text) => this.appendInstallerLog(id, text),
+          })
+        } catch (error) {
+          if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
+            throw new ServerInstallError(error.code, error.message)
+          }
+          throw error
+        }
+        if (signal.aborted) throw new ServerInstallError('INSTALL_CANCELLED', 'The installation was cancelled. Partial installer output remains for review.')
+        await unlink(installerPath)
+        await this.update(id, { status: 'validating', progress: 93, phase: 'checking-loader-layout' })
+        try {
+          const detected = await detectNativeLoader(loaderWorkDirectory, input.software)
+          if (detected) launch = detected.launch
+          else {
+            const { readdir, lstat } = await import('node:fs/promises')
+            const candidates = (await readdir(loaderWorkDirectory, { withFileTypes: true }))
+              .filter((entry) => entry.isFile() && /^(?:server|minecraft_server|forge|neoforge)[A-Za-z0-9._ -]*\.jar$/i.test(entry.name))
+              .map((entry) => entry.name)
+            const safeCandidates: string[] = []
+            for (const candidate of candidates) {
+              const stat = await lstat(join(loaderWorkDirectory, candidate))
+              if (stat.isFile() && !stat.isSymbolicLink() && stat.size > 0) safeCandidates.push(candidate)
+            }
+            if (safeCandidates.length !== 1) throw new ServerInstallError('INSTALL_STRUCTURE_INVALID', 'The official loader installer did not produce one unambiguous server JAR or native launch argument file.')
+            launch = { kind: 'jar', jarName: safeCandidates[0]! }
+          }
+        } catch (error) {
+          if (error instanceof ServerInstallError) throw error
+          throw new ServerInstallError('INSTALL_STRUCTURE_INVALID', 'The official loader installer output could not be verified safely.')
+        }
+        await publishLoaderInstallerOutput(loaderWorkDirectory, finalDirectory)
+        jarName = launch.kind === 'jar' ? launch.jarName : null
+        try {
+          if (input.software !== 'forge' && input.software !== 'neoforge') throw new Error('This install is not a native loader.')
+          const publishedLaunch = await resolveNativeLaunch(finalDirectory, input.software, jarName)
+          if (JSON.stringify(publishedLaunch) !== JSON.stringify(launch)) throw new Error('Published loader launch configuration did not match the verified installer output.')
+        } catch {
+          throw new ServerInstallError('INSTALL_STRUCTURE_INVALID', 'The published loader output failed its final launch-structure verification.')
+        }
+      } else {
+        const { rename } = await import('node:fs/promises')
+        await rename(artifactPath, join(finalDirectory, 'server.jar'))
+        launch = { kind: 'jar', jarName: 'server.jar' }
+        jarName = 'server.jar'
+      }
       const properties = [
         '# Generated by MMSManager. Edit through the local server properties screen.',
         `server-port=${input.port}`,
@@ -234,7 +347,10 @@ export class ServerInstallService {
       ].join('\n')
       await this.writeExclusive(join(finalDirectory, 'server.properties'), properties, 0o600)
       await this.writeExclusive(join(finalDirectory, 'eula.txt'), `# Human acceptance recorded by MMSManager\neula=${input.eulaAccepted ? 'true' : 'false'}\n`, 0o600)
-      const startScript = `#!/bin/sh\nset -eu\ncd -- "$(dirname -- "$0")"\nexec ${shellQuote(runtime.path)} -Xms${input.minMemoryMb}M -Xmx${input.maxMemoryMb}M -jar server.jar nogui\n`
+      const startScript = generatedStartScript(runtime.path, {
+        minMemoryMb: input.minMemoryMb, maxMemoryMb: input.maxMemoryMb,
+        jvmOptions: { collector: 'default', maxGCPauseMs: null, parallelGcThreads: null, alwaysPreTouch: false, disableExplicitGc: false },
+      }, jarName ?? 'server.jar', launch)
       await this.writeExclusive(join(finalDirectory, 'start.sh'), startScript, 0o700)
 
       const serverId = randomUUID()
@@ -242,7 +358,9 @@ export class ServerInstallService {
       this.db.transaction((tx) => {
         tx.insert(localServers).values({
           id: serverId, name: input.name, directory: finalDirectory, source: 'created',
-          software: input.software, version: input.version, jarName: 'server.jar', javaPath: runtime.path,
+          software: input.software === 'forge' || input.software === 'neoforge' ? 'unknown' : input.software,
+          loader: input.software === 'forge' || input.software === 'neoforge' ? input.software : null,
+          version: input.version, jarName, javaPath: runtime.path,
           javaMajor: runtime.major, javaSelectionMode: 'auto', requiredJavaMajor: artifact.javaMajor,
           minMemoryMb: input.minMemoryMb, maxMemoryMb: input.maxMemoryMb,
           jvmOptionsJson: '{"collector":"default","maxGCPauseMs":null,"parallelGcThreads":null,"alwaysPreTouch":false,"disableExplicitGc":false}',
@@ -252,11 +370,12 @@ export class ServerInstallService {
         }).run()
         tx.insert(localServerEvents).values({
           serverId, actorUserId, action: 'server-installed', outcome: 'success', occurredAt: at,
-          detail: JSON.stringify({ operationId: id, provider: artifact.provider, version: input.version, artifactUrl: artifact.url, size: download.size, checksumType: artifact.checksumType, providerChecksum: artifact.checksum, sha1: download.sha1, sha256: download.sha256, eulaAccepted: input.eulaAccepted }),
+          detail: JSON.stringify({ operationId: id, provider: artifact.provider, version: input.version, loaderVersion: input.loaderVersion ?? null, artifactUrl: artifact.url, size: download.size, checksumType: artifact.checksumType, providerChecksum: artifact.checksum, sha1: download.sha1, sha256: download.sha256, eulaAccepted: input.eulaAccepted }),
         }).run()
         tx.update(serverInstallOperations).set({
           serverId, status: 'completed', progress: 100, phase: 'complete', artifactSize: download.size,
-          artifactSha1: download.sha1, artifactSha256: download.sha256, partialDirectory: null, updatedAt: at,
+          artifactSha1: download.sha1, artifactSha256: download.sha256,
+          artifactChecksumType: artifact.checksumType, partialDirectory: null, updatedAt: at,
         }).where(eq(serverInstallOperations.id, id)).run()
       })
     } catch (error) {
@@ -264,7 +383,12 @@ export class ServerInstallService {
         ? new ServerInstallError('INSTALL_CANCELLED', 'The installation was cancelled. Any files already created were preserved for review.')
         : error instanceof ServerInstallError
         ? error
-        : new ServerInstallError('INSTALL_FAILED', 'The installation failed. Any panel-created partial directory was preserved for inspection.')
+        : new ServerInstallError('INSTALL_FAILED', (() => {
+          const cause = error instanceof Error
+            ? [...error.message].map((character) => { const code = character.charCodeAt(0); return code < 32 || code === 127 ? ' ' : character }).join('').trim().slice(0, 500)
+            : ''
+          return `The installation failed. Any panel-created partial directory was preserved for inspection.${cause ? ` Cause: ${cause}` : ''}`
+        })())
       const at = new Date(this.now()).toISOString()
       this.db.update(serverInstallOperations).set({
         status: 'failed', phase: 'failed', errorCode: failure.code, errorMessage: failure.message,
@@ -306,7 +430,7 @@ export class ServerInstallService {
       if (!loader || !installer) throw new ServerInstallError('BUILD_UNAVAILABLE', 'The selected stable Fabric loader or installer is no longer available.')
       url = `${FABRIC_META}/versions/loader/${encodeURIComponent(input.version)}/${encodeURIComponent(input.loaderVersion!)}/${encodeURIComponent(input.installerVersion!)}/server/jar`
       checkDomain(url, ['meta.fabricmc.net'])
-    } else {
+    } else if (input.software === 'paper') {
       provider = 'PaperMC Downloads Service v3'
       const builds = await this.getJson(`${PAPER_API}/projects/paper/versions/${encodeURIComponent(input.version)}/builds`, ['fill.papermc.io'], this.paperUserAgent(), signal)
       const stable = Array.isArray(builds) ? builds.filter((entry) => isRecord(entry) && entry['channel'] === 'STABLE') : []
@@ -319,10 +443,63 @@ export class ServerInstallService {
       checksumType = checksum ? 'sha256' : null
       if (!url || !checksum || !/^[a-f0-9]{64}$/.test(checksum)) throw new ServerInstallError('BUILD_UNAVAILABLE', 'Paper has no stable build with a SHA-256 checksum for this version.')
       checkDomain(url, ['fill-data.papermc.io', 'fill.papermc.io'])
+    } else {
+      const loaderVersion = input.loaderVersion
+      if (!loaderVersion) throw new ServerInstallError('BUILD_UNAVAILABLE', 'Choose an official loader version before installation.')
+      const isForge = input.software === 'forge'
+      const legacyNeoForge = input.software === 'neoforge' && loaderVersion.startsWith('1.20.1-')
+      const providerHosts = isForge ? ['maven.minecraftforge.net'] : ['maven.neoforged.net']
+      const group = isForge ? 'forge' : legacyNeoForge ? 'forge' : 'neoforge'
+      const metadata = parseMavenMetadata(await this.getText(`${isForge ? FORGE_MAVEN : `${NEOFORGE_MAVEN}/${group}`}/maven-metadata.xml`, providerHosts, signal))
+      let coordinateVersion: string
+      let artifactDirectory: string
+      let artifactName: string
+      if (isForge) {
+        coordinateVersion = `${input.version}-${loaderVersion}`
+        artifactDirectory = `${FORGE_MAVEN}/${coordinateVersion}`
+        artifactName = `forge-${coordinateVersion}-installer.jar`
+        provider = 'MinecraftForge Maven'
+      } else if (legacyNeoForge) {
+        coordinateVersion = loaderVersion
+        artifactDirectory = `${NEOFORGE_MAVEN}/forge/${coordinateVersion}`
+        artifactName = `forge-${coordinateVersion}-installer.jar`
+        provider = 'NeoForged Maven'
+      } else {
+        coordinateVersion = loaderVersion
+        artifactDirectory = `${NEOFORGE_MAVEN}/neoforge/${coordinateVersion}`
+        artifactName = `neoforge-${coordinateVersion}-installer.jar`
+        provider = 'NeoForged Maven'
+      }
+      if (!metadata.includes(coordinateVersion)) throw new ServerInstallError('BUILD_UNAVAILABLE', 'The selected loader build is no longer published in the official Maven metadata.')
+      url = `${artifactDirectory}/${artifactName}`
+      checkDomain(url, providerHosts)
+      let sha256Missing = false
+      try {
+        const sidecar = await this.getText(`${url}.sha256`, providerHosts, signal)
+        const published = sidecar.trim().match(/^([a-f0-9]{64})(?:\s+.*)?$/i)?.[1]?.toLowerCase()
+        if (!published) throw new ServerInstallError('PROVIDER_CHECKSUM_INVALID', 'The official installer SHA-256 checksum file is malformed; installation was blocked.')
+        checksum = published
+        checksumType = 'sha256'
+      } catch (error) {
+        if (error instanceof ServerInstallError && error.code === 'PROVIDER_UNAVAILABLE' && error.message.includes('HTTP 404')) sha256Missing = true
+        else throw error
+      }
+      if (sha256Missing) {
+        try {
+          const sidecar = await this.getText(`${url}.sha1`, providerHosts, signal)
+          const published = sidecar.trim().match(/^([a-f0-9]{40})(?:\s+.*)?$/i)?.[1]?.toLowerCase()
+          if (!published) throw new ServerInstallError('PROVIDER_CHECKSUM_INVALID', 'The official installer SHA-1 checksum file is malformed; installation was blocked.')
+          checksum = published
+          checksumType = 'sha1'
+        } catch (error) {
+          if (!(error instanceof ServerInstallError) || error.code !== 'PROVIDER_UNAVAILABLE' || !error.message.includes('HTTP 404')) throw error
+        }
+      }
+      if (!checksum) throw new ServerInstallError('PROVIDER_CHECKSUM_MISSING', 'The official installer has no usable upstream SHA-256 or SHA-1 checksum; the installation was blocked.')
     }
     if (expectedSize !== null && expectedSize > MAX_ARTIFACT_BYTES) throw new ServerInstallError('ARTIFACT_TOO_LARGE', 'The official provider artifact exceeds the 256 MiB installation limit.')
     const javaMajor = await this.requiredJavaMajor(input.version, signal)
-    return { provider, url, expectedSize, checksumType, checksum, javaMajor }
+    return { provider, url, expectedSize, checksumType, checksum, javaMajor, loaderInstaller: input.software === 'forge' || input.software === 'neoforge' }
   }
 
   private async requiredJavaMajor(version: string, signal?: AbortSignal): Promise<number> {
@@ -347,7 +524,7 @@ export class ServerInstallService {
 
   private releaseVersions(manifest: unknown): string[] {
     if (!isRecord(manifest) || !Array.isArray(manifest['versions'])) throw new ServerInstallError('PROVIDER_METADATA_INVALID', 'Mojang returned an invalid version manifest.')
-    return manifest['versions'].filter((entry) => isRecord(entry) && entry['type'] === 'release' && typeof entry['id'] === 'string' && /^\d{1,3}(?:\.\d{1,3}){1,3}$/.test(entry['id'])).map((entry) => (entry as Record<string, unknown>)['id'] as string).slice(0, 100)
+    return manifest['versions'].filter((entry) => isRecord(entry) && entry['type'] === 'release' && typeof entry['id'] === 'string' && /^\d{1,3}(?:\.\d{1,3}){1,3}$/.test(entry['id'])).map((entry) => (entry as Record<string, unknown>)['id'] as string).slice(0, 1000)
   }
 
   private async getJson(url: string, allowedHosts: string[], userAgent = 'MMSManager/0.2.0', signal?: AbortSignal): Promise<unknown> {
@@ -381,9 +558,32 @@ export class ServerInstallService {
     return `MMSManager/0.2.0 (${contact})`
   }
 
+  private async getText(url: string, allowedHosts: string[], signal?: AbortSignal): Promise<string> {
+    let current = url
+    for (let redirects = 0; redirects <= REDIRECT_LIMIT; redirects += 1) {
+      checkDomain(current, allowedHosts)
+      const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000)
+      const response = await this.fetchImpl(current, { headers: { Accept: 'application/xml, text/plain' }, signal: requestSignal, redirect: 'manual' })
+      if (signal?.aborted) throw new ServerInstallError('INSTALL_CANCELLED', 'The installation was cancelled.')
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get('location')
+        if (!location || redirects === REDIRECT_LIMIT) throw new ServerInstallError('PROVIDER_REDIRECT_REJECTED', 'The provider returned too many redirects.')
+        current = new URL(location, current).toString()
+        continue
+      }
+      if (!response.ok) throw new ServerInstallError('PROVIDER_UNAVAILABLE', `Official provider metadata returned HTTP ${response.status}.`)
+      const body = await response.text()
+      if (Buffer.byteLength(body, 'utf8') > 2 * 1024 * 1024) throw new ServerInstallError('PROVIDER_METADATA_TOO_LARGE', 'Official provider metadata exceeded the 2 MiB limit.')
+      return body
+    }
+    throw new ServerInstallError('PROVIDER_REDIRECT_REJECTED', 'The provider returned too many redirects.')
+  }
+
   private async downloadArtifact(id: string, artifact: Artifact, path: string, signal?: AbortSignal): Promise<{ size: number; sha1: string; sha256: string }> {
     const hosts = artifact.provider === 'Mojang' ? ['piston-data.mojang.com', 'launcher.mojang.com']
-      : artifact.provider === 'Fabric Meta' ? ['meta.fabricmc.net'] : ['fill-data.papermc.io', 'fill.papermc.io']
+      : artifact.provider === 'Fabric Meta' ? ['meta.fabricmc.net']
+      : artifact.provider === 'PaperMC Downloads Service v3' ? ['fill-data.papermc.io', 'fill.papermc.io']
+      : artifact.provider === 'MinecraftForge Maven' ? ['maven.minecraftforge.net'] : ['maven.neoforged.net']
     let current = artifact.url
     let response: Response | null = null
     for (let redirects = 0; redirects <= REDIRECT_LIMIT; redirects += 1) {
@@ -460,15 +660,33 @@ export class ServerInstallService {
     try { await handle.writeFile(contents); await handle.sync() } finally { await handle.close() }
   }
 
+  private appendInstallerLog(id: string, output: string): void {
+    const row = this.db.select({ installerLog: serverInstallOperations.installerLog })
+      .from(serverInstallOperations).where(eq(serverInstallOperations.id, id)).get()
+    if (!row) return
+    this.db.update(serverInstallOperations).set({
+      installerLog: `${row.installerLog}${output}`.slice(-24_000),
+      updatedAt: new Date(this.now()).toISOString(),
+    }).where(eq(serverInstallOperations.id, id)).run()
+  }
+
   private async update(id: string, fields: Partial<typeof serverInstallOperations.$inferInsert>): Promise<void> {
     this.db.update(serverInstallOperations).set({ ...fields, updatedAt: new Date(this.now()).toISOString() }).where(eq(serverInstallOperations.id, id)).run()
   }
 
   private toPublic(row: typeof serverInstallOperations.$inferSelect): InstallOperation {
+    let loaderVersion: string | null = null
+    try {
+      const request = JSON.parse(row.requestJson) as unknown
+      if (isRecord(request) && typeof request['loaderVersion'] === 'string' && /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,99}$/.test(request['loaderVersion'])) {
+        loaderVersion = request['loaderVersion']
+      }
+    } catch { /* A historical or damaged request record has no public loader version. */ }
     return {
-      id: row.id, name: row.name, directoryName: row.directoryName, software: row.software, version: row.version,
-      status: row.status, progress: row.progress, phase: row.phase, serverId: row.serverId,
+      id: row.id, name: row.name, directoryName: row.directoryName, software: row.loader ?? row.software, version: row.version, loaderVersion,
+      status: row.status, progress: row.progress, phase: row.phase, installerLog: row.installerLog, serverId: row.serverId,
       artifactUrl: row.artifactUrl, artifactSize: row.artifactSize, artifactSha256: row.artifactSha256,
+      checksumType: row.artifactChecksumType,
       error: row.errorCode && row.errorMessage ? { code: row.errorCode, message: row.errorMessage } : null,
       partialDirectory: row.partialDirectory, createdAt: row.createdAt, updatedAt: row.updatedAt,
     }

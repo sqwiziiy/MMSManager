@@ -1,4 +1,4 @@
-export type ServerPropertySoftware = 'vanilla' | 'fabric' | 'paper'
+export type ServerPropertySoftware = 'vanilla' | 'fabric' | 'paper' | 'forge' | 'neoforge'
 export type ServerPropertyCategory = 'gameplay' | 'world' | 'limits' | 'status' | 'resources' | 'network'
 export type ServerPropertyKind = 'boolean' | 'integer' | 'text' | 'json' | 'enum'
 
@@ -19,7 +19,7 @@ export type ServerPropertyCatalogEntry = {
   risk?: 'world-generation' | 'level-name' | 'resource-pack' | 'game-port'
 }
 
-const allJavaSoftware = ['vanilla', 'fabric', 'paper'] as const
+const allJavaSoftware = ['vanilla', 'fabric', 'paper', 'forge', 'neoforge'] as const
 const baseline = '1.20.1'
 
 // Conservative editable subset of Java server.properties documented by Mojang/Paper.

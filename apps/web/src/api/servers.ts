@@ -46,8 +46,11 @@ import {
   serverRemovalRetrySchema,
   serverRemovalOperationListSchema,
   serverRemovalResultSchema,
+  nativeLoaderCorrectionPreviewResultSchema,
+  nativeLoaderCorrectionRequestSchema,
+  nativeLoaderCorrectionResultSchema,
 } from '@mmsmanager/shared'
-import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, UnregisteredServer, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerRestartScheduleUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate, ServerAccessPermissions, ServerAccessGrantUser, ServerZipImportPreview, ServerRemovalOperation } from '@mmsmanager/shared'
+import type { JavaRuntime, LocalServerSummary, ServerImportPreview, ServerInventory, UnregisteredServer, ServerConsoleResponse, ServerConsoleSession, ServerRuntime, ServerRuntimeSettings, ServerRuntimeSettingsUpdate, ServerAutomation, ServerAutomationUpdate, ServerRestartScheduleUpdate, ServerStatus, ServerPlayerList, ServerPlayerAction, ServerPlayerActionResult, ServerPropertiesResponse, ServerPropertiesRestorePreview, ServerPropertiesUpdate, ServerFileList, ServerFileRead, ServerFileRecovery, ServerFileTrash, ServerWorlds, ServerHistoryCalendar, ServerHistoryDay, ServerHistoryScope, ServerBackupsInventory, ServerBackup, ServerBackupPreview, ServerBackupRestoreResult, ServerMetadataUpdate, ServerAccessPermissions, ServerAccessGrantUser, ServerZipImportPreview, ServerRemovalOperation, NativeLoaderCorrectionPreview } from '@mmsmanager/shared'
 import type { DashboardPlayerSummary, InstallCatalog, InstallOperation, InstallSoftware, ServerInstallRequest } from '@mmsmanager/shared'
 import type { ServerModsInventory } from '@mmsmanager/shared'
 import { apiCsrfToken, apiErrorFromPayload, apiInvalidResponseError, apiNetworkError, apiRequest, apiRequestHeaders, apiRequestResponse, reportSessionExpiry } from './client'
@@ -177,6 +180,16 @@ export function registerServerImport(input: { path: string; name: string; minMem
 export async function updateServerMetadata(serverId: string, input: ServerMetadataUpdate): Promise<LocalServerSummary> {
   const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/metadata`, serverImportResultSchema, { method: 'PATCH', body: JSON.stringify(serverMetadataUpdateSchema.parse(input)) })
   return response.server
+}
+
+export async function inspectManagedNativeLoader(serverId: string, signal?: AbortSignal): Promise<NativeLoaderCorrectionPreview> {
+  const response = await request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/native-loader-detection`, nativeLoaderCorrectionPreviewResultSchema, { signal })
+  return response.detection
+}
+
+export async function correctManagedNativeLoader(serverId: string, input: Pick<NativeLoaderCorrectionPreview, 'software' | 'version' | 'loaderVersion'>): Promise<{ serverId: string; software: 'forge' | 'neoforge'; version: string }> {
+  const body = nativeLoaderCorrectionRequestSchema.parse(input)
+  return request(`/api/v1/admin/servers/${encodeURIComponent(serverId)}/native-loader-correction`, nativeLoaderCorrectionResultSchema, { method: 'POST', body: JSON.stringify(body) })
 }
 
 export async function getJavaRuntimes(signal?: AbortSignal): Promise<JavaRuntime[]> {

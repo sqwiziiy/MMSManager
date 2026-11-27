@@ -136,6 +136,30 @@ function parseFabricJson(text: string): JarMetadata {
     return { metadataKind: 'fabric', metadataState: 'unknown', modId: null, name: null, artifactVersion: null, minecraftConstraint: null, loaderConstraint: null, dependencies: null }
   }
 }
+function parseForgeToml(text: string, loader: 'forge' | 'neoforge'): JarMetadata {
+  const scalar = (value: string | undefined): string | null => {
+    if (!value || value.length > 512) return null
+    const quoted = /^"((?:\\.|[^"\\])*)"$/.exec(value.trim())
+    if (!quoted) return null
+    return quoted[1]!.replaceAll('\\"', '"').replaceAll('\\\\', '\\').slice(0, 160)
+  }
+  const modSection = text.split(/(?=^\s*\[\[)/m).find((section) => /^\s*\[\[mods\]\]/i.test(section)) ?? ''
+  const fields = new Map<string, string>()
+  for (const line of modSection.split(/\r?\n/)) {
+    const entry = /^\s*(modId|displayName|version)\s*=\s*("(?:\\.|[^"\\])*")\s*(?:#.*)?$/i.exec(line)
+    if (entry && fields.size < 8) fields.set(entry[1]!.toLowerCase(), scalar(entry[2]!) ?? '')
+  }
+  const modId = fields.get('modid') ?? null
+  const name = fields.get('displayname') ?? modId
+  const version = fields.get('version') ?? null
+  const dependencies = [...text.matchAll(/^\s*modId\s*=\s*"([A-Za-z0-9_.-]{1,128})"\s*$/gim)].map((match) => match[1]!).filter((value) => value !== 'minecraft')
+  const minecraftConstraint = /^\s*versionRange\s*=\s*"([^"\r\n]{1,120})"\s*$/im.exec(text)?.[1] ?? null
+  return {
+    metadataKind: loader, metadataState: modId && name && version ? 'known' : 'unknown', modId, name,
+    artifactVersion: version, minecraftConstraint, loaderConstraint: null,
+    dependencies: dependencies.length <= 64 ? [...new Set(dependencies)] : null,
+  }
+}
 
 /** Reads only bounded ZIP directory records and the two small root metadata files. Nothing is extracted. */
 export async function inspectModJar(filePath: string): Promise<JarMetadata> {
@@ -191,7 +215,7 @@ export async function inspectModJar(filePath: string): Promise<JarMetadata> {
       const unixMode = externalAttributes >>> 16
       if ((unixMode & 0xf000) === 0xa000) throw new ServerModsError('INVALID_ARCHIVE', 'The JAR contains a symbolic-link entry.')
       const fileName = rawName.toString(flags & 0x800 ? 'utf8' : 'latin1')
-      if (fileName === 'fabric.mod.json' || fileName === 'plugin.yml' || fileName === 'paper-plugin.yml') {
+      if (['fabric.mod.json', 'plugin.yml', 'paper-plugin.yml', 'meta-inf/mods.toml', 'meta-inf/neoforge.mods.toml'].includes(fileName.toLowerCase())) {
         if (metadataEntries.has(fileName) || size > MAX_METADATA_BYTES || compressedSize > MAX_METADATA_BYTES) throw new ServerModsError('INVALID_ARCHIVE', 'The JAR metadata is duplicated or exceeds the 64 KiB limit.')
         metadataEntries.set(fileName, { method, compressedSize, size, crc, localOffset })
       }
@@ -216,6 +240,10 @@ export async function inspectModJar(filePath: string): Promise<JarMetadata> {
     if (fabric) return parseFabricJson((await readMetadata(fabric)).toString('utf8'))
     const paper = metadataEntries.get('paper-plugin.yml') ?? metadataEntries.get('plugin.yml')
     if (paper) return parsePaperYaml((await readMetadata(paper)).toString('utf8'))
+    const forge = metadataEntries.get('META-INF/mods.toml') ?? metadataEntries.get('meta-inf/mods.toml')
+    if (forge) return parseForgeToml((await readMetadata(forge)).toString('utf8'), 'forge')
+    const neoforge = metadataEntries.get('META-INF/neoforge.mods.toml') ?? metadataEntries.get('meta-inf/neoforge.mods.toml')
+    if (neoforge) return parseForgeToml((await readMetadata(neoforge)).toString('utf8'), 'neoforge')
     return { metadataKind: 'unknown', metadataState: 'unknown', modId: null, name: null, artifactVersion: null, minecraftConstraint: null, loaderConstraint: null, dependencies: null }
   } finally { await handle.close() }
 }
@@ -225,18 +253,19 @@ export class ServerModsService {
 
   async list(serverId: string): Promise<ServerModsInventory> {
     const server = this.serverRow(serverId)
-    const loader = server.software === 'fabric' ? 'fabric' : server.software === 'paper' ? 'paper' : 'unsupported'
+    const software = server.loader ?? server.software
+    const loader = software === 'fabric' || software === 'forge' || software === 'neoforge' ? software : software === 'paper' ? 'paper' : 'unsupported'
     const runtime = this.db.select().from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
     const status = server.source === 'imported' || !server.managed ? 'external/unmanaged' : runtime?.status ?? 'stopped'
-    const base = { serverId, supported: loader !== 'unsupported', loader, loadDirectory: loader === 'fabric' ? 'mods' : loader === 'paper' ? 'plugins' : null, truncated: false, restartRequired: runtime?.restartRequired ?? false, runtimeStatus: status } as const
+    const base = { serverId, supported: loader !== 'unsupported', loader, loadDirectory: loader === 'paper' ? 'plugins' : loader === 'unsupported' ? null : 'mods', truncated: false, restartRequired: runtime?.restartRequired ?? false, runtimeStatus: status } as const
     if (loader === 'unsupported') return { ...base, items: [] }
     const serverPath = await this.serverPath(server)
     const loadPath = await this.loadPath(serverPath, base.loadDirectory!, false)
-    const active = await this.readJarDirectory(loadPath, 'enabled', server.software)
-    const disabledPath = await this.privatePath(serverPath, join('disabled-mods', server.software), false)
-    const disabled = await this.readJarDirectory(disabledPath, 'disabled', server.software, true)
+    const active = await this.readJarDirectory(loadPath, 'enabled', software)
+    const disabledPath = await this.privatePath(serverPath, join('disabled-mods', software), false)
+    const disabled = await this.readJarDirectory(disabledPath, 'disabled', software, true)
     const quarantinePath = await this.privatePath(serverPath, join('quarantine', 'mods'), false)
-    const quarantined = await this.readJarDirectory(quarantinePath, 'quarantined', server.software, true)
+    const quarantined = await this.readJarDirectory(quarantinePath, 'quarantined', software, true)
     const items = [...active.items, ...disabled.items, ...quarantined.items].slice(0, 300)
     return { ...base, items, truncated: active.truncated || disabled.truncated || quarantined.truncated || items.length < active.items.length + disabled.items.length + quarantined.items.length }
   }
@@ -291,8 +320,9 @@ export class ServerModsService {
   async setEnabled(serverId: string, actorUserId: string, fileName: string, enabled: boolean): Promise<ServerModsInventory> {
     if (!safeJarName(fileName)) throw new ServerModsError('INVALID_FILENAME', 'The selected mod filename is invalid.')
     return this.mutate(serverId, actorUserId, enabled ? 'mod-enabled' : 'mod-disabled', async (server, serverPath, loadPath, running) => {
-      const source = enabled ? await this.privatePath(serverPath, join('disabled-mods', server.software), true) : loadPath
-      const targetDirectory = enabled ? loadPath : await this.privatePath(serverPath, join('disabled-mods', server.software), true)
+      const software = server.loader ?? server.software
+      const source = enabled ? await this.privatePath(serverPath, join('disabled-mods', software), true) : loadPath
+      const targetDirectory = enabled ? loadPath : await this.privatePath(serverPath, join('disabled-mods', software), true)
       const sourceName = enabled ? this.findDisabledName(await this.listLoadNames(source), fileName) : fileName
       if (!sourceName) throw new ServerModsError('MOD_NOT_FOUND', 'The selected mod or plugin was not found.')
       await this.safeMove(source, sourceName, targetDirectory, enabled ? fileName : this.disabledName(fileName))
@@ -305,7 +335,7 @@ export class ServerModsService {
     if (!safeJarName(fileName)) throw new ServerModsError('INVALID_FILENAME', 'The selected mod filename is invalid.')
     return this.mutate(serverId, actorUserId, 'mod-quarantined', async (server, serverPath, loadPath, running) => {
       const activeNames = await this.listLoadNames(loadPath)
-      const disabledPath = await this.privatePath(serverPath, join('disabled-mods', server.software), true)
+      const disabledPath = await this.privatePath(serverPath, join('disabled-mods', server.loader ?? server.software), true)
       const disabledNames = await this.listLoadNames(disabledPath)
       const source = activeNames.includes(fileName) ? loadPath : disabledNames.includes(this.disabledName(fileName)) ? disabledPath : null
       const sourceName = source === disabledPath ? this.disabledName(fileName) : fileName
@@ -330,7 +360,7 @@ export class ServerModsService {
       const fileName = archiveName.slice(38)
       if (!safeJarName(fileName)) throw new ServerModsError('UNSAFE_FILE', 'The quarantined filename is invalid.')
       const activeNames = await this.listLoadNames(loadPath)
-      const disabledPath = await this.privatePath(serverPath, join('disabled-mods', server.software), true)
+      const disabledPath = await this.privatePath(serverPath, join('disabled-mods', server.loader ?? server.software), true)
       const disabledNames = await this.listLoadNames(disabledPath)
       if ([...activeNames, ...disabledNames].some((name) => name.toLowerCase() === fileName.toLowerCase() || name.endsWith(`--${fileName}`))) throw new ServerModsError('MOD_DUPLICATE', 'A file with the original name already exists. Resolve the collision before restoring.')
       await this.safeMove(quarantinePath, archiveName, loadPath, fileName)
@@ -341,8 +371,9 @@ export class ServerModsService {
 
   private async mutate(serverId: string, actorUserId: string, action: string, operation: (server: typeof localServers.$inferSelect, serverPath: string, loadPath: string, running: boolean) => Promise<void>): Promise<ServerModsInventory> {
     const server = this.serverRow(serverId)
-    const loader = server.software === 'fabric' ? 'mods' : server.software === 'paper' ? 'plugins' : null
-    if (!loader) throw new ServerModsError('MODS_UNSUPPORTED', 'File management currently supports Fabric mods and Paper plugins only.')
+    const software = server.loader ?? server.software
+    const loader = software === 'paper' ? 'plugins' : ['fabric', 'forge', 'neoforge'].includes(software) ? 'mods' : null
+    if (!loader) throw new ServerModsError('MODS_UNSUPPORTED', 'File management supports Fabric, Forge and NeoForge mods, plus Paper plugins.')
     if (server.source !== 'created' || !server.managed) throw new ServerModsError('SERVER_NOT_PANEL_MANAGED', 'Imported server folders are read only.')
     try {
       await this.processes.withServerFileMutation(serverId, async (running) => {

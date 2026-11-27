@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { openDatabase } from '../db/client.js'
-import { localServerEvents, localServers, users } from '../db/schema.js'
+import { localServerBackups, localServerEvents, localServerRuntime, localServers, serverAccessGrants, users } from '../db/schema.js'
 import { inspectJavaRuntime, JavaRuntimeError, JavaRuntimeRegistry } from './java.js'
 import { ServerRegistry } from './registry.js'
 
@@ -132,6 +132,58 @@ describe('local server inventory', () => {
     expect(opened.db.select().from(localServers).where(eq(localServers.id, server.id)).get()?.directory).toBe(serverDirectory)
     expect(await readFile(join(serverDirectory, 'server.properties'), 'utf8')).toBe(beforeProperties)
     expect(opened.db.select().from(localServerEvents).where(eq(localServerEvents.action, 'server-metadata-updated')).get()).toMatchObject({ serverId: server.id, actorUserId: userId })
+  })
+
+  it('corrects a stopped managed loader in place and preserves its identity, data, backup and access grant', async () => {
+    const serverDirectory = await makeServer('Storm Survival V2')
+    const worldFile = join(serverDirectory, 'world', 'level.dat')
+    await writeFile(worldFile, 'preserved world data')
+    const server = await registry.registerImport({ path: serverDirectory, name: 'Storm Survival V2', minMemoryMb: 1024, maxMemoryMb: 4096 }, userId)
+    await opened.db.update(localServers).set({
+      source: 'created', managed: true, software: 'fabric', loader: null, version: '1.21.1',
+      jarName: 'server-1.21.4.jar',
+    }).where(eq(localServers.id, server.id)).run()
+    await opened.db.insert(serverAccessGrants).values({ serverId: server.id, userId, viewServer: true, createdAt: '2026-11-23T12:00:00.000Z', updatedAt: '2026-11-23T12:00:00.000Z' }).run()
+    await opened.db.insert(localServerBackups).values({
+      id: randomUUID(), serverId: server.id, actorUserId: userId, kind: 'manual', origin: 'manual',
+      directoryName: 'backup-preserved', createdAt: '2026-11-23T12:00:00.000Z', archiveSizeBytes: 1, manifestSizeBytes: 1,
+      worldPathsJson: '["world"]', archiveSha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64),
+      entryCount: 1, fileCount: 1, totalFileBytes: 1, excludedCount: 0,
+    }).run()
+    const neoArgs = 'libraries/net/neoforged/fancymod/1.0/fancymod.jar\n-m cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher.Bootstrap --launchTarget neoforgeserver\n'
+    const argsFile = 'libraries/net/neoforged/neoforge/21.1.184/unix_args.txt'
+    await mkdir(join(serverDirectory, argsFile, '..'), { recursive: true })
+    await writeFile(join(serverDirectory, argsFile), neoArgs)
+    const original = opened.db.select().from(localServers).where(eq(localServers.id, server.id)).get()!
+    const originalGrant = opened.db.select().from(serverAccessGrants).where(eq(serverAccessGrants.serverId, server.id)).get()
+    const originalBackup = opened.db.select().from(localServerBackups).where(eq(localServerBackups.serverId, server.id)).get()
+    const preview = await registry.inspectManagedNativeLoader(server.id)
+    expect(preview).toMatchObject({ currentSoftware: 'fabric', detection: { software: 'neoforge', loaderVersion: '21.1.184', launch: { kind: 'argfile', argsFile } } })
+
+    await registry.correctManagedNativeLoader({
+      serverId: server.id, actorUserId: userId, software: 'neoforge', version: '1.21.1',
+      loaderVersion: preview.detection.loaderVersion, launch: preview.detection.launch,
+    })
+    const corrected = opened.db.select().from(localServers).where(eq(localServers.id, server.id)).get()!
+    expect(corrected).toMatchObject({ id: original.id, directory: original.directory, source: 'created', managed: true, software: 'unknown', loader: 'neoforge', version: '1.21.1' })
+    expect(corrected.jarName).toBeNull()
+    expect(opened.db.select().from(serverAccessGrants).where(eq(serverAccessGrants.serverId, server.id)).get()).toEqual(originalGrant)
+    expect(opened.db.select().from(localServerBackups).where(eq(localServerBackups.serverId, server.id)).get()).toEqual(originalBackup)
+    expect(await readFile(worldFile, 'utf8')).toBe('preserved world data')
+    expect(await readFile(join(serverDirectory, 'server.properties'), 'utf8')).toContain('server-port=25569')
+    expect(opened.db.select().from(localServerEvents).where(eq(localServerEvents.action, 'server-software-corrected')).get()).toMatchObject({ serverId: server.id, actorUserId: userId, outcome: 'success' })
+  })
+
+  it('requires a detected safe loader and a stopped managed server before correction', async () => {
+    const serverDirectory = await makeServer('Correction stopped guard')
+    const server = await registry.registerImport({ path: serverDirectory, name: 'Correction stopped guard', minMemoryMb: 1024, maxMemoryMb: 2048 }, userId)
+    await opened.db.update(localServers).set({ source: 'created', managed: true }).where(eq(localServers.id, server.id)).run()
+    await expect(registry.inspectManagedNativeLoader(server.id)).rejects.toMatchObject({ code: 'loader-not-detected' })
+    const argsFile = 'libraries/net/neoforged/neoforge/21.1.184/unix_args.txt'
+    await mkdir(join(serverDirectory, argsFile, '..'), { recursive: true })
+    await writeFile(join(serverDirectory, argsFile), '-m cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher.Bootstrap')
+    await opened.db.insert(localServerRuntime).values({ serverId: server.id, status: 'starting', updatedAt: '2026-11-23T12:00:00.000Z' }).run()
+    await expect(registry.inspectManagedNativeLoader(server.id)).rejects.toMatchObject({ code: 'server-running' })
   })
 
   it('rejects paths outside configured roots, directories that are symlinks, and duplicate registration', async () => {

@@ -176,6 +176,13 @@
       "when": 1795729548320,
       "tag": "0024_runtime_process_port",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1795800704161,
+      "tag": "0025_native_forge_loaders",
+      "breakpoints": true
     }
   ]
 }

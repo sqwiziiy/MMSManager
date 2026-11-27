@@ -366,7 +366,7 @@ export const machineDaySchema = z.object({
   }),
 })
 
-export const serverSoftwareSchema = z.enum(['vanilla', 'fabric', 'paper', 'unknown'])
+export const serverSoftwareSchema = z.enum(['vanilla', 'fabric', 'paper', 'forge', 'neoforge', 'unknown'])
 export const serverEulaSchema = z.enum(['accepted', 'not-accepted', 'unknown'])
 export const serverPortStatusSchema = z.enum(['valid', 'missing', 'invalid', 'unreadable'])
 export const serverPortErrorCodeSchema = z.enum(['PORT_FILE_MISSING', 'PORT_FILE_UNREADABLE', 'PORT_PROPERTY_MISSING', 'PORT_VALUE_INVALID']).nullable()
@@ -489,7 +489,7 @@ export const serverImportPreviewSchema = z.object({
 
 export const serverTemplateInputSchema = z.object({
   name: z.string().trim().min(1).max(60),
-  software: z.enum(['vanilla', 'fabric', 'paper']),
+  software: z.enum(['vanilla', 'fabric', 'paper', 'forge', 'neoforge']),
   version: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){1,3}$/),
   minMemoryMb: z.number().int().min(512).max(131072),
   maxMemoryMb: z.number().int().min(512).max(131072),
@@ -505,15 +505,16 @@ export const serverTemplateSchema = serverTemplateInputSchema.extend({
 export const serverTemplateListSchema = z.object({ templates: z.array(serverTemplateSchema).max(200) }).strict()
 export const serverTemplateResultSchema = z.object({ template: serverTemplateSchema }).strict()
 
-export const installSoftwareSchema = z.enum(['vanilla', 'fabric', 'paper'])
+export const installSoftwareSchema = z.enum(['vanilla', 'fabric', 'paper', 'forge', 'neoforge'])
 export const installCatalogQuerySchema = z.object({
   software: installSoftwareSchema,
   version: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){1,3}$/).optional(),
 }).strict()
 export const installCatalogSchema = z.object({
   software: installSoftwareSchema,
-  versions: z.array(z.string()).max(200),
+  versions: z.array(z.string()).max(1000),
   loaders: z.array(z.string()).max(100),
+  experimentalLoaders: z.array(z.string()).max(100),
   builds: z.array(z.number().int().positive()).max(200),
   installerVersion: z.string().nullable(),
   requiredJavaMajor: z.number().int().positive().nullable(),
@@ -523,7 +524,7 @@ export const serverInstallRequestSchema = z.object({
   directoryName: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._ -]*$/).refine((value) => value !== '.' && value !== '..'),
   software: installSoftwareSchema,
   version: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){1,3}$/),
-  loaderVersion: z.string().regex(/^\d+(?:\.\d+){1,3}$/).optional(),
+  loaderVersion: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,79}$/).optional(),
   installerVersion: z.string().regex(/^\d+(?:\.\d+){1,3}$/).optional(),
   paperBuild: z.number().int().positive().optional(),
   javaPath: z.string().trim().min(1).max(1024),
@@ -535,6 +536,8 @@ export const serverInstallRequestSchema = z.object({
   path: ['maxMemoryMb'], message: 'Maximum memory must be at least the minimum memory.',
 }).refine((value) => value.software !== 'fabric' || Boolean(value.loaderVersion && value.installerVersion), {
   path: ['loaderVersion'], message: 'Choose Fabric loader and installer versions.',
+}).refine((value) => !['forge', 'neoforge'].includes(value.software) || Boolean(value.loaderVersion), {
+  path: ['loaderVersion'], message: 'Choose an official Forge or NeoForge loader version.',
 })
 export const installOperationSchema = z.object({
   id: z.string().uuid(),
@@ -542,13 +545,16 @@ export const installOperationSchema = z.object({
   directoryName: z.string(),
   software: installSoftwareSchema,
   version: z.string(),
+  loaderVersion: z.string().max(100).nullable(),
   status: z.enum(['pending', 'downloading', 'validating', 'completed', 'failed']),
   progress: z.number().int().min(0).max(100),
   phase: z.string(),
+  installerLog: z.string().max(24_000),
   serverId: z.string().uuid().nullable(),
   artifactUrl: z.string().url().nullable(),
   artifactSize: z.number().int().positive().nullable(),
   artifactSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  checksumType: z.enum(['sha1', 'sha256']).nullable(),
   error: z.object({ code: z.string(), message: z.string() }).nullable(),
   partialDirectory: z.string().nullable(),
   createdAt: z.string().datetime({ offset: true }),
@@ -558,6 +564,24 @@ export const installOperationResultSchema = z.object({ operation: installOperati
 export const installOperationListSchema = z.object({ operations: z.array(installOperationSchema) }).strict()
 export const installOperationIdSchema = z.object({ operationId: z.string().uuid() }).strict()
 export const localServerIdSchema = z.object({ serverId: z.string().uuid() }).strict()
+export const nativeLoaderCorrectionPreviewSchema = z.object({
+  serverId: z.string().uuid(),
+  name: z.string(),
+  currentSoftware: serverSoftwareSchema,
+  software: z.enum(['forge', 'neoforge']),
+  version: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){1,3}$/),
+  loaderVersion: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,99}$/),
+  launchStrategy: z.enum(['jar', 'argfile']),
+  jarName: z.string().nullable(),
+  argsFile: z.string().nullable(),
+}).strict()
+export const nativeLoaderCorrectionPreviewResultSchema = z.object({ detection: nativeLoaderCorrectionPreviewSchema }).strict()
+export const nativeLoaderCorrectionRequestSchema = z.object({
+  software: z.enum(['forge', 'neoforge']),
+  version: z.string().regex(/^\d{1,3}(?:\.\d{1,3}){1,3}$/),
+  loaderVersion: z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,99}$/),
+}).strict()
+export const nativeLoaderCorrectionResultSchema = z.object({ serverId: z.string().uuid(), software: z.enum(['forge', 'neoforge']), version: z.string() }).strict()
 export const serverRuntimeStatusSchema = z.enum(['stopped', 'starting', 'running', 'stopping', 'crashed', 'error', 'external/unmanaged', 'unavailable'])
 export const serverRuntimeSchema = z.object({
   serverId: z.string().uuid(),
@@ -671,7 +695,7 @@ export const serverModEntrySchema = z.object({
   fileName: z.string().min(1).max(180),
   sizeBytes: z.number().int().nonnegative(),
   state: z.enum(['enabled', 'disabled', 'quarantined']),
-  metadataKind: z.enum(['fabric', 'paper', 'unknown']),
+  metadataKind: z.enum(['fabric', 'paper', 'forge', 'neoforge', 'unknown']),
   metadataState: z.enum(['known', 'unknown']),
   modId: z.string().max(128).nullable(),
   name: z.string().max(160).nullable(),
@@ -683,7 +707,7 @@ export const serverModEntrySchema = z.object({
 export const serverModsInventorySchema = z.object({
   serverId: z.string().uuid(),
   supported: z.boolean(),
-  loader: z.enum(['fabric', 'paper', 'unsupported']),
+  loader: z.enum(['fabric', 'paper', 'forge', 'neoforge', 'unsupported']),
   loadDirectory: z.string().max(16).nullable(),
   items: z.array(serverModEntrySchema).max(300),
   truncated: z.boolean(),
@@ -1220,12 +1244,15 @@ export type InstallSoftware = z.infer<typeof installSoftwareSchema>
 export type InstallCatalog = z.infer<typeof installCatalogSchema>
 export type ServerInstallRequest = z.infer<typeof serverInstallRequestSchema>
 export type InstallOperation = z.infer<typeof installOperationSchema>
+export type NativeLoaderCorrectionPreview = z.infer<typeof nativeLoaderCorrectionPreviewSchema>
+export type NativeLoaderCorrectionRequest = z.infer<typeof nativeLoaderCorrectionRequestSchema>
 export type ServerRuntime = z.infer<typeof serverRuntimeSchema>
 export type JvmOptions = z.infer<typeof jvmOptionsSchema>
 export type ServerRuntimeSettings = z.infer<typeof serverRuntimeSettingsSchema>
 export type ServerRuntimeSettingsUpdate = z.infer<typeof serverRuntimeSettingsUpdateSchema>
 export type ServerStatus = z.infer<typeof serverStatusSchema>
 export type DashboardPlayerSummary = z.infer<typeof dashboardPlayerSummarySchema>
+export type ServerSoftware = z.infer<typeof serverSoftwareSchema>
 export type ServerPlayerList = z.infer<typeof serverPlayerListSchema>
 export type ServerPlayerAction = z.infer<typeof serverPlayerActionSchema>
 export type ServerPlayerActionResult = z.infer<typeof serverPlayerActionResultSchema>

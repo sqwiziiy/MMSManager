@@ -16,6 +16,7 @@ import type { JavaRuntime, JavaRuntimeRegistry } from './java.js'
 import { classifyJavaMinimum, manualJavaOverrideFingerprint, selectAutomaticJavaRuntime } from './java-selection.js'
 import { isLoopbackPortAvailable } from './install.js'
 import { jvmArguments, updateGeneratedStartScript } from './runtime.js'
+import { isNativeLoader, resolveNativeLaunch } from './native-loader.js'
 import { finishServerSession, parseOwnedServerLogLine, recordServerResourceSample, recordStructuredServerEvent, startServerSession } from './history.js'
 
 const MAX_LOG_SEGMENT_BYTES = 16 * 1024 * 1024
@@ -552,7 +553,7 @@ export class ServerProcessManager {
     const parsedJvmOptions = jvmOptionsSchema.safeParse(jvmOptions)
     if (!parsedJvmOptions.success) throw new ServerProcessError('RUNTIME_OPTIONS_CORRUPT', 'Saved JVM options are outside the supported typed format.')
     server = await this.resolveJavaForStart(server, parsedJvmOptions.data)
-    if (!server.javaPath || !server.jarName) throw new ServerProcessError('SERVER_CONFIGURATION_MISSING', 'Choose a verified Java runtime and server JAR before starting.')
+    if (!server.javaPath || (!server.jarName && !isNativeLoader(server.loader))) throw new ServerProcessError('SERVER_CONFIGURATION_MISSING', 'Choose a verified Java runtime and server JAR before starting.')
     if (parsedJvmOptions.data.collector === 'zgc' && (server.javaMajor ?? 0) < 17) {
       throw new ServerProcessError('JVM_OPTION_INCOMPATIBLE', 'ZGC requires Java 17 or newer.')
     }
@@ -561,9 +562,19 @@ export class ServerProcessManager {
     if (dirname(directory) !== root || await realpath(directory).catch(() => '') !== directory) {
       throw new ServerProcessError('SERVER_DIRECTORY_REJECTED', 'This server is not a safe direct child of the managed root.')
     }
-    const jarPath = join(directory, server.jarName)
-    const jarStat = await lstat(jarPath).catch(() => null)
-    if (!jarStat?.isFile() || jarStat.isSymbolicLink()) throw new ServerProcessError('SERVER_JAR_MISSING', 'The managed server JAR is missing or unsafe.')
+    let launch: Awaited<ReturnType<typeof resolveNativeLaunch>> | { kind: 'jar'; jarName: string }
+    try {
+      launch = isNativeLoader(server.loader)
+        ? await resolveNativeLaunch(directory, server.loader, server.jarName)
+        : { kind: 'jar', jarName: server.jarName! }
+    } catch {
+      throw new ServerProcessError('NATIVE_LOADER_CONFIGURATION_INVALID', 'The Forge or NeoForge launch files are missing, ambiguous or unsafe. No process was started.')
+    }
+    if (launch.kind === 'jar') {
+      const jarPath = join(directory, launch.jarName)
+      const jarStat = await lstat(jarPath).catch(() => null)
+      if (!jarStat?.isFile() || jarStat.isSymbolicLink()) throw new ServerProcessError('SERVER_JAR_MISSING', 'The managed server JAR is missing or unsafe.')
+    }
     const javaStat = await lstat(server.javaPath).catch(() => null)
     if ((!javaStat?.isFile() && !javaStat?.isSymbolicLink()) || javaStat?.isDirectory()) throw new ServerProcessError('JAVA_NOT_EXECUTABLE', 'The selected Java executable is missing or unsafe.')
     await access(server.javaPath, constants.X_OK).catch(() => { throw new ServerProcessError('JAVA_NOT_EXECUTABLE', 'The selected Java executable is not executable.') })
@@ -581,7 +592,7 @@ export class ServerProcessManager {
     })
     await this.event(serverId, actorUserId, 'server-start-requested', 'success', 'A panel-owned server process start was requested.')
 
-    const args = jvmArguments({ minMemoryMb: server.minMemoryMb, maxMemoryMb: server.maxMemoryMb, jvmOptions: parsedJvmOptions.data }, server.jarName)
+    const args = jvmArguments({ minMemoryMb: server.minMemoryMb, maxMemoryMb: server.maxMemoryMb, jvmOptions: parsedJvmOptions.data }, server.jarName ?? 'server.jar', launch)
     let child: ChildProcessWithoutNullStreams
     try {
       child = spawn(server.javaPath, args, {
@@ -670,7 +681,7 @@ export class ServerProcessManager {
       const compatibility = classifyJavaMinimum(server.requiredJavaMajor, runtime.major)
       if (compatibility !== 'meets-minimum') {
         const currentFingerprint = manualJavaOverrideFingerprint({
-          serverId: server.id, software: server.software, serverVersion: server.version,
+          serverId: server.id, software: server.loader ?? server.software, serverVersion: server.version,
           declaredMinimumMajor: server.requiredJavaMajor, runtime,
         })
         if (server.javaCompatibilityOverrideHash !== currentFingerprint) {
@@ -684,6 +695,7 @@ export class ServerProcessManager {
     const script = await updateGeneratedStartScript(
       this.servers.managedRoot, server.directory, server.startScriptSha256, runtime.path,
       { minMemoryMb: server.minMemoryMb, maxMemoryMb: server.maxMemoryMb, jvmOptions }, server.jarName ?? 'server.jar',
+      isNativeLoader(server.loader) ? await resolveNativeLaunch(server.directory, server.loader, server.jarName) : undefined,
     )
     const at = new Date(this.now()).toISOString()
     this.db.update(localServers).set({ javaPath: runtime.path, javaMajor: runtime.major, startScriptSha256: script.sha256, updatedAt: at })

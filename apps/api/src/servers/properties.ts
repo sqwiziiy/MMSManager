@@ -228,12 +228,12 @@ export class ServerPropertiesManager {
       ...parsed,
       sha256: createHash('sha256').update(original.bytes).digest('hex'),
       serverVersion: server.version ?? 'unknown',
-      serverSoftware: server.software,
+      serverSoftware: server.loader ?? server.software,
       configuredPort: portConfiguration.port,
       portStatus: portConfiguration.status,
       portErrorCode: portConfiguration.errorCode,
       protectedProperties: protectedPropertyList(parsed.presentKeys),
-      unsupportedKeys: serverPropertiesCatalog.filter((entry) => !serverPropertyAvailable(entry, server.software, server.version ?? 'unknown')).map((entry) => entry.key),
+      unsupportedKeys: serverPropertiesCatalog.filter((entry) => !serverPropertyAvailable(entry, server.loader ?? server.software, server.version ?? 'unknown')).map((entry) => entry.key),
       backups: history,
       restartRequired: Boolean(runtime?.restartRequired || (server.source === 'created' && server.managed && runtime && ['running', 'external/unmanaged'].includes(runtime.status) && runtime.processPort === null) || (processActive && runtime?.processPort !== null && runtime?.processPort !== portConfiguration.port)),
     }
@@ -338,7 +338,7 @@ export class ServerPropertiesManager {
     for (const [key, value] of Object.entries(changes)) {
       const definition = ADVANCED_BY_KEY.get(key)
       if (!definition || isProtectedProperty(key)) throw new ServerPropertiesError('PROPERTY_KEY_REJECTED', `“${key}” is not available in the safe Properties catalog.`)
-      if (!serverPropertyAvailable(definition, server.software, server.version ?? 'unknown')) throw new ServerPropertiesError('PROPERTY_UNSUPPORTED_VERSION', `“${key}” is not supported for ${server.software} ${server.version ?? 'unknown'}.`)
+      if (!serverPropertyAvailable(definition, server.loader ?? server.software, server.version ?? 'unknown')) throw new ServerPropertiesError('PROPERTY_UNSUPPORTED_VERSION', `“${key}” is not supported for ${server.loader ?? server.software} ${server.version ?? 'unknown'}.`)
       if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > 8192 || containsUnsupportedControlCharacter(value)) {
         throw new ServerPropertiesError('PROPERTY_VALUE_REJECTED', `“${key}” contains unsupported text or is too long.`)
       }

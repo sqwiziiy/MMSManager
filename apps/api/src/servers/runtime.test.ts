@@ -10,7 +10,7 @@ import { localServerEvents, localServerRuntime, localServers, users } from '../d
 import { JavaRuntimeRegistry, type JavaRuntime } from './java.js'
 import { ServerProcessManager } from './processes.js'
 import { ServerRegistry } from './registry.js'
-import { generatedStartScript, ServerRuntimeSettingsService } from './runtime.js'
+import { generatedStartScript, jvmArguments, ServerRuntimeSettingsService } from './runtime.js'
 
 describe('typed local server runtime settings', () => {
   let temp: string
@@ -75,6 +75,18 @@ done
     processes = new ServerProcessManager(opened.db, servers, Date.now, { stopTimeoutMs: 1500, readinessTimeoutMs: 1500, shutdownTimeoutMs: 1500 }, javaRuntimes)
     await processes.prepare()
     service = new ServerRuntimeSettingsService(opened.db, servers, processes, javaRuntimes)
+  })
+
+  it('starts native loaders through the verified JVM argument file with JVM options and nogui', () => {
+    const options = { collector: 'g1' as const, maxGCPauseMs: 150, parallelGcThreads: 4, alwaysPreTouch: false, disableExplicitGc: true }
+    const launch = { kind: 'argfile' as const, argsFile: 'libraries/net/neoforged/neoforge/21.1.184/unix_args.txt' }
+    expect(jvmArguments({ minMemoryMb: 1024, maxMemoryMb: 4096, jvmOptions: options }, 'server.jar', launch)).toEqual([
+      '-Xms1024M', '-Xmx4096M', '-XX:+UseG1GC', '-XX:MaxGCPauseMillis=150', '-XX:ParallelGCThreads=4', '-XX:+DisableExplicitGC',
+      '@libraries/net/neoforged/neoforge/21.1.184/unix_args.txt', 'nogui',
+    ])
+    const script = generatedStartScript('/usr/lib/jvm/java-21/bin/java', { minMemoryMb: 1024, maxMemoryMb: 4096, jvmOptions: options }, 'server.jar', launch)
+    expect(script).toContain("'@libraries/net/neoforged/neoforge/21.1.184/unix_args.txt' 'nogui'")
+    expect(script).not.toContain("'-jar'")
   })
 
   afterEach(async () => {

@@ -4,14 +4,15 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { and, eq, isNull } from 'drizzle-orm'
 import type { AppDatabase } from '../db/client.js'
-import { localServerEvents, localServers } from '../db/schema.js'
+import { localServerEvents, localServerRuntime, localServers } from '../db/schema.js'
 import { parseServerPort, type ServerPortConfiguration } from './java-properties.js'
+import { detectNativeLoader, nativeLoaderMinecraftVersion, type NativeLoaderDetection } from './native-loader.js'
 
 const PORT_REFRESH_INTERVAL_MS = 3_000
 const MAX_PROPERTIES_BYTES = 65_536
 
 export class ServerInventoryError extends Error {
-  constructor(readonly code: 'invalid-path' | 'outside-allowlist' | 'not-directory' | 'unsafe-file' | 'duplicate' | 'not-found', message: string) {
+  constructor(readonly code: 'invalid-path' | 'outside-allowlist' | 'not-directory' | 'unsafe-file' | 'duplicate' | 'not-found' | 'not-managed' | 'server-running' | 'loader-not-detected' | 'loader-changed' | 'version-unavailable', message: string) {
     super(message)
   }
 }
@@ -19,7 +20,7 @@ export class ServerInventoryError extends Error {
 export type ImportPreview = {
   path: string
   directoryName: string
-  software: 'vanilla' | 'fabric' | 'paper' | 'unknown'
+  software: 'vanilla' | 'fabric' | 'paper' | 'forge' | 'neoforge' | 'unknown'
   version: string | null
   jarName: string | null
   port: number | null
@@ -187,7 +188,7 @@ export class ServerRegistry {
         name: row.name,
         directory: row.directory,
         source: row.source,
-        software: row.software,
+        software: row.loader ?? row.software,
         version: row.version,
         jarName: row.jarName,
         javaPath: row.javaPath,
@@ -249,6 +250,12 @@ export class ServerRegistry {
       readSmallRegularFile(canonical, 'eula.txt', 8_192),
     ])
     const detected = detectJar(regularFiles)
+    let nativeLoader: Awaited<ReturnType<typeof detectNativeLoader>> = null
+    try { nativeLoader = await detectNativeLoader(canonical) } catch { nativeLoader = null }
+    if (nativeLoader) {
+      detected.software = nativeLoader.software
+      detected.version = nativeLoaderMinecraftVersion(nativeLoader.software, nativeLoader.loaderVersion)
+    }
     const worldFolders = entries
       .filter((entry) => entry.isDirectory() && ['world', 'world_nether', 'world_the_end'].includes(entry.name))
       .map((entry) => entry.name)
@@ -283,7 +290,8 @@ export class ServerRegistry {
           name: input.name,
           directory: preview.path,
           source: 'imported',
-          software: preview.software,
+          software: preview.software === 'forge' || preview.software === 'neoforge' ? 'unknown' : preview.software,
+          loader: preview.software === 'forge' || preview.software === 'neoforge' ? preview.software : null,
           version: preview.version,
           jarName: preview.jarName,
           javaPath: null,
@@ -326,6 +334,64 @@ export class ServerRegistry {
       tx.insert(localServerEvents).values({ serverId, actorUserId, action: 'server-metadata-updated', outcome: 'success', occurredAt: at, detail: '{}' }).run()
     })
     return (await this.listPublic()).find((server) => server.id === serverId)!
+  }
+
+  async inspectManagedNativeLoader(serverId: string): Promise<{
+    serverId: string; name: string; currentSoftware: string; detection: NativeLoaderDetection
+  }> {
+    const server = this.db.select().from(localServers).where(and(eq(localServers.id, serverId), isNull(localServers.removedAt))).get()
+    if (!server) throw new ServerInventoryError('not-found', 'The registered server was not found.')
+    if (server.source !== 'created' || !server.managed) {
+      throw new ServerInventoryError('not-managed', 'Loader correction is available only for panel-managed servers.')
+    }
+    const runtime = this.db.select({ status: localServerRuntime.status }).from(localServerRuntime)
+      .where(eq(localServerRuntime.serverId, serverId)).get()
+    if (runtime && runtime.status !== 'stopped') {
+      throw new ServerInventoryError('server-running', 'Stop the server from MMSManager before correcting its detected software.')
+    }
+    const detection = await detectNativeLoader(server.directory).catch(() => null)
+    if (!detection) throw new ServerInventoryError('loader-not-detected', 'No single safe Forge or NeoForge launch layout was detected in this server folder.')
+    return { serverId, name: server.name, currentSoftware: server.loader ?? server.software, detection }
+  }
+
+  async correctManagedNativeLoader(input: {
+    serverId: string; actorUserId: string; software: 'forge' | 'neoforge'; version: string;
+    loaderVersion: string; launch: NativeLoaderDetection['launch']
+  }): Promise<void> {
+    const detected = await this.inspectManagedNativeLoaderRecord(input.serverId)
+    if (detected.software !== input.software || detected.loaderVersion !== input.loaderVersion
+      || JSON.stringify(detected.launch) !== JSON.stringify(input.launch)) {
+      throw new ServerInventoryError('loader-changed', 'The detected loader files changed. Check the server folder again before confirming.')
+    }
+    const at = new Date(this.now()).toISOString()
+    this.db.transaction((tx) => {
+      const runtime = tx.select({ status: localServerRuntime.status }).from(localServerRuntime)
+        .where(eq(localServerRuntime.serverId, input.serverId)).get()
+      if (runtime && runtime.status !== 'stopped') {
+        throw new ServerInventoryError('server-running', 'Stop the server from MMSManager before correcting its detected software.')
+      }
+      const changed = tx.update(localServers).set({
+        software: 'unknown', loader: input.software, version: input.version,
+        jarName: input.launch.kind === 'jar' ? input.launch.jarName : null, updatedAt: at,
+      }).where(and(eq(localServers.id, input.serverId), isNull(localServers.removedAt))).run()
+      if (changed.changes !== 1) throw new ServerInventoryError('not-found', 'The registered server was not found.')
+      tx.insert(localServerEvents).values({
+        serverId: input.serverId, actorUserId: input.actorUserId, action: 'server-software-corrected',
+        outcome: 'success', occurredAt: at,
+        detail: JSON.stringify({ software: input.software, version: input.version, loaderVersion: input.loaderVersion, launchStrategy: input.launch.kind }),
+      }).run()
+    })
+  }
+
+  private async inspectManagedNativeLoaderRecord(serverId: string): Promise<NativeLoaderDetection> {
+    const server = this.db.select().from(localServers).where(and(eq(localServers.id, serverId), isNull(localServers.removedAt))).get()
+    if (!server) throw new ServerInventoryError('not-found', 'The registered server was not found.')
+    if (server.source !== 'created' || !server.managed) throw new ServerInventoryError('not-managed', 'Loader correction is available only for panel-managed servers.')
+    const runtime = this.db.select({ status: localServerRuntime.status }).from(localServerRuntime).where(eq(localServerRuntime.serverId, serverId)).get()
+    if (runtime && runtime.status !== 'stopped') throw new ServerInventoryError('server-running', 'Stop the server from MMSManager before correcting its detected software.')
+    const detected = await detectNativeLoader(server.directory).catch(() => null)
+    if (!detected) throw new ServerInventoryError('loader-not-detected', 'No single safe Forge or NeoForge launch layout was detected in this server folder.')
+    return detected
   }
 }
 

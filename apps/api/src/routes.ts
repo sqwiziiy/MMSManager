@@ -119,6 +119,9 @@ import {
   serverRemovalOperationListSchema,
   serverRemovalResultSchema,
   serverInstallRequestSchema,
+  nativeLoaderCorrectionPreviewResultSchema,
+  nativeLoaderCorrectionRequestSchema,
+  nativeLoaderCorrectionResultSchema,
   serverTemplateIdParamSchema,
   serverTemplateInputSchema,
   serverTemplateListSchema,
@@ -501,9 +504,10 @@ export async function createApiApp(options: {
     }
     if (error instanceof ServerInventoryError) {
       const duplicate = error.code === 'duplicate'
-      const status = duplicate ? 409 : error.code === 'not-found' ? 404 : 400
+      const conflict = ['not-managed', 'server-running', 'loader-not-detected', 'loader-changed', 'version-unavailable'].includes(error.code)
+      const status = duplicate || conflict ? 409 : error.code === 'not-found' ? 404 : 400
       return reply.code(status).send({
-        error: { code: duplicate ? 'SERVER_ALREADY_REGISTERED' : error.code === 'not-found' ? 'SERVER_NOT_FOUND' : 'SERVER_PATH_REJECTED', message: error.message },
+        error: { code: duplicate ? 'SERVER_ALREADY_REGISTERED' : error.code === 'not-found' ? 'SERVER_NOT_FOUND' : error.code === 'not-managed' ? 'SERVER_NOT_PANEL_MANAGED' : error.code === 'server-running' ? 'SERVER_NOT_STOPPED' : error.code === 'loader-not-detected' ? 'NATIVE_LOADER_NOT_DETECTED' : error.code === 'loader-changed' ? 'NATIVE_LOADER_CHANGED' : error.code === 'version-unavailable' ? 'NATIVE_LOADER_VERSION_UNAVAILABLE' : 'SERVER_PATH_REJECTED', message: error.message },
       })
     }
     if (error instanceof JavaRuntimeError) {
@@ -705,6 +709,34 @@ export async function createApiApp(options: {
   app.post('/api/v1/admin/servers/:serverId/restore-registration', { preHandler: requireAdminMutation }, async (request) => {
     const params = parse(localServerIdSchema, request.params)
     return serverRegistrationRestoreResultSchema.parse(await removals.restoreUnregistered(params.serverId, request.principal!.userId))
+  })
+  app.get('/api/v1/admin/servers/:serverId/native-loader-detection', { preHandler: requireAdmin }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const result = await options.servers.inspectManagedNativeLoader(params.serverId)
+    const version = await installs.minecraftVersionForLoader(result.detection.software, result.detection.loaderVersion)
+    if (!version) throw new ServerInventoryError('version-unavailable', 'The detected loader build could not be matched to an official Minecraft release.')
+    return nativeLoaderCorrectionPreviewResultSchema.parse({ detection: {
+      serverId: result.serverId, name: result.name, currentSoftware: result.currentSoftware,
+      software: result.detection.software, version, loaderVersion: result.detection.loaderVersion,
+      launchStrategy: result.detection.launch.kind,
+      jarName: result.detection.launch.kind === 'jar' ? result.detection.launch.jarName : null,
+      argsFile: result.detection.launch.kind === 'argfile' ? result.detection.launch.argsFile : null,
+    } })
+  })
+  app.post('/api/v1/admin/servers/:serverId/native-loader-correction', { preHandler: requireAdminMutation }, async (request) => {
+    const params = parse(localServerIdSchema, request.params)
+    const input = parse(nativeLoaderCorrectionRequestSchema, request.body)
+    const detected = await options.servers.inspectManagedNativeLoader(params.serverId)
+    const version = await installs.minecraftVersionForLoader(detected.detection.software, detected.detection.loaderVersion)
+    if (!version || input.software !== detected.detection.software || input.loaderVersion !== detected.detection.loaderVersion || input.version !== version) {
+      throw new ServerInventoryError('loader-changed', 'The confirmed loader details do not match the current files. Check them again before retrying.')
+    }
+    await options.servers.correctManagedNativeLoader({
+      serverId: params.serverId, actorUserId: request.principal!.userId,
+      software: detected.detection.software, version, loaderVersion: detected.detection.loaderVersion,
+      launch: detected.detection.launch,
+    })
+    return nativeLoaderCorrectionResultSchema.parse({ serverId: params.serverId, software: detected.detection.software, version })
   })
   app.get('/api/v1/servers', { preHandler: requireAuth }, async (request) => {
     const statuses = processes.listPublicStatuses()

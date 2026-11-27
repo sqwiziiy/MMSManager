@@ -63,4 +63,13 @@ describe('persisted local server templates', () => {
     templates = new ServerTemplateService(opened.db, () => Date.parse(at))
     expect(templates.get(created.id)).toMatchObject({ id: created.id, name: 'Weekend realm' })
   })
+
+  it.each(['forge', 'neoforge'] as const)('stores %s as a distinct server-software template across edits and duplication', (software) => {
+    const nativeInput = (name: string) => serverTemplateInputSchema.parse({ name, software, version: software === 'forge' ? '1.20.1' : '1.21.1', minMemoryMb: 1024, maxMemoryMb: 4096 })
+    const created = templates.create(nativeInput(`${software} template`), actorId)
+    expect(created).toMatchObject({ software, version: software === 'forge' ? '1.20.1' : '1.21.1' })
+    const duplicate = templates.duplicate(created.id, actorId)
+    expect(duplicate.software).toBe(software)
+    expect(templates.update(duplicate.id, nativeInput(`${software} updated`), actorId).software).toBe(software)
+  })
 })

@@ -25,7 +25,13 @@ export class ServerTemplateService {
     const at = new Date(this.now()).toISOString()
     try {
       this.db.transaction((tx) => {
-        tx.insert(serverTemplates).values({ id, ...input, createdBy: actorUserId, updatedBy: actorUserId, createdAt: at, updatedAt: at }).run()
+        tx.insert(serverTemplates).values({
+          id, name: input.name,
+          software: input.software === 'forge' || input.software === 'neoforge' ? 'vanilla' : input.software,
+          loader: input.software === 'forge' || input.software === 'neoforge' ? input.software : null,
+          version: input.version, minMemoryMb: input.minMemoryMb, maxMemoryMb: input.maxMemoryMb,
+          createdBy: actorUserId, updatedBy: actorUserId, createdAt: at, updatedAt: at,
+        }).run()
         tx.insert(localServerEvents).values({ serverId: null, actorUserId, action: 'workspace-template-created', outcome: 'success', occurredAt: at, detail: '{}' }).run()
       })
     } catch (error) {
@@ -41,7 +47,13 @@ export class ServerTemplateService {
     const at = new Date(this.now()).toISOString()
     try {
       this.db.transaction((tx) => {
-        tx.update(serverTemplates).set({ ...input, updatedBy: actorUserId, updatedAt: at }).where(eq(serverTemplates.id, templateId)).run()
+        tx.update(serverTemplates).set({
+          name: input.name,
+          software: input.software === 'forge' || input.software === 'neoforge' ? 'vanilla' : input.software,
+          loader: input.software === 'forge' || input.software === 'neoforge' ? input.software : null,
+          version: input.version, minMemoryMb: input.minMemoryMb, maxMemoryMb: input.maxMemoryMb,
+          updatedBy: actorUserId, updatedAt: at,
+        }).where(eq(serverTemplates.id, templateId)).run()
         tx.insert(localServerEvents).values({ serverId: null, actorUserId, action: 'workspace-template-updated', outcome: 'success', occurredAt: at, detail: '{}' }).run()
       })
     } catch (error) {
@@ -81,6 +93,6 @@ export class ServerTemplateService {
   }
 
   private toPublic(row: typeof serverTemplates.$inferSelect): ServerTemplate {
-    return { id: row.id, name: row.name, software: row.software, version: row.version, minMemoryMb: row.minMemoryMb, maxMemoryMb: row.maxMemoryMb, createdAt: row.createdAt, updatedAt: row.updatedAt }
+    return { id: row.id, name: row.name, software: row.loader ?? row.software, version: row.version, minMemoryMb: row.minMemoryMb, maxMemoryMb: row.maxMemoryMb, createdAt: row.createdAt, updatedAt: row.updatedAt }
   }
 }
