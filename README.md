@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sqwiziiy/MMSManager/releases"><img src="https://img.shields.io/github/v/tag/sqwiziiy/MMSManager?include_prereleases&sort=semver&label=version" alt="Latest version"></a>
+  <a href="https://github.com/sqwiziiy/MMSManager/releases/tag/v0.1.0-alpha.2"><img src="https://img.shields.io/badge/version-0.1.0--alpha.2-orange.svg?label=version" alt="Version 0.1.0-alpha.2"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-4c7b55.svg" alt="GPL-3.0-only license"></a>
   <a href="https://github.com/sqwiziiy/MMSManager/actions/workflows/ci.yml"><img src="https://github.com/sqwiziiy/MMSManager/actions/workflows/ci.yml/badge.svg?branch=main" alt="Continuous integration status"></a>
   <img src="https://img.shields.io/badge/platform-Linux-6b7280.svg" alt="Supported platform: Linux">
@@ -37,6 +37,10 @@ The captures use an isolated demonstration account and contain no real server re
 </p>
 
 <p align="center">
+  <img src="assets/readme/server-software.png" alt="MMSManager server creation wizard with Vanilla, Fabric, Forge, NeoForge and Paper choices" width="880">
+</p>
+
+<p align="center">
   <img src="assets/readme/servers-desktop.png" alt="MMSManager local server registry with an isolated empty demonstration workspace" width="880">
 </p>
 
@@ -48,9 +52,10 @@ The captures use an isolated demonstration account and contain no real server re
 
 - Live CPU, memory, storage and network readings from the local Linux host, with persisted history and a local-time calendar.
 - Local accounts with Administrator and Member roles, per-server access, profiles and personal preferences.
-- A registry for local servers, ZIP import, and new Vanilla, Fabric or Paper installations through their official metadata services.
+- A registry for local servers, ZIP import, retained-server recovery, and new Vanilla, Fabric, Forge, NeoForge or Paper installations through their official metadata services.
 - Management controls for panel-owned processes, a bounded console and logs, typed server properties, files, Fabric mods, Paper plugins, players and world inventory.
-- Private snapshots, verified restore, scheduled backups and an archive download for stopped, panel-managed servers.
+- SQLite-backed backup limits shared by manual and scheduled snapshots, integrity-checked restore with a safety copy, and an archive download for stopped, panel-managed servers.
+- Minecraft port synchronization from `server.properties` into the panel's cache, with separate configured and running-process ports and a restart notice when they differ.
 - English and Russian interface text, light and dark themes, and three accent palettes.
 
 Imported server directories remain unmanaged and read-only until explicitly adopted. Data that is unavailable stays unavailable; the interface does not invent server history or player activity.
@@ -118,7 +123,7 @@ MMSManager uses React, TypeScript, Vite and Lucide for the interface; Fastify an
 
 ## Current limits
 
-MMSManager targets one local Linux host. Remote hosts, SSH, RCON, Forge and NeoForge are not supported. The API is not intended for direct LAN or public exposure. Import, first-run setup, authorization and server controls should be reviewed on an isolated installation before operating important worlds. Live Minecraft compatibility, provider downloads, backup restoration on user data and public reverse-proxy deployment have not been independently validated.
+MMSManager targets one local Linux host. Remote hosts, SSH, RCON and Telegram are not included. Forge was verified with Minecraft 1.20.1 (Forge 47.4.28), and NeoForge with Minecraft 1.21.1 (NeoForge 21.1.268); these checks do not establish compatibility with every Minecraft or loader version. The API is not intended for direct LAN or public exposure. Validate server imports, backups and restores on disposable copies before using valuable worlds. The documented reverse-proxy setup has not been independently deployed or security-audited.
 
 ## Author
 

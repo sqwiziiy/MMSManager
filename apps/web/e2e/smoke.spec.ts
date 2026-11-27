@@ -9,7 +9,9 @@ const screenshotDir = resolve(process.env['MMSMANAGER_E2E_SCREENSHOT_DIR'] ?? re
 function screenshotPath(name: string): string { return resolve(screenshotDir, `stage-06h-${name}`) }
 mkdirSync(screenshotDir, { recursive: true })
 const captureReadme = process.env['MMSMANAGER_CAPTURE_README'] === '1'
+const captureReadmeAbout = process.env['MMSMANAGER_CAPTURE_README_ABOUT'] === '1'
 const captureReadmeMobile = process.env['MMSMANAGER_CAPTURE_README_MOBILE'] === '1'
+const captureReadmeLoaders = process.env['MMSMANAGER_CAPTURE_README_LOADERS'] === '1'
 
 let adminPassword = process.env['MMSMANAGER_E2E_ADMIN_PASSWORD']!
 const memberPassword = process.env['MMSMANAGER_E2E_MEMBER_PASSWORD']!
@@ -494,26 +496,33 @@ test('first-run administrator setup creates the protected local workspace', asyn
 
 test('About presents release identity to administrators and members', async ({ page }) => {
   let mockRole: 'administrator' | 'member' = 'administrator'
-  await page.route('**/api/v1/auth/me', async (route) => {
-    const response = await route.fetch()
-    const body = await response.json()
-    body.user.displayName = 'Demo Administrator'
-    body.user.username = 'demo-admin'
-    body.user.role = mockRole
-    if (mockRole === 'member') body.user.preferences.language = 'ru'
-    body.workspace.displayName = 'MMSManager Demo'
-    await route.fulfill({ response, json: body })
-  })
   await page.route('**/api/v1/machine/current', (route) => route.fulfill({ json: {
     status: 'collecting', timeZone: 'Etc/UTC', host: null, sample: null,
     lastSuccessfulAt: null, intervalMs: 1000, provenance: 'LOCAL_HOST',
   } }))
   await page.setViewportSize({ width: 1440, height: 1000 })
   await signIn(page)
+  const meUrl = new URL('/api/v1/auth/me', page.url()).toString()
+  const meResponse = await page.request.get(meUrl)
+  expect(meResponse.ok()).toBeTruthy()
+  const demoSnapshot = await meResponse.json() as {
+    user: { displayName: string; username: string; role: 'administrator' | 'member'; preferences: { language: 'en' | 'ru' } }
+    workspace: { displayName: string }
+  }
+  demoSnapshot.user.displayName = 'Demo Administrator'
+  demoSnapshot.user.username = 'demo-admin'
+  demoSnapshot.workspace.displayName = 'MMSManager Demo'
+  await page.route('**/api/v1/auth/me', (route) => {
+    const body = structuredClone(demoSnapshot)
+    body.user.role = mockRole
+    if (mockRole === 'member') body.user.preferences.language = 'ru'
+    return route.fulfill({ json: body })
+  })
+  await page.reload()
   await page.goto('/settings')
   await page.getByRole('button', { name: 'About', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'MMSManager', level: 3 })).toBeVisible()
-  await expect(page.getByText('0.1.0-alpha.1', { exact: true })).toBeVisible()
+  await expect(page.getByText('0.1.0-alpha.2', { exact: true })).toBeVisible()
   await expect(page.getByText('GNU General Public License v3.0 only', { exact: true })).toBeVisible()
   await expect(page.getByText('GPL-3.0-only', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: 'GitHub author' })).toHaveAttribute('href', 'https://github.com/sqwiziiy')
@@ -527,10 +536,13 @@ test('About presents release identity to administrators and members', async ({ p
   expect(favicon.type).toContain('image/svg+xml')
   expect(favicon.source).toContain('<svg')
 
-  if (captureReadme) {
+  if (captureReadme || captureReadmeAbout) {
     const directory = resolve(process.cwd(), '../../assets/readme')
     mkdirSync(directory, { recursive: true })
     await page.screenshot({ path: resolve(directory, 'about-desktop.png'), fullPage: true })
+  }
+  if (captureReadme) {
+    const directory = resolve(process.cwd(), '../../assets/readme')
     await page.goto('/servers')
     await expect(page.getByRole('heading', { name: 'Servers', exact: true })).toBeVisible()
     await expect(page.getByText('No local servers registered', { exact: true })).toBeVisible()
@@ -565,6 +577,9 @@ test('About presents release identity to administrators and members', async ({ p
   await expect(page.getByRole('button', { name: 'О проекте', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'О проекте', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'MMSManager', level: 3 })).toBeVisible()
+  await expect(page.getByText('Версия', { exact: true })).toBeVisible()
+  await expect(page.getByText('0.1.0-alpha.2', { exact: true })).toBeVisible()
+  await expect(page.getByText('Разработчик', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Workspace', exact: true })).toHaveCount(0)
   mockRole = 'administrator'
 })
@@ -753,6 +768,13 @@ test('Forge and NeoForge choices show official builds and fit the mobile setup w
   await dialog.getByRole('button', { name: 'Continue' }).click()
   await expect(dialog.getByRole('heading', { name: 'Mod loaders' })).toBeVisible()
   await expect(dialog.locator('.software-option.unsupported[aria-disabled="true"]')).toHaveCount(3)
+  await expect(dialog.getByRole('button', { name: /Forge Official Forge mod loader/ })).toBeVisible()
+  await expect(dialog.getByRole('button', { name: /NeoForge Community-led Forge successor/ })).toBeVisible()
+  if (captureReadmeLoaders) {
+    const directory = resolve(process.cwd(), '../../assets/readme')
+    mkdirSync(directory, { recursive: true })
+    await dialog.screenshot({ path: resolve(directory, 'server-software.png'), animations: 'disabled' })
+  }
   await dialog.getByRole('button', { name: /Forge Official Forge mod loader/ }).click()
   await expect(dialog.getByLabel('Minecraft release')).toHaveValue('1.20.1')
   await expect(dialog.getByLabel('Forge version')).toHaveValue('47.4.28')
