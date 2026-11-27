@@ -1086,7 +1086,7 @@ test('R3 workspace and server screens fit the 390/768/1280/1920px layout matrix'
   for (const width of [390, 768, 1280, 1920]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 980 })
     for (const route of workspaceRoutes) {
-      await page.goto(route)
+      await page.goto(route, { waitUntil: 'domcontentloaded' })
       await expect(page.locator('.page-content')).toBeVisible()
       const routeName = route === '/' ? 'dashboard' : route.slice(1).replaceAll('/', '-')
       await page.screenshot({ path: screenshotPath(`r3-${routeName}-${width}.png`), fullPage: true, animations: 'disabled' })
@@ -1100,7 +1100,7 @@ test('R3 workspace and server screens fit the 390/768/1280/1920px layout matrix'
     await page.setViewportSize({ width, height: width === 390 ? 844 : 980 })
     for (const section of serverSections) {
       const route = `/servers/${serverId}/${section}`
-      await page.goto(route)
+      await page.goto(route, { waitUntil: 'domcontentloaded' })
       await expect(page.locator('.page-content')).toBeVisible()
       if (section === 'access') await expectAccessBadgeFits(page, `${section} at ${width}px`)
       await page.screenshot({ path: screenshotPath(`r3-server-${section}-${width}.png`), fullPage: true, animations: 'disabled' })
@@ -1112,7 +1112,8 @@ test('R3 workspace and server screens fit the 390/768/1280/1920px layout matrix'
   for (const { zoom, width } of zoomWidths) {
     await page.setViewportSize({ width, height: 980 })
     for (const route of workspaceRoutes) {
-      await page.goto(route)
+      await page.goto(route, { waitUntil: 'domcontentloaded' })
+      await expect(page.locator('.page-content')).toBeVisible()
       await expectNoHorizontalOverflow(page, `${route} at ${zoom}% zoom (effective ${width}px)`)
       if (['/', '/servers', '/settings'].includes(route)) {
         const routeName = route === '/' ? 'dashboard' : route.slice(1).replaceAll('/', '-')
@@ -1121,7 +1122,8 @@ test('R3 workspace and server screens fit the 390/768/1280/1920px layout matrix'
     }
     for (const section of serverSections) {
       const route = `/servers/${serverId}/${section}`
-      await page.goto(route)
+      await page.goto(route, { waitUntil: 'domcontentloaded' })
+      await expect(page.locator('.page-content')).toBeVisible()
       if (section === 'access') await expectAccessBadgeFits(page, `${section} at ${zoom}% zoom`)
       await expectNoHorizontalOverflow(page, `${section} at ${zoom}% zoom (effective ${width}px)`)
       if (['access', 'players', 'files', 'properties'].includes(section)) {

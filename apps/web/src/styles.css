@@ -1184,6 +1184,8 @@ html:lang(ru) .activity-feed-copy small { text-transform: none; }
 
 /* Stage 2 — live local telemetry and machine history */
 .overview-machine-number { position: relative; }
+.overview-machine-number strong { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 7px; white-space: normal; }
+.overview-machine-number strong small { display: block; max-width: 100%; margin-left: 0; line-height: 1.35; white-space: normal; }
 .live-indicator { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--text-muted); }
 .live-indicator.connected, .machine-connection.is-live i { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent); }
 .live-resource-body { align-items: start; }
