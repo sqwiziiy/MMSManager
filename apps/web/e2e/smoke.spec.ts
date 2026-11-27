@@ -148,7 +148,7 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   const serverId = 'e03c1cf8-e2a1-4a4e-9de4-4536c7796091'
   const backupId = 'c03c1cf8-e2a1-4a4e-9de4-4536c7796091'
   const now = new Date().toISOString()
-  const server = { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus }
+  const server = { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, portStatus: 'valid' as const, portErrorCode: null, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus }
   let settings = { onlineMode: true, motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
   let advancedProperties: Record<string, string> = { 'server-port': '25565', 'allow-flight': 'false' }
   let propertyHash = 'c'.repeat(64)
@@ -175,6 +175,7 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
   }
   const properties = () => ({
     settings, advancedProperties, sha256: propertyHash, serverVersion: server.version, serverSoftware: server.software,
+    configuredPort: server.port, portStatus: server.portStatus, portErrorCode: server.portErrorCode,
     presentKeys: ['online-mode', 'motd', 'gamemode', 'difficulty', 'max-players', 'view-distance', 'simulation-distance', 'spawn-protection', 'pvp', 'white-list', 'allow-nether', ...Object.keys(advancedProperties), 'server-ip'],
     unknownKeys: ['custom.fixture-key'], protectedProperties: [{ key: 'server-ip', reason: 'The panel keeps server binding settings separate from the local web interface.', configured: true }],
     unsupportedKeys: [], backups: restartRequired ? [{ id: backupId, createdAt: now, sha256: 'a'.repeat(64) }] : [], restartRequired,
@@ -235,10 +236,10 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
     runtimeStatus = 'running'
     runtimeSettings = { ...runtimeSettings, runtimeStatus, restartRequired: false }
     restartRequired = false
-    return route.fulfill({ json: { runtime: { serverId, status: runtimeStatus, startedAt: now, uptimeSeconds: 0, memoryRssBytes: null, cpuPercent: null, ready: true, playersOnline: null, eula: 'accepted', restartRequired: false, lastExitCode: 0, errorMessage: null } } })
+    return route.fulfill({ json: { runtime: { serverId, status: runtimeStatus, startedAt: now, uptimeSeconds: 0, memoryRssBytes: null, cpuPercent: null, ready: true, playersOnline: null, eula: 'accepted', configuredPort: server.port, processPort: server.port, portStatus: server.portStatus, portErrorCode: server.portErrorCode, restartRequired: false, lastExitCode: 0, errorMessage: null } } })
   })
-  await page.route(`**/api/v1/servers/${serverId}/runtime`, (route) => route.fulfill({ json: { runtime: { serverId, status: runtimeStatus, startedAt: runtimeStatus === 'running' ? now : null, uptimeSeconds: runtimeStatus === 'running' ? 153 : null, memoryRssBytes: null, cpuPercent: null, ready: runtimeStatus === 'running', playersOnline: null, eula: 'accepted', restartRequired, lastExitCode: null, errorMessage: null } } }))
-  await page.route(`**/api/v1/servers/${serverId}/status`, (route) => route.fulfill({ json: { status: { serverId, checkedAt: now, source: 'local-status-ping', state: 'reachable', playersOnline: 3, playersMax: 20, versionName: 'Paper 1.21.4', description: 'Local fixture', latencyMs: 4, errorCode: null, authoritativePlayerList: false } } }))
+  await page.route(`**/api/v1/servers/${serverId}/runtime`, (route) => route.fulfill({ json: { runtime: { serverId, status: runtimeStatus, startedAt: runtimeStatus === 'running' ? now : null, uptimeSeconds: runtimeStatus === 'running' ? 153 : null, memoryRssBytes: null, cpuPercent: null, ready: runtimeStatus === 'running', playersOnline: null, eula: 'accepted', configuredPort: server.port, processPort: runtimeStatus === 'running' ? server.port : null, portStatus: server.portStatus, portErrorCode: server.portErrorCode, restartRequired, lastExitCode: null, errorMessage: null } } }))
+  await page.route(`**/api/v1/servers/${serverId}/status`, (route) => route.fulfill({ json: { status: { serverId, checkedAt: now, source: 'local-status-ping', state: 'reachable', configuredPort: server.port, processPort: runtimeStatus === 'running' ? server.port : null, portStatus: server.portStatus, portErrorCode: server.portErrorCode, restartRequired, playersOnline: 3, playersMax: 20, versionName: 'Paper 1.21.4', description: 'Local fixture', latencyMs: 4, errorCode: null, authoritativePlayerList: false } } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/players`, (route) => route.fulfill({ json: { players: { serverId, state: 'authoritative', source: 'owned-console-list', sampledAt: now, names: ['FixturePlayer'], reason: null } } }))
   await page.route(`**/api/v1/admin/servers/${serverId}/worlds`, (route) => route.fulfill({ json: { worlds: {
     serverId, status: 'available', levelName: 'maple-valley', levelNameSource: 'server.properties', reason: null,
@@ -343,7 +344,7 @@ async function mockLocalServer(page: Page, runtimeStatus = 'running') {
       return route.fulfill({ json: { ok: true, restoreId: '903c1cf8-e2a1-4a4e-9de4-4536c7796091', backupId: serverBackupId, safetyBackupId, restoredFileCount: 2, restoredDirectoryCount: 1, restoredBytes: 200, completedAt: now, rollbackCleanupPending: false } })
     }
     if (request.method() === 'POST') return route.fulfill({ status: 201, json: { backup: backupRecord(serverBackupId, 'manual') } })
-    return route.fulfill({ json: { serverId, items: backupItems, truncated: false, storageUsedBytes: backupItems.length * 512, storageLimitBytes: 107374182400, quotaWarning: false, runtimeStatus } })
+    return route.fulfill({ json: { serverId, items: backupItems, truncated: false, storageUsedBytes: backupItems.length * 512, storageLimitBytes: 107374182400, storageAvailableBytes: 500 * 1024 ** 3, quotaWarning: false, runtimeStatus } })
   })
 
   const filePath = 'config/server-note.txt'
@@ -1173,7 +1174,7 @@ test('dashboard player totals distinguish stopped and unavailable servers', asyn
   playerSummaryResponse = { ...playerSummaryResponse, playersOnline: null, complete: false, checkedAt: new Date().toISOString() }
   await page.route('**/api/v1/servers', (route) => route.fulfill({ json: { servers: [{
     id: stopped.serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar',
-    javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, eula: 'accepted', managed: true,
+    javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, portStatus: 'valid', portErrorCode: null, eula: 'accepted', managed: true,
     worldFolders: ['world'], createdAt: new Date().toISOString(), runtimeStatus: 'running',
   }] } }))
   await page.reload()
@@ -1342,10 +1343,10 @@ test('workspace backups retains healthy inventories when one managed server fail
   const unavailable = {
     id: unavailableId, name: 'Unavailable Fixture', source: 'created', software: 'paper', version: '1.21.4',
     jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25566,
-    eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus: 'stopped',
+    portStatus: 'valid', portErrorCode: null, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus: 'stopped',
   }
   await page.route('**/api/v1/servers', (route) => route.fulfill({ json: { servers: [
-    { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus: 'stopped' },
+    { id: serverId, name: 'Local Fixture', source: 'created', software: 'paper', version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096, port: 25565, portStatus: 'valid', portErrorCode: null, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: now, runtimeStatus: 'stopped' },
     unavailable,
   ] } }))
   await page.route(`**/api/v1/admin/servers/${unavailableId}/backups`, (route) => route.fulfill({
@@ -1617,6 +1618,7 @@ test('online-mode edits require stopped state and an explicit confirmation', asy
   const baseSettings = { onlineMode: true, motd: 'A local fixture', gameMode: 'survival', difficulty: 'normal', maxPlayers: 20, viewDistance: 10, simulationDistance: 8, spawnProtection: 16, pvp: true, whiteList: false, allowNether: true }
   const onlineProperties = (restartRequired: boolean) => ({ properties: {
     settings: { ...baseSettings, onlineMode: onlineModeEnabled }, advancedProperties: {}, sha256: propertyHash, serverVersion: '1.21.4', serverSoftware: 'paper',
+    configuredPort: 25565, portStatus: 'valid', portErrorCode: null,
     presentKeys: ['online-mode', 'motd', 'gamemode', 'difficulty', 'max-players', 'view-distance', 'simulation-distance', 'spawn-protection', 'pvp', 'white-list', 'allow-nether', 'server-ip'],
     unknownKeys: [], protectedProperties: [{ key: 'server-ip', reason: 'The local web binding is managed separately.', configured: true }], unsupportedKeys: [], backups: [], restartRequired,
   } })
@@ -2552,7 +2554,7 @@ test('R9 ZIP import preview and publish are localized and responsive', async ({ 
   const importedServer = {
     id: 'f03c1cf8-e2a1-4a4e-9de4-4536c7796091', name: 'Пробный сервер', source: 'created', software: 'vanilla',
     version: '1.21.4', jarName: 'server.jar', javaMajor: 21, minMemoryMb: 1024, maxMemoryMb: 4096,
-    port: 25565, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: new Date().toISOString(), runtimeStatus: 'stopped',
+    port: 25565, portStatus: 'valid', portErrorCode: null, eula: 'accepted', managed: true, worldFolders: ['world'], createdAt: new Date().toISOString(), runtimeStatus: 'stopped',
   }
   let publishBody: Record<string, unknown> | null = null
   await page.route(`**/api/v1/admin/server-imports/${token}/publish`, async (route) => {
