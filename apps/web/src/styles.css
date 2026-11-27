@@ -239,7 +239,8 @@ kbd { display: inline-flex; align-items: center; gap: 3px; height: 21px; padding
 .metric-track-row { display: flex; flex-direction: column; gap: 7px; }
 .metric-track-copy, .metric-track-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .metric-track-copy { color: var(--text-secondary); font-size: 10px; }
-.metric-track-copy strong { color: var(--text); font: 11px 'DM Mono', ui-monospace, monospace; }
+.metric-track-copy > * { min-width: 0; }
+.metric-track-copy strong { min-width: 0; overflow-wrap: anywhere; color: var(--text); font: 11px 'DM Mono', ui-monospace, monospace; text-align: right; }
 .metric-track { height: 5px; overflow: hidden; border-radius: 4px; background: var(--surface-soft); }
 .metric-track > span { height: 100%; display: block; border-radius: inherit; background: var(--accent); }
 .metric-track.blue > span { background: var(--blue); }
