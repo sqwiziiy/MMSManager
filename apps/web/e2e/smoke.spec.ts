@@ -692,19 +692,19 @@ test('admin creates a server through mocked provider responses', async ({ page }
   await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [], managedRoot: '/tmp/mmsmanager-stage3-e2e-servers', importRoots: ['/tmp/mmsmanager-stage3-e2e-servers'] } }))
   await page.route('**/api/v1/admin/server-installs/catalog?*', (route) => {
     const url = new URL(route.request().url())
-    return route.fulfill({ json: { software: 'vanilla', versions: ['1.21.4'], loaders: [], builds: [], installerVersion: null, requiredJavaMajor: url.searchParams.has('version') ? 21 : null } })
+    return route.fulfill({ json: { software: 'vanilla', versions: ['1.21.4'], loaders: [], experimentalLoaders: [], builds: [], installerVersion: null, requiredJavaMajor: url.searchParams.has('version') ? 21 : null } })
   })
   await page.route('**/api/v1/admin/server-installs', async (route) => {
     if (route.request().method() === 'POST') {
       submitted = route.request().postDataJSON() as Record<string, unknown>
-      return route.fulfill({ status: 202, json: { operation: { id: operationId, name: 'Local community server', directoryName: 'community-server', software: 'vanilla', version: '1.21.4', status: 'pending', progress: 1, phase: 'queued', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } })
+      return route.fulfill({ status: 202, json: { operation: { id: operationId, name: 'Local community server', directoryName: 'community-server', software: 'vanilla', version: '1.21.4', loaderVersion: null, status: 'pending', progress: 1, phase: 'queued', installerLog: '', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, checksumType: null, error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } })
     }
     return route.fulfill({ json: { operations: [] } })
   })
   await page.route(`**/api/v1/admin/server-installs/${operationId}`, (route) => {
     pollCount += 1
     const completed = pollCount > 1
-    return route.fulfill({ json: { operation: { id: operationId, name: 'Local community server', directoryName: 'community-server', software: 'vanilla', version: '1.21.4', status: completed ? 'completed' : 'downloading', progress: completed ? 100 : 48, phase: completed ? 'complete' : 'downloading', serverId: completed ? serverId : null, artifactUrl: completed ? 'https://piston-data.mojang.com/server.jar' : null, artifactSize: completed ? 9 : null, artifactSha256: completed ? 'a'.repeat(64) : null, error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } })
+    return route.fulfill({ json: { operation: { id: operationId, name: 'Local community server', directoryName: 'community-server', software: 'vanilla', version: '1.21.4', loaderVersion: null, status: completed ? 'completed' : 'downloading', progress: completed ? 100 : 48, phase: completed ? 'complete' : 'downloading', installerLog: '', serverId: completed ? serverId : null, artifactUrl: completed ? 'https://piston-data.mojang.com/server.jar' : null, artifactSize: completed ? 9 : null, artifactSha256: completed ? 'a'.repeat(64) : null, checksumType: completed ? 'sha256' : null, error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } })
   })
   await page.getByRole('button', { name: 'Create server', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'Create server' })).toBeVisible()
@@ -782,17 +782,17 @@ test('failed installs preserve partial files and retry into a new directory', as
   await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [], managedRoot: '/tmp/mmsmanager-stage3-e2e-servers', importRoots: ['/tmp/mmsmanager-stage3-e2e-servers'] } }))
   await page.route('**/api/v1/admin/server-installs/catalog?*', (route) => {
     const url = new URL(route.request().url())
-    return route.fulfill({ json: { software: 'vanilla', versions: ['1.21.4'], loaders: [], builds: [], installerVersion: null, requiredJavaMajor: url.searchParams.has('version') ? 21 : null } })
+    return route.fulfill({ json: { software: 'vanilla', versions: ['1.21.4'], loaders: [], experimentalLoaders: [], builds: [], installerVersion: null, requiredJavaMajor: url.searchParams.has('version') ? 21 : null } })
   })
   await page.route('**/api/v1/admin/server-installs', async (route) => {
     if (route.request().method() !== 'POST') return route.fulfill({ json: { operations: [] } })
     const input = route.request().postDataJSON() as Record<string, unknown>
     sent.push(input)
     const id = sent.length === 1 ? failedId : completedId
-    return route.fulfill({ status: 202, json: { operation: { id, name: 'Retry Fixture', directoryName: input['directoryName'], software: 'vanilla', version: '1.21.4', status: 'pending', progress: 1, phase: 'queued', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } })
+    return route.fulfill({ status: 202, json: { operation: { id, name: 'Retry Fixture', directoryName: input['directoryName'], software: 'vanilla', version: '1.21.4', loaderVersion: null, status: 'pending', progress: 1, phase: 'queued', installerLog: '', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, checksumType: null, error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } })
   })
-  await page.route(`**/api/v1/admin/server-installs/${failedId}`, (route) => route.fulfill({ json: { operation: { id: failedId, name: 'Retry Fixture', directoryName: 'retry-fixture', software: 'vanilla', version: '1.21.4', status: 'failed', progress: 50, phase: 'failed', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, error: { code: 'CHECKSUM_MISMATCH', message: 'The provider checksum did not match.' }, partialDirectory: '/tmp/mmsmanager-stage3-e2e-servers/retry-fixture', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } }))
-  await page.route(`**/api/v1/admin/server-installs/${completedId}`, (route) => route.fulfill({ json: { operation: { id: completedId, name: 'Retry Fixture', directoryName: String(sent[1]?.['directoryName'] ?? 'retry-fixture-2'), software: 'vanilla', version: '1.21.4', status: 'completed', progress: 100, phase: 'complete', serverId, artifactUrl: 'https://piston-data.mojang.com/server.jar', artifactSize: 9, artifactSha256: 'b'.repeat(64), error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } }))
+  await page.route(`**/api/v1/admin/server-installs/${failedId}`, (route) => route.fulfill({ json: { operation: { id: failedId, name: 'Retry Fixture', directoryName: 'retry-fixture', software: 'vanilla', version: '1.21.4', loaderVersion: null, status: 'failed', progress: 50, phase: 'failed', installerLog: '', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, checksumType: null, error: { code: 'CHECKSUM_MISMATCH', message: 'The provider checksum did not match.' }, partialDirectory: '/tmp/mmsmanager-stage3-e2e-servers/retry-fixture', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } }))
+  await page.route(`**/api/v1/admin/server-installs/${completedId}`, (route) => route.fulfill({ json: { operation: { id: completedId, name: 'Retry Fixture', directoryName: String(sent[1]?.['directoryName'] ?? 'retry-fixture-2'), software: 'vanilla', version: '1.21.4', loaderVersion: null, status: 'completed', progress: 100, phase: 'complete', installerLog: '', serverId, artifactUrl: 'https://piston-data.mojang.com/server.jar', artifactSize: 9, artifactSha256: 'b'.repeat(64), checksumType: 'sha256', error: null, partialDirectory: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } } }))
 
   await page.getByRole('button', { name: 'Create server', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Create server' })
@@ -1699,12 +1699,12 @@ test('installation cancellation preserves partial files and reports a cancelled 
   await signIn(page)
   const operationId = '7fc0b937-3e7f-4938-b432-5cc98a529e7c'
   const now = new Date().toISOString()
-  let current = { id: operationId, name: 'Cancel Fixture', directoryName: 'cancel-fixture', software: 'vanilla', version: '1.21.4', status: 'pending', progress: 12, phase: 'downloading', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, error: null, partialDirectory: null, createdAt: now, updatedAt: now }
+  let current = { id: operationId, name: 'Cancel Fixture', directoryName: 'cancel-fixture', software: 'vanilla', version: '1.21.4', loaderVersion: null, status: 'pending', progress: 12, phase: 'downloading', installerLog: '', serverId: null, artifactUrl: null, artifactSize: null, artifactSha256: null, checksumType: null, error: null, partialDirectory: null, createdAt: now, updatedAt: now }
   await page.route('**/api/v1/admin/java', (route) => route.fulfill({ json: { runtimes: [{ path: '/tmp/mmsmanager-e2e-java', version: '21.0.4', major: 21, vendor: 'OpenJDK', source: 'discovered' }] } }))
   await page.route('**/api/v1/admin/servers', (route) => route.fulfill({ json: { servers: [], managedRoot: '/tmp/mmsmanager-stage6-e2e-servers', importRoots: ['/tmp/mmsmanager-stage6-e2e-servers'] } }))
   await page.route('**/api/v1/admin/server-installs/catalog?*', (route) => {
     const url = new URL(route.request().url())
-    return route.fulfill({ json: { software: 'vanilla', versions: ['1.21.4'], loaders: [], builds: [], installerVersion: null, requiredJavaMajor: url.searchParams.has('version') ? 21 : null } })
+    return route.fulfill({ json: { software: 'vanilla', versions: ['1.21.4'], loaders: [], experimentalLoaders: [], builds: [], installerVersion: null, requiredJavaMajor: url.searchParams.has('version') ? 21 : null } })
   })
   await page.route('**/api/v1/admin/server-installs', (route) => route.request().method() === 'POST'
     ? route.fulfill({ status: 202, json: { operation: current } })
