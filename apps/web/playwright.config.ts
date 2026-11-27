@@ -22,7 +22,7 @@ export default defineConfig({
   },
   webServer: {
     command: 'pnpm --dir ../.. dev',
-    url: `http://127.0.0.1:${webPort}`,
+    url: `http://127.0.0.1:${apiPort}/api/v1/health`,
     reuseExistingServer: false,
     timeout: 30_000,
     env: {

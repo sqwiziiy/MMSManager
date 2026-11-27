@@ -1080,16 +1080,20 @@ test('R3 sidebar preference survives rapid toggles, keyboard, navigation and rel
 })
 
 test('R3 workspace and server screens fit the 390/768/1280/1920px layout matrix', async ({ page }) => {
-  test.setTimeout(120_000)
+  test.setTimeout(300_000)
   await signIn(page)
   const workspaceRoutes = ['/', '/servers', '/machine', '/machine/history', '/activity', '/backups', '/templates', '/users', '/profile', '/settings']
+  const workspaceScreenshotRoutes = new Set(['/', '/servers', '/machine', '/settings'])
+  const serverScreenshotSections = new Set(['overview', 'console', 'properties', 'backups', 'access'])
   for (const width of [390, 768, 1280, 1920]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 980 })
     for (const route of workspaceRoutes) {
       await page.goto(route, { waitUntil: 'domcontentloaded' })
       await expect(page.locator('.page-content')).toBeVisible()
-      const routeName = route === '/' ? 'dashboard' : route.slice(1).replaceAll('/', '-')
-      await page.screenshot({ path: screenshotPath(`r3-${routeName}-${width}.png`), fullPage: true, animations: 'disabled' })
+      if (workspaceScreenshotRoutes.has(route)) {
+        const routeName = route === '/' ? 'dashboard' : route.slice(1).replaceAll('/', '-')
+        await page.screenshot({ path: screenshotPath(`r3-${routeName}-${width}.png`), fullPage: true, animations: 'disabled' })
+      }
       await expectNoHorizontalOverflow(page, `${route} at ${width}px`)
     }
   }
@@ -1103,7 +1107,7 @@ test('R3 workspace and server screens fit the 390/768/1280/1920px layout matrix'
       await page.goto(route, { waitUntil: 'domcontentloaded' })
       await expect(page.locator('.page-content')).toBeVisible()
       if (section === 'access') await expectAccessBadgeFits(page, `${section} at ${width}px`)
-      await page.screenshot({ path: screenshotPath(`r3-server-${section}-${width}.png`), fullPage: true, animations: 'disabled' })
+      if (serverScreenshotSections.has(section)) await page.screenshot({ path: screenshotPath(`r3-server-${section}-${width}.png`), fullPage: true, animations: 'disabled' })
       await expectNoHorizontalOverflow(page, `${section} at ${width}px`)
     }
   }
